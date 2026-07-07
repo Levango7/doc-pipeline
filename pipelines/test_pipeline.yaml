@@ -1,0 +1,106 @@
+# 测试用流水线 — 使用 mock 引擎，跳过网络操作
+_name: test_pipeline
+_version: "1.0"
+description: 测试用流水线（mock 引擎，快速执行）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: researcher
+    version: "1.0"
+    timeout: 30
+    dependencies: []
+    pool_size: 1
+    config:
+      search_engines:
+        - mock
+      max_results: 3
+
+  - name: writer
+    version: "2.0"
+    timeout: 30
+    dependencies: ["fetcher"]
+    config:
+      template: default
+
+  - name: fetcher
+    version: "1.0"
+    timeout: 30
+    dependencies: ["researcher"]
+    config:
+      max_downloads: 2
+      temp_dir: tmp_fetcher_test
+
+  - name: quality_gate
+    version: "2.0"
+    timeout: 30
+    dependencies: ["writer"]
+    config:
+      quality_profile: technical-doc
+      threshold: 70
+      max_regenerations: 3
+      weights:
+        completeness: 0.25
+        structure: 0.20
+        readability: 0.15
+        citation: 0.20
+        depth: 0.20
+
+  - name: checker
+    version: "1.1"
+    timeout: 30
+    dependencies: ["quality_gate"]
+    config:
+      fail_fast: false
+
+  - name: layout
+    version: "2.0"
+    timeout: 30
+    dependencies: ["checker"]
+    config:
+      style: markdown
+
+  - name: safewriter
+    version: "2.0"
+    timeout: 30
+    dependencies: ["layout"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+topology:
+  type: dag
+  levels:
+    - [researcher]
+    - [fetcher]
+    - [writer]
+    - [quality_gate]
+    - [checker]
+    - [layout]
+    - [safewriter]
+  edges:
+    - [researcher, fetcher]
+    - [fetcher, writer]
+    - [writer, quality_gate]
+    - [quality_gate, checker]
+    - [checker, layout]
+    - [layout, safewriter]
+
+pipeline:
+  timeout: 60
+  retry:
+    max_attempts: 1
+    backoff: linear
+    initial_delay: 0
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 10
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

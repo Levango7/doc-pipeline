@@ -1,0 +1,500 @@
+/* ============================================================
+   Doc-Pipeline v3 Dashboard — Dark Theme Styles
+   ============================================================ */
+
+/* --- Reset & Base ----------------------------------------- */
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-body: #1a1a2e;
+  --bg-card: #16213e;
+  --bg-accent: #0f3460;
+  --text-primary: #e0e0e0;
+  --text-muted: #999;
+  --highlight: #e94560;
+  --border: #0f3460;
+
+  --status-ok: #4caf50;
+  --status-warn: #ff9800;
+  --status-error: #e94560;
+
+  --font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+
+  --radius: 8px;
+  --shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+html {
+  font-size: 14px;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-body);
+  color: var(--text-primary);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- Header ----------------------------------------------- */
+.header {
+  background: var(--bg-card);
+  border-bottom: 2px solid var(--highlight);
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.header h1 {
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.header h1 .accent {
+  color: var(--highlight);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.last-updated {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.refresh-indicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-ok);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* --- Dashboard Grid --------------------------------------- */
+.dashboard {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 16px;
+  padding: 16px;
+  min-height: 0;
+}
+
+/* --- Card ------------------------------------------------- */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--bg-accent);
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  flex-shrink: 0;
+}
+
+.card-header h2 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.card-header .badge {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.1);
+  color: var(--text-muted);
+}
+
+.card-body {
+  flex: 1;
+  padding: 12px 16px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.card-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.card-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.card-body::-webkit-scrollbar-thumb {
+  background: var(--bg-accent);
+  border-radius: 2px;
+}
+
+/* --- Pipeline Status panel -------------------------------- */
+.status-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.stat-item {
+  background: rgba(15, 52, 96, 0.3);
+  border-radius: 6px;
+  padding: 12px;
+  text-align: center;
+}
+
+.stat-item .stat-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.stat-item .stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.stat-item .stat-value.ok { color: var(--status-ok); }
+.stat-item .stat-value.error { color: var(--status-error); }
+.stat-item .stat-value.warn { color: var(--status-warn); }
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-pill.ok {
+  background: rgba(76, 175, 80, 0.15);
+  color: var(--status-ok);
+}
+
+.status-pill.error {
+  background: rgba(233, 69, 96, 0.15);
+  color: var(--status-error);
+}
+
+.status-pill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* --- Tasks Table ------------------------------------------ */
+.tasks-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.tasks-table thead th {
+  text-align: left;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg-card);
+}
+
+.tasks-table tbody td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  vertical-align: middle;
+}
+
+.tasks-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.tasks-table tbody tr:hover {
+  background: rgba(15, 52, 96, 0.3);
+}
+
+.task-id {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-pipeline {
+  font-size: 0.75rem;
+}
+
+/* Status badges */
+.badge-status {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.badge-status.running { background: rgba(76, 175, 80, 0.15); color: #4caf50; }
+.badge-status.pending { background: rgba(255, 152, 0, 0.15); color: #ff9800; }
+.badge-status.done    { background: rgba(76, 175, 80, 0.15); color: #81c784; }
+.badge-status.failed  { background: rgba(233, 69, 96, 0.15); color: #e94560; }
+.badge-status.waiting { background: rgba(33, 150, 243, 0.15); color: #64b5f6; }
+
+/* Progress bar */
+.progress-wrap {
+  background: rgba(255,255,255,0.08);
+  border-radius: 4px;
+  height: 6px;
+  width: 100%;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--highlight), #ff8a65);
+  transition: width 0.5s ease;
+}
+
+.progress-fill.done {
+  background: var(--status-ok);
+}
+
+.progress-fill.failed {
+  background: var(--status-error);
+}
+
+.progress-text {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-left: 6px;
+}
+
+/* --- Agents List ------------------------------------------ */
+.agents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(15, 52, 96, 0.2);
+  border-radius: 6px;
+  border-left: 3px solid var(--status-ok);
+}
+
+.agent-item.warn {
+  border-left-color: var(--status-warn);
+}
+
+.agent-item.error {
+  border-left-color: var(--status-error);
+}
+
+.agent-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-name {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.agent-detail {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.agent-status-tag {
+  font-size: 0.65rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.agent-status-tag.ok { background: rgba(76, 175, 80, 0.15); color: var(--status-ok); }
+.agent-status-tag.warn { background: rgba(255, 152, 0, 0.15); color: var(--status-warn); }
+.agent-status-tag.error { background: rgba(233, 69, 96, 0.15); color: var(--status-error); }
+
+/* --- Metrics panel ---------------------------------------- */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.metric-card {
+  background: rgba(15, 52, 96, 0.2);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.metric-icon {
+  font-size: 1.2rem;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.05);
+  flex-shrink: 0;
+}
+
+.metric-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.metric-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.metric-value {
+  font-size: 1.2rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.metric-spark {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+/* --- Empty state ------------------------------------------ */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  gap: 6px;
+}
+
+.empty-state .icon {
+  font-size: 2rem;
+  opacity: 0.4;
+}
+
+/* --- Error overlay ---------------------------------------- */
+.error-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-body);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  gap: 16px;
+  padding: 32px;
+  text-align: center;
+}
+
+.error-overlay .err-icon {
+  font-size: 3rem;
+  opacity: 0.6;
+}
+
+.error-overlay h2 {
+  font-size: 1.3rem;
+  color: var(--highlight);
+}
+
+.error-overlay p {
+  color: var(--text-muted);
+  max-width: 400px;
+  font-size: 0.9rem;
+}
+
+.error-overlay .retry-btn {
+  margin-top: 8px;
+  padding: 8px 24px;
+  border: 1px solid var(--highlight);
+  background: transparent;
+  color: var(--highlight);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+
+.error-overlay .retry-btn:hover {
+  background: rgba(233, 69, 96, 0.15);
+}
+
+/* --- Responsive ------------------------------------------- */
+@media (max-width: 900px) {
+  .dashboard {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+}
+
+@media (max-width: 500px) {
+  .status-grid,
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+}

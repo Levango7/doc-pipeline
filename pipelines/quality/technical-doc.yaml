@@ -1,0 +1,48 @@
+# Quality Profile: 技术文档标准模板
+name: technical-doc
+description: "通用技术文档质量标准"
+threshold: 70
+max_regenerations: 3
+
+# 评分维度及其权重（总和 = 1.0）
+weights:
+  completeness: 0.20
+  structure: 0.15
+  readability: 0.10
+  citation: 0.15
+  depth: 0.10
+  substance: 0.20    # 内容实质度（信息密度/重复率/实质信号）
+  style: 0.10      # 风格检查权重
+
+# 风格规则（可禁用）
+style_rules:
+  - name: heading_levels
+    pattern: "^#{4,}\\s"
+    message: "避免使用 H4 及以上标题层级"
+    penalty: 5
+    enabled: true
+  - name: empty_headers
+    pattern: "^#+\\s*$"
+    message: "标题后必须跟内容"
+    penalty: 10
+    enabled: true
+  - name: broken_links
+    pattern: "\\[([^\\]]*)\\]\\(\\s*\\)"
+    message: "存在空链接引用"
+    penalty: 15
+    enabled: true
+  - name: excessive_whitespace
+    pattern: "\\n{4,}"
+    message: "连续空行不应超过 3 行"
+    penalty: 3
+    enabled: true
+
+# 引用检查
+citation:
+  enabled: true
+  penalty_per_issue: 5
+  check_empty_title: true
+  check_url_format: true
+
+# 扣分上限
+max_penalty: 40

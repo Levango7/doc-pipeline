@@ -1,0 +1,36 @@
+# Quality Profile: 教程模板
+name: tutorial
+description: "教程类文档质量标准（强调完整性和可读性）"
+threshold: 75
+max_regenerations: 3
+
+weights:
+  completeness: 0.30
+  structure: 0.20
+  readability: 0.25
+  citation: 0.10
+  depth: 0.10
+  style: 0.05
+
+style_rules:
+  - name: heading_levels
+    pattern: "^#{4,}\\s"
+    message: "教程应使用 H2/H3，避免 H4+"
+    penalty: 5
+    enabled: true
+  - name: broken_links
+    pattern: "\\[([^\\]]*)\\]\\(\\s*\\)"
+    message: "存在空引用链接"
+    penalty: 15
+    enabled: true
+  - name: no_example_section
+    pattern: "(?i)示例|例子|实例"
+    message: "教程建议包含示例内容"
+    penalty: 10
+    enabled: false  # 仅提示，不自动扣分
+
+citation:
+  enabled: false
+  penalty_per_issue: 5
+
+max_penalty: 30

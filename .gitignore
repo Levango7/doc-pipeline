@@ -1,0 +1,32 @@
+# 输出产物
+output/
+backups/
+checkpoints/
+tmp_fetcher/
+tmp/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# 运行产物
+*.lock
+*.log
+.DS_Store
+bus_data/
+logs/
+.doc_baseline.json
+
+# 测试临时文件
+out_*.md
+plan*.md
+ROADMAP.md
+
+# 密钥
+.env
+*.secret
+config/secrets.yaml

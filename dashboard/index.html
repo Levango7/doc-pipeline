@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doc-Pipeline v3 Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="header">
+  <h1>🔧 <span class="accent">Doc-Pipeline</span> v3 Dashboard</h1>
+  <div class="header-right">
+    <span id="last-updated" class="last-updated">--</span>
+    <span class="refresh-indicator"></span>
+  </div>
+</div>
+
+<!-- Error overlay (hidden by default) -->
+<div id="error-overlay" class="error-overlay" style="display:none">
+  <div class="err-icon">⚠️</div>
+  <h2>Dashboard Offline</h2>
+  <p id="error-msg">无法连接到 Admin API。请确保 pipeline 已在 <code>--admin</code> 模式下运行。</p>
+  <button id="retry-btn" class="retry-btn">重试连接</button>
+</div>
+
+<div id="dashboard" class="dashboard">
+  <!-- TOP-LEFT: Pipeline Status -->
+  <div class="card" id="panel-status">
+    <div class="card-header">
+      <h2>📊 Pipeline Status</h2>
+      <span id="badge-status" class="badge">--</span>
+    </div>
+    <div class="card-body"></div>
+  </div>
+
+  <!-- TOP-RIGHT: Tasks -->
+  <div class="card" id="panel-tasks">
+    <div class="card-header">
+      <h2>📋 Tasks</h2>
+      <span id="badge-tasks" class="badge">0</span>
+    </div>
+    <div class="card-body">
+      <div class="empty-state">
+        <div class="icon">📭</div>
+        <div>暂无任务</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM-LEFT: Agents -->
+  <div class="card" id="panel-agents">
+    <div class="card-header">
+      <h2>🤖 Agents</h2>
+      <span id="badge-agents" class="badge">0</span>
+    </div>
+    <div class="card-body">
+      <div class="empty-state">
+        <div class="icon">🔌</div>
+        <div>暂无 Agent</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM-RIGHT: Metrics -->
+  <div class="card" id="panel-metrics">
+    <div class="card-header">
+      <h2>📈 Metrics</h2>
+      <span id="badge-metrics" class="badge">▲</span>
+    </div>
+    <div class="card-body">
+      <div class="empty-state">
+        <div class="icon">📊</div>
+        <div>等待数据…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

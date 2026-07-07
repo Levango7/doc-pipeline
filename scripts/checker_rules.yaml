@@ -1,0 +1,71 @@
+rules:
+  p0_empty:
+    level: P0
+    category: content
+    enabled: true
+    description: 文件内容为空
+  p0_size:
+    level: P0
+    category: size
+    enabled: true
+    description: 文件超过大小限制
+    params:
+      max_size_mb: 10
+  p1_control_char:
+    level: P1
+    category: control_char
+    enabled: true
+    description: 发现控制字符
+  p1_unicode_border:
+    level: P1
+    category: unicode_border
+    enabled: true
+    description: Unicode 边框字符（应替换为 ASCII）
+  p1_yaml_syntax:
+    level: P1
+    category: yaml_syntax
+    enabled: true
+    description: YAML 代码块语法错误
+  p1_structure:
+    level: P1
+    category: structure
+    enabled: true
+    description: 章节数量过少
+    params:
+      default_min: 3
+      k8s_min: 10
+      docker_min: 6
+      mysql_min: 8
+  p2_empty_lines:
+    level: P2
+    category: empty_lines
+    enabled: true
+    description: 连续空行过多
+    params:
+      max_consecutive: 5
+  p3_heading_gap:
+    level: P3
+    category: heading_gap
+    enabled: true
+    description: 标题层级跳跃（如 h2 → h4）
+  p3_table_column:
+    level: P3
+    category: table_column
+    enabled: true
+    description: 表格列数不匹配
+  p3_missing_section:
+    level: P3
+    category: missing_section
+    enabled: true
+    description: 缺少推荐章节（FAQ/最佳实践/故障排查）
+
+incremental:
+  enabled: true
+  hash_algorithm: md5
+
+growth_monitor:
+  enabled: true
+  warn_size_growth_ratio: 2.0
+  warn_size_shrink_ratio: 0.5
+  warn_line_growth_ratio: 1.5
+  warn_line_shrink_ratio: 0.7

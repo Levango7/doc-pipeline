@@ -1,0 +1,24 @@
+{
+  "parallel": true,
+  "timeout": 300,
+  "fail_fast": true,
+  "cache_dir": "cache",
+  "log_dir": "logs",
+  "researcher": {
+      "cache_size": 1000,
+      "max_workers": 3,
+      "search_engines": ["mock"],
+      "min_score": 0.3
+    },
+  "writer": {
+    "template_dir": "templates",
+    "similarity_threshold": 0.8
+  },
+  "safe_writer": {
+    "backup_dir": "backups",
+    "backup_ttl_days": 7
+  },
+  "layout": {
+    "dry_run": false
+  }
+}

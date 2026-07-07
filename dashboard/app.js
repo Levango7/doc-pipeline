@@ -1,0 +1,427 @@
+/* ============================================================
+   Doc-Pipeline v3 Dashboard — Vanilla JS
+   ============================================================ */
+
+(function () {
+  'use strict';
+
+  // ----------------------------------------------------------
+  // Configuration
+  // ----------------------------------------------------------
+  const API_BASE = 'http://127.0.0.1:8910';
+  const REFRESH_MS = 5000;
+
+  // ----------------------------------------------------------
+  // State
+  // ----------------------------------------------------------
+  let state = {
+    health: null,
+    tasks: null,
+    agents: null,
+    error: null,
+    lastUpdated: null,
+    loaded: false,
+  };
+
+  let refreshTimer = null;
+
+  // ----------------------------------------------------------
+  // DOM cache
+  // ----------------------------------------------------------
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => document.querySelectorAll(sel);
+
+  const els = {};
+  function cacheDom () {
+    els.errorOverlay   = $('#error-overlay');
+    els.errorMsg       = $('#error-msg');
+    els.retryBtn       = $('#retry-btn');
+    els.dashboard      = $('#dashboard');
+    els.lastUpdated    = $('#last-updated');
+
+    // Panel containers
+    els.statusPanel    = $('#panel-status .card-body');
+    els.tasksPanel     = $('#panel-tasks .card-body');
+    els.agentsPanel    = $('#panel-agents .card-body');
+    els.metricsPanel   = $('#panel-metrics .card-body');
+
+    // Badge counters
+    els.badgeTasks     = $('#badge-tasks');
+    els.badgeAgents    = $('#badge-agents');
+    els.badgeStatus    = $('#badge-status');
+    els.badgeMetrics   = $('#badge-metrics');
+  }
+
+  // ----------------------------------------------------------
+  // Utility
+  // ----------------------------------------------------------
+  function pluralize (n, s) {
+    return n + ' ' + (n === 1 ? s : s + 's');
+  }
+
+  function escapeHtml (str) {
+    const div = document.createElement('div');
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+  }
+
+  function timeAgo (date) {
+    const diff = Date.now() - date.getTime();
+    const sec = Math.floor(diff / 1000);
+    if (sec < 5) return 'just now';
+    if (sec < 60) return sec + 's ago';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min + 'm ago';
+    return date.toLocaleTimeString();
+  }
+
+  function statusClass (status) {
+    switch ((status || '').toLowerCase()) {
+      case 'running': case 'processing': return 'running';
+      case 'pending': case 'waiting':    return 'pending';
+      case 'done': case 'completed':
+      case 'success': case 'ok':         return 'done';
+      case 'failed': case 'error':
+      case 'dead': case 'unhealthy':     return 'failed';
+      default:                           return 'pending';
+    }
+  }
+
+  function statusEmoji (status) {
+    switch ((status || '').toLowerCase()) {
+      case 'running': case 'processing': return '🟢';
+      case 'pending': case 'waiting':    return '🟡';
+      case 'done': case 'completed':
+      case 'success': case 'ok':         return '✅';
+      case 'failed': case 'error':
+      case 'dead': case 'unhealthy':     return '❌';
+      default:                           return '⚪';
+    }
+  }
+
+  // ----------------------------------------------------------
+  // API fetcher
+  // ----------------------------------------------------------
+  async function fetchJson (url) {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return resp.json();
+  }
+
+  async function fetchAll () {
+    const [health, tasks, agents] = await Promise.all([
+      fetchJson(API_BASE + '/health').catch(() => null),
+      fetchJson(API_BASE + '/tasks').catch(() => null),
+      fetchJson(API_BASE + '/agents').catch(() => null),
+    ]);
+    return { health, tasks, agents };
+  }
+
+  // ----------------------------------------------------------
+  // Renderers
+  // ----------------------------------------------------------
+
+  /* ---- Pipeline Status (top-left) ---- */
+  function renderStatus (health) {
+    if (!health || !health.status) {
+      els.statusPanel.innerHTML =
+        '<div class="empty-state"><span class="icon">📡</span>No status data</div>';
+      return;
+    }
+
+    const ok = health.status === 'ok';
+    const statusLabel = ok ? 'ok' : 'error';
+    const subs = health.subscribers != null ? health.subscribers : 0;
+    const metrics = health.metrics || {};
+
+    // Queue depth: try to derive from metrics or store
+    const queueDepth = metrics.queue_depth != null
+      ? metrics.queue_depth
+      : (metrics.pending != null ? metrics.pending : 0);
+
+    // DB store size: from store object
+    let dbSize = '—';
+    if (health.store) {
+      if (typeof health.store.size === 'number') {
+        dbSize = health.store.size;
+      } else if (typeof health.store === 'object') {
+        dbSize = Object.keys(health.store).length;
+      }
+    }
+
+    els.statusPanel.innerHTML =
+      '<div class="status-grid">'
+        /* status pill spans 2 cols */
+        + '<div style="grid-column:1/-1;display:flex;justify-content:center;margin-bottom:4px;">'
+        +   '<span class="status-pill ' + statusLabel + '">'
+        +     '<span class="dot"></span>' + statusLabel
+        +   '</span>'
+        + '</div>'
+        /* subtitle stats */
+        + statCell('Subscribers', subs, 'ok')
+        + statCell('Queue Depth', queueDepth, queueDepth > 10 ? 'warn' : 'ok')
+        + statCell('DB Size', typeof dbSize === 'number' ? pluralize(dbSize, 'entry') : dbSize, 'ok')
+        + statCell('Uptime', metrics.uptime ? fmtUptime(metrics.uptime) : '—', 'ok')
+      + '</div>';
+
+    function statCell (label, value, cls) {
+      return '<div class="stat-item">'
+        + '<div class="stat-label">' + label + '</div>'
+        + '<div class="stat-value ' + cls + '">' + value + '</div>'
+        + '</div>';
+    }
+
+    function fmtUptime (sec) {
+          if (sec < 60) return sec + 's';
+          if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+          const h = Math.floor(sec / 3600);
+          const m = Math.floor((sec % 3600) / 60);
+          return h + 'h ' + m + 's';
+        }
+
+        // Update badge
+        if (els.badgeStatus) els.badgeStatus.textContent = statusLabel;
+      }
+
+      /* ---- Tasks (top-right) ---- */
+  function renderTasks (data) {
+    const tasks = (data && data.tasks) || [];
+    const count = data && data.count != null ? data.count : tasks.length;
+
+    // Update badge
+    if (els.badgeTasks) els.badgeTasks.textContent = count;
+
+    if (!tasks.length) {
+      els.tasksPanel.innerHTML =
+        '<div class="empty-state"><span class="icon">📋</span>No active tasks</div>';
+      return;
+    }
+
+    let html =
+      '<table class="tasks-table">'
+      + '<thead><tr>'
+      +   '<th>ID</th>'
+      +   '<th>Pipeline</th>'
+      +   '<th>Status</th>'
+      +   '<th>Progress</th>'
+      + '</tr></thead>'
+      + '<tbody>';
+
+    for (const t of tasks) {
+      const sCls = statusClass(t.status);
+      const emoji = statusEmoji(t.status);
+      const progress = t.progress != null ? t.progress : 0;
+      const steps = t.steps != null ? t.steps : 100;
+      const pct = Math.min(100, Math.max(0, Math.round((progress / (steps || 100)) * 100)));
+
+      html += '<tr>'
+        + '<td class="task-id" title="' + escapeHtml(t.id) + '">' + escapeHtml(t.id) + '</td>'
+        + '<td class="task-pipeline">' + escapeHtml(t.pipeline || '—') + '</td>'
+        + '<td><span class="badge-status ' + sCls + '">' + emoji + ' ' + escapeHtml(t.status || 'unknown') + '</span></td>'
+        + '<td>'
+        +   '<div style="display:flex;align-items:center;gap:6px;">'
+        +     '<div class="progress-wrap" style="flex:1;">'
+        +       '<div class="progress-fill ' + sCls + '" style="width:' + pct + '%;"></div>'
+        +     '</div>'
+        +     '<span class="progress-text">' + pct + '%</span>'
+        +   '</div>'
+        + '</td>'
+        + '</tr>';
+    }
+
+    html += '</tbody></table>';
+    els.tasksPanel.innerHTML = html;
+  }
+
+  /* ---- Agents (bottom-left) ---- */
+  function renderAgents (data) {
+    // agents can be an object { name: {...} } or an array
+    let list = [];
+    if (data && data.agents) {
+      if (Array.isArray(data.agents)) {
+        list = data.agents;
+      } else if (typeof data.agents === 'object') {
+        list = Object.entries(data.agents).map(([name, info]) => ({
+          name: name,
+          ...(typeof info === 'object' ? info : { status: String(info) }),
+        }));
+      }
+    }
+
+    const count = data && data.count != null ? data.count : list.length;
+    if (els.badgeAgents) els.badgeAgents.textContent = count;
+
+    if (!list.length) {
+      els.agentsPanel.innerHTML =
+        '<div class="empty-state"><span class="icon">🤖</span>No agents registered</div>';
+      return;
+    }
+
+    let html = '<div class="agents-list">';
+    for (const a of list) {
+      const s = (a.status || 'ok').toLowerCase();
+      const sCls = statusClass(s);
+      const sTag = s === 'ok' || s === 'healthy' ? 'ok'
+                 : s === 'warn' || s === 'warning' || s === 'degraded' ? 'warn'
+                 : 'error';
+      const itemCls = sTag === 'error' ? 'agent-item error'
+                    : sTag === 'warn' ? 'agent-item warn'
+                    : 'agent-item';
+
+      const detail = a.type || a.role || a.pipeline || a.host || '';
+
+      html += '<div class="' + itemCls + '">'
+        + '<div class="agent-info">'
+        +   '<span class="agent-name">' + escapeHtml(a.name || 'agent') + '</span>'
+        +   (detail ? '<span class="agent-detail">' + escapeHtml(detail) + '</span>' : '')
+        + '</div>'
+        + '<span class="agent-status-tag ' + sTag + '">' + escapeHtml(a.status || 'ok') + '</span>'
+        + '</div>';
+    }
+    html += '</div>';
+    els.agentsPanel.innerHTML = html;
+  }
+
+  /* ---- Metrics (bottom-right) ---- */
+  function renderMetrics (health) {
+    const metrics = (health && health.metrics) || {};
+
+    // Normalise metric names (accept both camelCase and snake_case)
+    const getMetric = (key) => {
+      const val = metrics[key];
+      if (val != null) return val;
+      // Try alternate naming
+      const alt = key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+      return metrics[alt];
+    };
+
+    const sent     = getMetric('sent') ?? 0;
+    const received = getMetric('received') ?? 0;
+    const failed   = getMetric('failed') ?? 0;
+    const retried  = getMetric('retried') ?? 0;
+    const dlq      = (metrics.dlq != null ? metrics.dlq
+                    : (metrics.dlq_count != null ? metrics.dlq_count
+                    : (health.dlq_count != null ? health.dlq_count
+                    : (health.dlq_entries != null ? health.dlq_entries.length
+                    : 0))));
+
+    const items = [
+      { icon: '📤', label: 'Sent',     value: sent,     cls: 'ok' },
+      { icon: '📥', label: 'Received', value: received, cls: 'ok' },
+      { icon: '❌', label: 'Failed',   value: failed,   cls: failed > 0 ? 'error' : 'ok' },
+      { icon: '🔄', label: 'Retried',  value: retried,  cls: retried > 0 ? 'warn' : 'ok' },
+      { icon: '🗑️', label: 'DLQ',     value: dlq,      cls: dlq > 0 ? 'error' : 'ok' },
+    ];
+
+    let html = '<div class="metrics-grid">';
+    for (const m of items) {
+      html += '<div class="metric-card">'
+        + '<div class="metric-icon">' + m.icon + '</div>'
+        + '<div class="metric-body">'
+        +   '<div class="metric-label">' + m.label + '</div>'
+        +   '<div class="metric-value" style="color:var(--status-' + m.cls + ')">'
+        +     formatNum(m.value)
+        +   '</div>'
+        + '</div>'
+        + '</div>';
+    }
+    html += '</div>';
+    els.metricsPanel.innerHTML = html;
+
+    function formatNum (n) {
+      if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+      if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+      return String(n);
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Main update loop
+  // ----------------------------------------------------------
+  async function update () {
+    try {
+      state.error = null;
+      state.lastUpdated = new Date();
+      const data = await fetchAll();
+      state.health = data.health;
+      state.tasks = data.tasks;
+      state.agents = data.agents;
+
+      // If all three failed, treat it as offline
+      if (!data.health && !data.tasks && !data.agents) {
+        throw new Error('All API endpoints unreachable');
+      }
+
+      state.loaded = true;
+      render();
+    } catch (err) {
+      console.warn('[Dashboard] Fetch error:', err);
+      state.error = err.message || 'Connection failed';
+      renderError();
+    }
+  }
+
+  function render () {
+    if (state.error) return; // error overlay is shown by renderError
+    hideError();
+    if (!state.loaded) return;
+
+    els.lastUpdated.textContent = 'Updated ' + timeAgo(state.lastUpdated);
+
+    renderStatus(state.health);
+    renderTasks(state.tasks);
+    renderAgents(state.agents);
+    renderMetrics(state.health);
+  }
+
+  function renderError () {
+    if (!els.errorOverlay) return;
+    els.errorOverlay.style.display = 'flex';
+    els.dashboard.style.display = 'none';
+    if (els.errorMsg) {
+      els.errorMsg.textContent =
+        state.error || 'Unable to connect to the Doc-Pipeline API at ' + API_BASE;
+    }
+  }
+
+  function hideError () {
+    if (!els.errorOverlay) return;
+    els.errorOverlay.style.display = 'none';
+    els.dashboard.style.display = '';
+  }
+
+  // ----------------------------------------------------------
+  // Retry
+  // ----------------------------------------------------------
+  function handleRetry () {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    update().finally(scheduleRefresh);
+  }
+
+  // ----------------------------------------------------------
+  // Scheduler
+  // ----------------------------------------------------------
+  function scheduleRefresh () {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(async () => {
+      await update();
+      scheduleRefresh();
+    }, REFRESH_MS);
+  }
+
+  // ----------------------------------------------------------
+  // Init
+  // ----------------------------------------------------------
+  function init () {
+    cacheDom();
+    if (els.retryBtn) els.retryBtn.addEventListener('click', handleRetry);
+    els.lastUpdated.textContent = 'Loading…';
+    update().then(scheduleRefresh).catch(() => scheduleRefresh());
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();

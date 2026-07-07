@@ -1,0 +1,11 @@
+# Doc-Pipeline 依赖清单
+# 核心依赖
+PyYAML>=6.0
+requests>=2.28.0
+numpy>=1.24.0
+
+# 搜索引擎（可选，未安装时 researcher 自动降级为 bing/sogou/360）
+duckduckgo-search>=4.0.0
+
+# 异步 I/O（可选，未安装时 fetcher 降级为同步）
+aiohttp>=3.8.0

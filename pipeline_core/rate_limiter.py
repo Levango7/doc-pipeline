@@ -1,0 +1,134 @@
+"""
+RateLimiter v1 - 令牌桶限流器
+=================================
+用于搜索引擎调用、API 请求等外部资源的频率控制。
+
+特点：
+  - 令牌桶算法（平滑突发）
+  - 每 agent/每引擎 独立限流
+  - 线程安全
+  - 支持自适应动态调整速率
+"""
+from __future__ import annotations
+
+import threading
+import time
+from typing import Optional
+
+
+class RateLimiter:
+    """令牌桶限流器"""
+
+    def __init__(self, rate: float = 10.0, burst: int = 20,
+                 name: str = "default"):
+        """
+        Args:
+            rate:  每秒填充的令牌数（QPS）
+            burst: 最大桶容量（允许的瞬时突发量）
+            name:  限流器名称（用于日志/标识）
+        """
+        self.rate = rate
+        self.burst = burst
+        self.name = name
+
+        self._tokens = float(burst)
+        self._last_refill = time.time()
+        self._lock = threading.RLock()
+
+        # 统计
+        self._total_acquired = 0
+        self._total_blocked = 0
+        self._total_wait_ms = 0.0
+
+    def acquire(self, tokens: float = 1.0, block: bool = True,
+                timeout: Optional[float] = None) -> bool:
+        """获取令牌
+
+        Args:
+            tokens: 需要的令牌数
+            block:  是否阻塞等待
+            timeout: 最大等待秒数（None = 无限）
+
+        Returns:
+            True = 获取成功, False = 超时/被拒绝
+        """
+        if tokens <= 0:
+            return True
+
+        if not block:
+            return self._try_acquire(tokens)
+
+        deadline = None if timeout is None else time.time() + timeout
+        while True:
+            got = self._try_acquire(tokens)
+            if got:
+                return True
+
+            if deadline and time.time() >= deadline:
+                self._total_blocked += 1
+                return False
+
+            # 等待一个令牌的时间
+            time.sleep(1.0 / max(self.rate, 1))
+
+    def _try_acquire(self, tokens: float) -> bool:
+        with self._lock:
+            self._refill()
+            if self._tokens >= tokens:
+                self._tokens -= tokens
+                self._total_acquired += 1
+                return True
+            self._total_blocked += 1
+            return False
+
+    def _refill(self):
+        now = time.time()
+        elapsed = now - self._last_refill
+        self._tokens = min(self.burst, self._tokens + elapsed * self.rate)
+        self._last_refill = now
+
+    def update_rate(self, new_rate: float):
+        """动态调整速率"""
+        with self._lock:
+            self.rate = new_rate
+            print(f"[RateLimiter] {self.name} 速率调整为 {new_rate}/s", flush=True)
+
+    @property
+    def available(self) -> float:
+        with self._lock:
+            self._refill()
+            return self._tokens
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "name": self.name,
+                "rate": self.rate,
+                "burst": self.burst,
+                "available_tokens": round(self._tokens, 1),
+                "total_acquired": self._total_acquired,
+                "total_blocked": self._total_blocked,
+            }
+
+
+class RateLimiterRegistry:
+    """全局限流器注册中心"""
+
+    def __init__(self):
+        self._limiters: dict[str, RateLimiter] = {}
+        self._lock = threading.RLock()
+
+    def get_or_create(self, name: str, rate: float = 10.0,
+                      burst: int = 20) -> RateLimiter:
+        with self._lock:
+            if name not in self._limiters:
+                self._limiters[name] = RateLimiter(rate=rate, burst=burst, name=name)
+            return self._limiters[name]
+
+    def get(self, name: str) -> Optional[RateLimiter]:
+        with self._lock:
+            return self._limiters.get(name)
+
+    def all(self) -> dict[str, dict]:
+        with self._lock:
+            return {k: v.stats() for k, v in self._limiters.items()}

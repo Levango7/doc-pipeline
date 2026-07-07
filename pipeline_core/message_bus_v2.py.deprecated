@@ -1,0 +1,440 @@
+"""
+MessageBus v2 - 增强型消息总线
+=============================
+改进点：
+  - 支持异步消息处理
+  - 消息持久化（可选）
+  - 死信队列（DLQ）处理失败消息
+  - 消息追踪和链路追踪
+  - 性能指标收集
+  - 幂等键支持（新增）
+"""
+import json
+import uuid
+import time
+import threading
+import queue
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Callable, Optional
+from collections import defaultdict
+from pathlib import Path
+
+
+class MessageType(Enum):
+    REQUEST = "request"      # 请求（需要响应）
+    RESPONSE = "response"    # 响应
+    PUBLISH = "publish"      # 发布（广播）
+    EVENT = "event"          # 事件（不需响应）
+    COMMAND = "command"      # 命令（需要执行确认）
+
+
+class MessagePriority(Enum):
+    CRITICAL = 0
+    HIGH = 1
+    NORMAL = 2
+    LOW = 3
+
+
+# 模块级幂等键集合（进程内去重）
+_PROCESSED_KEYS: set = set()
+_MAX_PROCESSED_KEYS = 50000  # 超过后触发清理，避免内存泄漏
+
+
+@dataclass
+class Message:
+    """增强型消息载体"""
+    id: str
+    type: MessageType
+    topic: str
+    from_agent: str
+    to_agent: Optional[str]
+    payload: dict
+    timestamp: float = field(default_factory=time.time)
+    correlation_id: Optional[str] = None
+    priority: MessagePriority = MessagePriority.NORMAL
+    retry_count: int = 0
+    max_retries: int = 3
+    trace_id: Optional[str] = None  # 链路追踪ID
+    idempotency_key: Optional[str] = None  # 幂等键：相同键的请求只处理一次
+
+    @classmethod
+    def request(cls, topic: str, from_a: str, to_a: str, payload: dict,
+                priority: MessagePriority = MessagePriority.NORMAL,
+                trace_id: Optional[str] = None,
+                idempotency_key: Optional[str] = None) -> "Message":
+        return cls(
+            id=str(uuid.uuid4()),
+            type=MessageType.REQUEST,
+            topic=topic,
+            from_agent=from_a,
+            to_agent=to_a,
+            payload=payload,
+            correlation_id=str(uuid.uuid4()),
+            priority=priority,
+            trace_id=trace_id or str(uuid.uuid4())[:8],
+            idempotency_key=idempotency_key
+        )
+
+    @classmethod
+    def response(cls, original: "Message", from_a: str, payload: dict) -> "Message":
+        return cls(
+            id=str(uuid.uuid4()),
+            type=MessageType.RESPONSE,
+            topic=original.topic,
+            from_agent=from_a,
+            to_agent=original.from_agent,
+            payload=payload,
+            correlation_id=original.correlation_id,
+            trace_id=original.trace_id
+        )
+
+    @classmethod
+    def publish(cls, topic: str, from_a: str, payload: dict,
+                priority: MessagePriority = MessagePriority.NORMAL) -> "Message":
+        return cls(
+            id=str(uuid.uuid4()),
+            type=MessageType.PUBLISH,
+            topic=topic,
+            from_agent=from_a,
+            to_agent=None,
+            payload=payload,
+            priority=priority,
+            trace_id=str(uuid.uuid4())[:8]
+        )
+
+    @classmethod
+    def event(cls, topic: str, from_a: str, payload: dict) -> "Message":
+        return cls(
+            id=str(uuid.uuid4()),
+            type=MessageType.EVENT,
+            topic=topic,
+            from_agent=from_a,
+            to_agent=None,
+            payload=payload,
+            trace_id=str(uuid.uuid4())[:8]
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "type": self.type.value,
+            "topic": self.topic,
+            "from": self.from_agent,
+            "to": self.to_agent,
+            "payload": self.payload,
+            "ts": self.timestamp,
+            "corr": self.correlation_id,
+            "priority": self.priority.name,
+            "retry": self.retry_count,
+            "trace": self.trace_id,
+            "idempotency_key": self.idempotency_key,
+        }
+
+
+class MessageMetrics:
+    """消息指标收集器"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.sent_count = 0
+        self.received_count = 0
+        self.failed_count = 0
+        self.retry_count = 0
+        self.avg_latency_ms = 0.0
+        self._latencies: list[float] = []
+
+    def record_sent(self):
+        with self._lock:
+            self.sent_count += 1
+
+    def record_received(self):
+        with self._lock:
+            self.received_count += 1
+
+    def record_failed(self):
+        with self._lock:
+            self.failed_count += 1
+
+    def record_retry(self):
+        with self._lock:
+            self.retry_count += 1
+
+    def record_latency(self, ms: float):
+        with self._lock:
+            self._latencies.append(ms)
+            if len(self._latencies) > 100:
+                self._latencies = self._latencies[-100:]
+            self.avg_latency_ms = sum(self._latencies) / len(self._latencies)
+
+    def to_dict(self) -> dict:
+        with self._lock:
+            return {
+                "sent": self.sent_count,
+                "received": self.received_count,
+                "failed": self.failed_count,
+                "retries": self.retry_count,
+                "avg_latency_ms": round(self.avg_latency_ms, 2),
+            }
+
+
+class MessageBus:
+    """增强型消息总线 - 插件化通信中枢"""
+
+    def __init__(self, persist_dir: Optional[str] = None, enable_metrics: bool = True):
+        # 订阅者: topic -> [(callback, priority)]
+        self._subscribers: dict[str, list[tuple[Callable, int]]] = defaultdict(list)
+        # 响应回调: correlation_id -> callback
+        self._callbacks: dict[str, Callable] = {}
+        # 死信队列
+        self._dlq: queue.Queue = queue.Queue()
+        # 锁
+        self._lock = threading.RLock()
+        # 日志
+        self._log: list[Message] = []
+        self._max_log = 500
+        # 指标
+        self._metrics = MessageMetrics() if enable_metrics else None
+        # 持久化
+        self._persist_dir = Path(persist_dir) if persist_dir else None
+        if self._persist_dir:
+            self._persist_dir.mkdir(parents=True, exist_ok=True)
+        # 运行状态
+        self._running = True
+        # 异步队列（必须在 _async_thread 启动前创建）
+        self._async_queue: queue.Queue = queue.Queue()
+        # 异步处理线程
+        self._async_thread = threading.Thread(target=self._async_loop, daemon=True)
+        self._async_thread.start()
+
+    # ──────────────────────────────────────────────
+    # 订阅 / 退订
+    # ──────────────────────────────────────────────
+
+    def subscribe(self, topic: str, callback: Callable[[Message], None], priority: int = 50):
+        """订阅主题，支持优先级（越小越优先）"""
+        with self._lock:
+            self._subscribers[topic].append((callback, priority))
+            self._subscribers[topic].sort(key=lambda x: x[1])
+            # 支持通配符
+            for pat in self._wildcards(topic):
+                if (callback, priority) not in self._subscribers[pat]:
+                    self._subscribers[pat].append((callback, priority))
+                    self._subscribers[pat].sort(key=lambda x: x[1])
+
+    def unsubscribe(self, topic: str, callback: Callable):
+        """退订主题"""
+        with self._lock:
+            for key in [topic] + self._wildcards(topic):
+                self._subscribers[key] = [
+                    (cb, p) for cb, p in self._subscribers.get(key, [])
+                    if cb != callback
+                ]
+
+    def _wildcards(self, topic: str) -> list[str]:
+        """生成通配符模式"""
+        parts = topic.split(".")
+        return ["*", ".".join([("*" if i < len(parts) - 1 else p) for i, p in enumerate(parts)])]
+
+    # ──────────────────────────────────────────────
+    # 发送消息
+    # ──────────────────────────────────────────────
+
+    def send(self, msg: Message, async_mode: bool = False) -> None:
+        """发送消息"""
+        if self._metrics:
+            self._metrics.record_sent()
+
+        if async_mode:
+            self._async_queue.put(msg)
+            return
+
+        self._process_message(msg)
+
+    def _process_message(self, msg: Message):
+                    """处理消息（含幂等去重）"""
+                    start_time = time.time()
+
+                    # 忽略响应消息（不需要处理）
+                    if msg.type == MessageType.RESPONSE:
+                        return
+
+                    # 幂等检查
+                    if msg.idempotency_key:
+                        with self._lock:
+                            if msg.idempotency_key in _PROCESSED_KEYS:
+                                # 已处理过，直接返回缓存的响应（如果有）
+                                return
+                            _PROCESSED_KEYS.add(msg.idempotency_key)
+                            if len(_PROCESSED_KEYS) > _MAX_PROCESSED_KEYS:
+                                _PROCESSED_KEYS.clear()
+
+                    with self._lock:
+                        self._log.append(msg)
+                        if len(self._log) > self._max_log:
+                            self._log = self._log[-self._max_log:]
+
+                    # 收集订阅者
+                    with self._lock:
+                        callbacks = list(self._subscribers.get(msg.topic, []))
+                        for pat in self._wildcards(msg.topic):
+                            for cb, p in self._subscribers.get(pat, []):
+                                if (cb, p) not in callbacks:
+                                    callbacks.append((cb, p))
+
+                    # 按优先级排序执行
+                    failed_callbacks = []
+                    replied = False  # 标记是否已回复
+                    for callback, priority in sorted(callbacks, key=lambda x: x[1]):
+                        try:
+                            result = callback(msg)
+                            if self._metrics:
+                                self._metrics.record_received()
+                
+                            # 如果是 REQUEST 类型且有返回值，且尚未回复，自动回复
+                            if msg.type == MessageType.REQUEST and result is not None and not replied:
+                                self.reply(msg, msg.to_agent or "unknown", result)
+                                replied = True
+                        
+                        except Exception as e:
+                            failed_callbacks.append((callback, e))
+                            if self._metrics:
+                                self._metrics.record_failed()
+                            print(f"[MessageBus] 回调异常: {e}")
+
+                    # 处理失败
+                    for callback, error in failed_callbacks:
+                        if msg.retry_count < msg.max_retries:
+                            msg.retry_count += 1
+                            if self._metrics:
+                                self._metrics.record_retry()
+                            # 延迟重试
+                            threading.Timer(0.5 * msg.retry_count,
+                                           lambda: self._process_message(msg)).start()
+                        else:
+                            self._dlq.put({"msg": msg.to_dict(), "error": str(error)})
+
+                    # 记录延迟
+                    if self._metrics:
+                        latency_ms = (time.time() - start_time) * 1000
+                        self._metrics.record_latency(latency_ms)
+
+                    # 持久化
+                    if self._persist_dir:
+                        self._persist_message(msg)
+
+    def _async_loop(self):
+        """异步消息处理循环"""
+        while self._running:
+            try:
+                msg = self._async_queue.get(timeout=0.1)
+                self._process_message(msg)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[MessageBus] 异步处理错误: {e}")
+
+    def _persist_message(self, msg: Message):
+        """持久化消息到文件"""
+        if not self._persist_dir:
+            return
+        try:
+            date_str = time.strftime("%Y%m%d")
+            log_file = self._persist_dir / f"messages_{date_str}.jsonl"
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(msg.to_dict(), ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def request(self, topic: str, from_a: str, to_a: str,
+                payload: dict, timeout: float = 60,
+                priority: MessagePriority = MessagePriority.NORMAL,
+                idempotency_key: Optional[str] = None) -> Optional[dict]:
+        """发送请求并等待响应（支持幂等键）"""
+        msg = Message.request(topic, from_a, to_a, payload, priority, idempotency_key=idempotency_key)
+        result: list[Optional[dict]] = [None]
+        event = threading.Event()
+
+        def handler(resp: Message):
+            result[0] = resp.payload
+            event.set()
+
+        with self._lock:
+            self._callbacks[msg.correlation_id] = handler
+
+        try:
+            self.send(msg)
+            # 等待响应
+            if event.wait(timeout=timeout):
+                return result[0]
+            else:
+                if self._metrics:
+                    self._metrics.record_failed()
+                return None
+        finally:
+            with self._lock:
+                self._callbacks.pop(msg.correlation_id, None)
+
+    def publish(self, topic: str, from_a: str, payload: dict,
+                priority: MessagePriority = MessagePriority.NORMAL,
+                async_mode: bool = True):
+        """发布广播消息"""
+        msg = Message.publish(topic, from_a, payload, priority)
+        self.send(msg, async_mode=async_mode)
+
+    def emit_event(self, topic: str, from_a: str, payload: dict):
+        """发送事件（异步）"""
+        msg = Message.event(topic, from_a, payload)
+        self.send(msg, async_mode=True)
+
+    def reply(self, original_msg: Message, from_a: str, payload: dict):
+        """回复消息"""
+        resp = Message.response(original_msg, from_a, payload)
+        # 查找并调用回调
+        with self._lock:
+            callback = self._callbacks.get(original_msg.correlation_id)
+        if callback:
+            callback(resp)
+
+    # ──────────────────────────────────────────────
+    # 查询
+    # ──────────────────────────────────────────────
+
+    def history(self, topic: Optional[str] = None, limit: int = 50) -> list[dict]:
+        """查询消息历史"""
+        with self._lock:
+            msgs = self._log[-limit:]
+        if topic:
+            msgs = [m for m in msgs if m.topic == topic or m.topic.endswith(topic)]
+        return [m.to_dict() for m in msgs]
+
+    def topics(self) -> list[str]:
+        """查看已订阅的主题"""
+        with self._lock:
+            return list(self._subscribers.keys())
+
+    def get_metrics(self) -> Optional[dict]:
+        """获取消息指标"""
+        return self._metrics.to_dict() if self._metrics else None
+
+    def get_dlq(self, clear: bool = False) -> list[dict]:
+        """获取死信队列"""
+        items = []
+        while not self._dlq.empty():
+            try:
+                items.append(self._dlq.get_nowait())
+                if not clear:
+                    self._dlq.put(items[-1])
+            except queue.Empty:
+                break
+        return items
+
+    def shutdown(self):
+        """关闭消息总线"""
+        self._running = False
+        if self._async_thread.is_alive():
+            self._async_thread.join(timeout=2.0)
+
+    def __repr__(self):
+        metrics = self.get_metrics()
+        return f"<MessageBus topics={len(self.topics())} metrics={metrics}>"
