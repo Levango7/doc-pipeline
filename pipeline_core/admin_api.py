@@ -266,8 +266,10 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_replay_dlq(self, dlq_id: int):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
-        ok = self.orch.bus.replay_dlq(dlq_id)
-        self._json({"replayed": ok, "dlq_id": dlq_id})
+        # 交由 orchestrator 真正重放（重新执行故障 node 并回填）
+        result = self.orch.replay_dlq(dlq_id)
+        self._json({"replayed": result is not None, "dlq_id": dlq_id,
+                     "result": result})
 
     def _handle_dashboard(self):
         if not self.orch:

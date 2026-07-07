@@ -133,7 +133,8 @@ class QualityGateAgent(BaseAgent):
             self._rebuild_from_profile(run_config)
 
         # 多维度评分（按 profile weights）
-        scores = self._score_all(content)
+        queries = payload.get("queries", []) or []
+        scores = self._score_all(content, queries)
         overall = self._overall_score(scores)
 
         # 风格检查（从 profile 规则）
@@ -184,7 +185,7 @@ class QualityGateAgent(BaseAgent):
 
     # ── 多维度评分 ─────────────────────
 
-    def _score_all(self, content: str) -> dict[str, float]:
+    def _score_all(self, content: str, queries: list[str] = None) -> dict[str, float]:
         return {
             "completeness": self._score_completeness(content),
             "structure": self._score_structure(content),
@@ -192,7 +193,38 @@ class QualityGateAgent(BaseAgent):
             "citation": self._score_citations(content),
             "depth": self._score_depth(content),
             "substance": self._score_substance(content),
+            "topic_relevance": self._score_topic_relevance(content, queries),
         }
+
+    def _score_topic_relevance(self, content: str, queries: list[str]) -> float:
+        """主题相关度：文档是否真的在讲 query 主题（而非跑题）
+
+        从 queries 提取核心关键词，检查是否出现在文档标题/章节/正文中。
+        无 query 时返回中性分（不惩罚）。
+        """
+        if not queries:
+            return 70.0  # 无 query 时中性，不阻断
+        import re
+        # 提取所有 query 的核心词（去噪音）
+        stop = {"的", "了", "是", "在", "我", "有", "和", "与", "及", "一个", "这份",
+                "介绍", "简单", "基本", "概念", "生成", "一份", "文档", "技术", "测试",
+                "这是", "用于", "验证", "流水线", "是否", "正常", "工作", "a", "the",
+                "of", "to", "and", "is", "for", "this", "that", "with", "in", "on"}
+        tokens: set[str] = set()
+        for q in queries:
+            for w in re.findall(r"[一-鿿]{2,}|[a-zA-Z]{2,}", q.lower()):
+                if w not in stop:
+                    tokens.add(w)
+        if not tokens:
+            return 70.0
+
+        text = content.lower()
+        head = "\n".join(content.split("\n")[:30]).lower()  # 标题+目录+前两章
+        hit = sum(1 for t in tokens if t.lower() in text)
+        hit_head = sum(1 for t in tokens if t.lower() in head)
+        coverage = hit / len(tokens)
+        # 头部命中加权（跑题文档头部往往没有关键词）
+        return round(min(100.0, coverage * 70 + hit_head / len(tokens) * 30), 1)
 
     def _score_substance(self, content: str) -> float:
         """内容实质度：检测水话 / 车轱辘话 / 空洞，而非仅看格式"""

@@ -280,9 +280,14 @@ class WriterAgent(BaseAgent):
         """从完整文章构建文档（先骨架，再填内容）"""
         self.log_info(f"任务 {task_id}: 从 {len(articles)} 篇文章构建文档")
 
-        # Step 1: 读取所有本地文章内容
+        # Step 1: 读取所有本地文章内容（按相关性降序，优先用相关素材）
+        sorted_articles = sorted(
+            articles,
+            key=lambda a: a.get("relevance", 0) or 0,
+            reverse=True,
+        )
         article_contents = []
-        for art in articles:
+        for art in sorted_articles:
             local_path = art.get("local_path", "")
             if local_path and os.path.exists(local_path):
                 try:

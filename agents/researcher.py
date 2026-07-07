@@ -44,6 +44,7 @@ class SearchResult:
     source: str
     query: str
     score: float = 0.0  # 质量评分
+    relevance: float = 0.0  # query 相关性评分
     fetched_at: float = field(default_factory=time.time)
     
     def to_dict(self) -> dict:
@@ -54,6 +55,7 @@ class SearchResult:
             "source": self.source,
             "query": self.query,
             "score": self.score,
+            "relevance": self.relevance,
             "fetched_at": self.fetched_at,
         }
 
@@ -160,7 +162,13 @@ class ResearcherAgent(BaseAgent):
         if not queries:
             return {"status": "ok", "task_id": task_id, "total": 0,
                     "results": [], "query_count": 0, "engines_used": self._search_engines}
-        
+
+        # 清洗 query：过滤噪音/验证性/无意义的行
+        queries = self._clean_queries(queries)
+        if not queries:
+            return {"status": "ok", "task_id": task_id, "total": 0,
+                    "results": [], "query_count": 0, "engines_used": self._search_engines}
+
         self.log_info(f"任务 {task_id}: {len(queries)} 个查询")
         
         results = []
@@ -543,37 +551,91 @@ class ResearcherAgent(BaseAgent):
         
         return results
 
+    def _clean_queries(self, queries: list[str]) -> list[str]:
+        """清洗查询：过滤噪音/验证性/无实质意义的行"""
+        import re
+        cleaned = []
+        noise_patterns = [
+            r"^这是一个测试", r"^用于验证", r"验证流水线", r"是否正常工作",
+            r"^test\b", r"^测试\b", r"^\s*$", r"请生成", r"帮我写",
+        ]
+        for q in queries:
+            q = q.strip()
+            if len(q) < 4:
+                continue
+            if any(re.search(p, q, re.I) for p in noise_patterns):
+                continue
+            # 过滤纯标点/纯停用词
+            meaningful = re.findall(r"[一-鿿]{2,}|[a-zA-Z]{2,}", q)
+            if not meaningful:
+                continue
+            cleaned.append(q)
+        return cleaned
+
     def _score_and_filter(self, results: list[SearchResult]) -> list[SearchResult]:
-        """质量评分和过滤"""
+        """质量评分和过滤（含 query 相关性）"""
         for r in results:
-            # 简单评分算法
-            score = 0.0
-            
-            # 标题长度适中
+            # 1. 基础质量分（结构完整度）
+            struct = 0.0
             if 10 <= len(r.title) <= 100:
-                score += 0.3
-            
-            # 摘要非空
+                struct += 0.15
             if len(r.snippet) > 50:
-                score += 0.3
-            
-            # 有来源
+                struct += 0.15
             if r.source:
-                score += 0.2
-            
-            # URL 有效
+                struct += 0.1
             if r.url and r.url.startswith("http"):
-                score += 0.2
-            
-            r.score = min(score, 1.0)
-        
-        # 过滤低质量结果
+                struct += 0.1
+
+            # 2. query 相关性分（核心：内容是否跟查询有关）
+            rel = self._relevance_score(r, r.query)
+            r.relevance = rel
+
+            # 综合分：相关性占主导（60%），结构占 40%
+            r.score = min(struct * 0.4 + rel * 0.6, 1.0)
+
+        # 过滤低质量 + 不相关结果
         filtered = [r for r in results if r.score >= self._min_score]
-        
+        # 额外硬过滤：与 query 完全无关（rel=0）的结果直接丢弃
+        filtered = [r for r in filtered if getattr(r, "relevance", 0) > 0]
+
         # 按评分排序
         filtered.sort(key=lambda x: x.score, reverse=True)
-        
         return filtered
+
+    def _relevance_score(self, r: SearchResult, query: str) -> float:
+        """计算搜索结果与 query 的相关性（0~1）
+
+        策略：从 query 提取关键词（去停用词），统计在标题+摘要中的命中比例。
+        完全无命中 → 0；关键词全部命中 → 1。
+        """
+        if not query:
+            return 0.5
+        import re
+        # query 关键词：去标点、去停用词，取中文 2+ 字词和英文单词
+        stop = {"的", "了", "是", "在", "我", "有", "和", "与", "及", "一个", "这份",
+                "介绍", "简单", "基本", "概念", "生成", "一份", "文档", "技术", "测试",
+                "这是", "用于", "验证", "流水线", "是否", "正常", "工作", "a", "the",
+                "of", "to", "and", "is", "for", "this", "that", "with", "in", "on"}
+        tokens: list[str] = []
+        # 中文：按字/词拆（简单 2-gram 覆盖）
+        cn = re.findall(r"[一-鿿]{2,}", query)
+        for w in cn:
+            if w not in stop and len(w) >= 2:
+                tokens.append(w)
+        # 英文：单词
+        en = re.findall(r"[a-zA-Z]{2,}", query.lower())
+        for w in en:
+            if w not in stop:
+                tokens.append(w)
+        if not tokens:
+            return 0.5
+
+        text = f"{r.title} {r.snippet}".lower()
+        hit = 0
+        for t in tokens:
+            if t.lower() in text:
+                hit += 1
+        return hit / len(tokens)
 
     def _deduplicate(self, results: list[SearchResult]) -> list[SearchResult]:
         """基于 URL + 标题去重"""

@@ -6,12 +6,13 @@ max_regenerations: 3
 
 # 评分维度及其权重（总和 = 1.0）
 weights:
-  completeness: 0.20
-  structure: 0.15
+  completeness: 0.18
+  structure: 0.12
   readability: 0.10
-  citation: 0.15
+  citation: 0.12
   depth: 0.10
-  substance: 0.20    # 内容实质度（信息密度/重复率/实质信号）
+  substance: 0.18    # 内容实质度（信息密度/重复率/实质信号）
+  topic_relevance: 0.20  # 主题相关度（文档是否真讲 query 主题）
   style: 0.10      # 风格检查权重
 
 # 风格规则（可禁用）

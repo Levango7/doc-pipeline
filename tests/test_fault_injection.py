@@ -177,3 +177,75 @@ class TestOrchestratorCircuitBreaker:
         assert tripped is True, "连续 3 次失败应触发熔断"
         breaker = o._cb_registry.get_or_create("mock_fail")
         assert breaker.state == CircuitState.OPEN
+
+
+# ── 4. DLQ 真实自愈（REQUEST 消息重放回填 task）──
+
+class _ReplayMockAgent(BaseAgent):
+    """自愈测试中用的 mock agent：记录 handle 调用次数"""
+    def __init__(self, name, meta=None, config=None, bus=None, registry=None):
+        if meta is None:
+            meta = AgentMeta(name=name, version="1.0", description="mock")
+        super().__init__(name, meta, config or {}, bus, registry)
+        self.handle_calls = 0
+        self.last_msg = None
+    def handle(self, msg):
+        self.handle_calls += 1
+        self.last_msg = msg
+        return {"status": "ok", "content": "修复后的内容", "calls": self.handle_calls}
+
+
+class TestDLQSelfHeal:
+    def test_request_replay_re_executes_and_backfills(self):
+        """REQUEST 死信 → orchestrator.replay_dlq → 真实重执行 node → 回填 task.result"""
+        from pipeline_core import PipelineOrchestrator
+        from pipeline_core.message_bus_v3 import MessageBus
+        from types import SimpleNamespace
+
+        o = PipelineOrchestrator(checkpoint_dir=str(Path(__file__).parent / ".test_checkpoints"))
+        # 用真实总线（带持久化 store）
+        db_path = str(Path(__file__).parent / ".test_dlq_replay.db")
+        if os.path.exists(db_path):
+            os.remove(db_path)
+        o.bus = MessageBus(db_path=db_path)
+
+        # 注册真实 mock agent 到 registry（模拟 writer node）
+        agent = _ReplayMockAgent("writer")
+        o.registry.register(AgentMeta(name="writer", version="1.0", description="mock"), agent)
+
+        # 构造一条 REQUEST 死信（模拟 writer 故障进 DLQ）
+        from pipeline_core.message_bus_v3 import Message, MessageType
+        dlq_msg = Message(
+            topic="writer.input", payload={"content": "原始输入", "task_id": "task-abc", "node": "writer"},
+            msg_type=MessageType.REQUEST, from_agent="orchestrator", to_agent="writer",
+            correlation_id="c1", trace_id="t1",
+        )
+        o.bus._store.move_to_dlq(dlq_msg, "boom (injected fault)")
+        dlq = o.bus.list_dlq()
+        assert len(dlq) == 1, "应有一条死信"
+        dlq_id = dlq[0]["id"]
+
+        # 把 task 放进内存（模拟正在运行）
+        task = SimpleNamespace(
+            id="task-abc",
+            result={},
+            dag_nodes={"writer": SimpleNamespace(result=None, status="failed")},
+        )
+        o._running_tasks["task-abc"] = task
+
+        # 执行真实重放（直接调 agent.handle）
+        res = o.replay_dlq(dlq_id)
+        assert res is not None
+        assert res["node"] == "writer"
+        assert res["task_id"] == "task-abc"
+        assert res["result"]["status"] == "ok"
+
+        # 验证 agent 被真实重执行
+        assert agent.handle_calls == 1, "agent.handle 应被真实重调一次"
+        # 验证回填
+        assert task.result["writer"]["content"] == "修复后的内容", "task.result 应被回填"
+        assert task.dag_nodes["writer"].status == "success", "node 状态应恢复"
+        # 验证重放计数递增
+        assert o.bus.list_dlq()[0]["replay_count"] >= 1
+
+        o.bus._shutdown_event.set()

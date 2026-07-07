@@ -1010,6 +1010,27 @@ class PipelineOrchestrator:
 
         return task
 
+    def _extract_queries(self, input_file: str, node: "ExecutionNode") -> list[str]:
+        """从输入文件提取查询词（按行，过滤注释/空行/噪音行）"""
+        import re
+        with open(input_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        noise = [r"^这是一个测试", r"^用于验证", r"验证流水线", r"是否正常工作",
+                 r"^test\b", r"^测试\b", r"请生成", r"帮我写"]
+        queries = []
+        for line in content.split("\n"):
+            q = line.strip()
+            if not q or q.startswith("#"):
+                continue
+            if len(q) < 4:
+                continue
+            if any(re.search(p, q, re.I) for p in noise):
+                continue
+            queries.append(q)
+        if not queries:
+            queries = [node.agent_config.config.get("default_query", "Python 异步编程")]
+        return queries
+
     def _execute_node_from_scheduler(self, task: PipelineTask, node: "ExecutionNode",
                                      input_file: str, plan: ExecutionPlan) -> dict:
         """由 run_plan 调度：基于 ExecutionNode 执行单个节点"""
@@ -1026,25 +1047,15 @@ class PipelineOrchestrator:
         from .registry import AgentStatus
         self.registry.set_status(base_agent, AgentStatus.RUNNING)
 
-        # 查询词提取（按池实例分片）
-        queries = []
-        if base_agent == "researcher":
-            try:
-                with open(input_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                all_queries = [line.strip() for line in content.split("\n")
-                               if line.strip() and not line.startswith("#")]
-                if not all_queries:
-                    all_queries = [node.agent_config.config.get("default_query", "Python 异步编程")]
-                # 分片分配：每个 pool 实例处理一部分 query
-                if pool_size > 1 and len(all_queries) >= pool_size:
-                    # 轮询分片
-                    queries = all_queries[pool_idx::pool_size]
-                else:
-                    # 池数多于查询数：全部复制，或 pool_0 独占
-                    queries = all_queries if pool_idx == 0 else []
-            except Exception:
-                queries = [node.agent_config.config.get("default_query", "Python 异步编程")]
+        # 查询词提取（所有节点共享完整 queries；researcher 按池分片）
+        try:
+            all_queries = self._extract_queries(input_file, node)
+        except Exception:
+            all_queries = [node.agent_config.config.get("default_query", "Python 异步编程")]
+        if base_agent == "researcher" and pool_size > 1 and len(all_queries) >= pool_size:
+            queries = all_queries[pool_idx::pool_size]
+        else:
+            queries = all_queries
 
         output_file = (
             node.agent_config.config.get("output")
@@ -1246,6 +1257,75 @@ class PipelineOrchestrator:
 
     def get_task(self, task_id: str) -> Optional[PipelineTask]:
         return self._running_tasks.get(task_id)
+
+    def replay_dlq(self, dlq_id: int) -> Optional[dict]:
+        """重放一条死信：重新执行故障 node 并回填结果
+
+        支持两种死信：
+        - REQUEST 消息（agent 故障）：重新 bus.request 执行该 node，回填 task.result
+        - EVENT 消息：直接广播回原 topic
+        返回重放结果 dict；若 dlq_id 不存在返回 None。
+        """
+        if not self.bus._store:
+            return None
+        entry = self.bus._store.get_dlq_entry(dlq_id)
+        if not entry:
+            return None
+
+        payload = entry["payload"]          # Message.to_dict()
+        topic = entry["topic"]               # 外层 topic（如 writer.input）
+        inner = payload.get("payload", {})   # 原消息的业务 payload
+
+        # 更新重放计数
+        self.bus._store.replay_dlq(dlq_id)
+
+        # 判断消息类型：REQUEST 由 orchestrator 重执行，EVENT 由总线广播
+        msg_type = payload.get("msg_type", "event")
+        if msg_type == "request" or topic.endswith(".input"):
+            node_name = inner.get("node") or payload.get("to_agent") or topic.replace(".input", "")
+            task_id = inner.get("task_id", "")
+            # 真实自愈：直接重新执行故障 node 的 agent（与正常执行路径一致）
+            result = None
+            instance = self.registry.get_instance(node_name)
+            if instance is not None:
+                try:
+                    from .message_bus_v3 import Message, MessageType
+                    msg = Message(
+                        topic=topic,
+                        payload=inner,
+                        msg_type=MessageType.REQUEST,
+                        from_agent=payload.get("from_agent", "orchestrator.replay"),
+                        to_agent=node_name,
+                        correlation_id=payload.get("correlation_id", ""),
+                        trace_id=payload.get("trace_id", ""),
+                    )
+                    result = instance.handle(msg)
+                except Exception as e:
+                    self._logger.error(f"replay node {node_name} 失败: {e}")
+                    return {"node": node_name, "task_id": task_id, "error": str(e)}
+            else:
+                # fallback：路由到总线（若已注册 subscriber）
+                result = self.bus.request(
+                    topic=topic, from_a="orchestrator.replay",
+                    to_a=node_name, payload=inner, timeout=300,
+                )
+            # 回填 task.result（若 task 仍在内存）
+            with self._lock:
+                task = self._running_tasks.get(task_id)
+                if task and isinstance(result, dict):
+                    task.result[node_name] = result
+                    if node_name in task.dag_nodes:
+                        task.dag_nodes[node_name].result = result
+                        task.dag_nodes[node_name].status = "success"
+            # 广播完成事件，让依赖节点可继续
+            self.bus.publish(f"{node_name}.done", "orchestrator.replay", result)
+            return {"node": node_name, "task_id": task_id, "result": result}
+
+        # EVENT 类型：直接广播回原 topic
+        original_payload = payload.get("payload", payload)
+        from_agent = payload.get("from_agent", "dlq_replay")
+        self.bus.publish(topic, from_agent, original_payload)
+        return {"topic": topic, "replayed": True}
 
     def list_tasks(self, status: Optional[TaskStatus] = None) -> list[PipelineTask]:
         tasks = list(self._running_tasks.values())

@@ -242,7 +242,7 @@ class PersistentStore:
         conn.commit()
 
     def replay_dlq(self, dlq_id: int) -> Optional[dict]:
-        """取一条死信数据并更新重放计数（真实重投由 MessageBus 层完成）"""
+        """取一条死信数据并更新重放计数（真实重投由调用方完成）"""
         conn = self._get_conn()
         row = conn.execute(
             "SELECT msg_id, topic, payload_json, error_msg, replay_count FROM dlq WHERE id=?",
@@ -258,6 +258,21 @@ class PersistentStore:
             "payload": json.loads(row[2]),
             "error": row[3],
             "replay_count": row[4] + 1,
+        }
+
+    def get_dlq_entry(self, dlq_id: int) -> Optional[dict]:
+        """仅取一条死信数据，不更新计数、不重投（供 orchestrator 解析）"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, msg_id, topic, payload_json, error_msg, failed_at, replay_count FROM dlq WHERE id=?",
+            (dlq_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "msg_id": row[1], "topic": row[2],
+            "payload": json.loads(row[3]), "error": row[4],
+            "failed_at": row[5], "replay_count": row[6],
         }
 
     def list_dlq(self, limit: int = 50) -> list[dict]:
