@@ -885,10 +885,14 @@ class PipelineOrchestrator:
                                         # ── 回滚到 level 开始时的状态 ──
                                         self._rollback_task(task, level_snapshot)
 
-                                # 熔断统计
-                                if self._circuit_breaker(node, task):
-                                    task.status = TaskStatus.FAILED
-                                    break
+                                # 熔断统计（仅在实际失败时记录）
+                                if dag_node.status == "failed":
+                                    if self._circuit_breaker(node, task):
+                                        task.status = TaskStatus.FAILED
+                                        break
+                                else:
+                                    # 成功：重置该 agent 熔断计数
+                                    self._circuit_breaker_success(node)
 
                                 # fail_fast
                                 if plan.fail_fast:
@@ -1153,7 +1157,7 @@ class PipelineOrchestrator:
         )
 
     def _circuit_breaker(self, node: ExecutionNode, task: PipelineTask) -> bool:
-        """Per-agent 熔断器：超过阈值后跳过该 agent"""
+        """Per-agent 熔断器：失败达到阈值后返回 True（表示应熔断/跳过）"""
         cb_cfg = node.agent_config.circuit_breaker
         if not cb_cfg or not cb_cfg.get("enabled", False):
             return False
@@ -1165,12 +1169,25 @@ class PipelineOrchestrator:
             recovery_timeout=cb_cfg.get("recovery_timeout", 60),
         )
 
+        # 记录一次失败（调用方已确认 node 失败）
         breaker.record_failure()
         if not breaker.allow_request():
             print(f"[CircuitBreaker] {agent_name} 已熔断，跳过")
             return True
 
         return False
+
+    def _circuit_breaker_success(self, node: ExecutionNode):
+        """node 成功时重置该 agent 的熔断计数"""
+        cb_cfg = node.agent_config.circuit_breaker
+        if not cb_cfg or not cb_cfg.get("enabled", False):
+            return
+        breaker = self._cb_registry.get_or_create(
+            name=node.agent_name,
+            failure_threshold=cb_cfg.get("failure_threshold", 5),
+            recovery_timeout=cb_cfg.get("recovery_timeout", 60),
+        )
+        breaker.record_success()
 
     # ─── 报告和回调 ─────────────────────────────
 

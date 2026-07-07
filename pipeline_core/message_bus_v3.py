@@ -242,7 +242,7 @@ class PersistentStore:
         conn.commit()
 
     def replay_dlq(self, dlq_id: int) -> Optional[dict]:
-        """将一条死信重新放回消息队列"""
+        """取一条死信数据并更新重放计数（真实重投由 MessageBus 层完成）"""
         conn = self._get_conn()
         row = conn.execute(
             "SELECT msg_id, topic, payload_json, error_msg, replay_count FROM dlq WHERE id=?",
@@ -597,7 +597,18 @@ class MessageBus:
         return self._store.list_dlq(limit) if self._store else []
 
     def replay_dlq(self, dlq_id: int) -> Optional[dict]:
-        return self._store.replay_dlq(dlq_id) if self._store else None
+        """重放一条死信：取出数据并真实重新投递到原 topic"""
+        if not self._store:
+            return None
+        data = self._store.replay_dlq(dlq_id)
+        if not data:
+            return None
+        # 真实重投：把原始 payload 重新 publish 到原 topic
+        payload = data["payload"]
+        original_payload = payload.get("payload", payload)
+        from_agent = payload.get("from_agent", "dlq_replay")
+        self.publish(data["topic"], from_agent, original_payload)
+        return data
 
     # ─── 关闭 ─────────────────────────────────
 
