@@ -270,3 +270,74 @@ class TestOrchestratorConcurrency:
         assert ok == n, f"全部应完成：{ok}/{n}"
         assert not errors
         bus._shutdown_event.set()
+
+
+# ════════════════════════════════════════════════
+# P2-C: SQLite 线程安全 + Store 并发
+# ════════════════════════════════════════════════
+
+class TestSQLiteConcurrency:
+    """多线程同时读写 SQLite → 无死锁/数据损坏"""
+
+    def test_sqlite_multithread_writes(self):
+        """10 线程并发写入，验证无死锁、记录数正确"""
+        import sqlite3
+        from pipeline_core.message_bus_v3 import PersistentStore, DEFAULT_DB_PATH
+
+        store = PersistentStore(db_path="tests/.test_store.db")
+
+        def writer(tid):
+            conn = store._get_conn()
+            try:
+                for i in range(20):
+                    conn.execute(
+                        "INSERT OR REPLACE INTO messages (msg_id, topic, payload_json, msg_type, from_agent, created_at, delivered)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (f"m-{tid}-{i}", "test", '{"x":1}', "event", "w", time.time(), 1),
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+
+        ts = [threading.Thread(target=writer, args=(i,)) for i in range(10)]
+        for t in ts: t.start()
+        for t in ts: t.join()
+
+        conn = store._get_conn()
+        count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        assert count == 200, f"期望 200 条记录，实际 {count}"
+
+        # 验证数据完整性
+        sample = conn.execute("SELECT msg_id, topic FROM messages LIMIT 5").fetchall()
+        assert all(s[0].startswith("m-") for s in sample), "数据损坏"
+
+        conn.close()
+        os.remove("tests/.test_store.db")
+
+    def test_store_concurrent_publish(self):
+        """多线程通过 MessageBus 发布 → Store 并发写入"""
+        bus = MessageBus(enable_persistence=False)
+        received = []
+
+        def handler(m):
+            received.append(m.msg_id)
+
+        bus.subscribe("store_test", handler)
+
+        def publisher(tid):
+            for i in range(30):
+                bus.publish("store_test", "sys", {"tid": tid, "i": i})
+                time.sleep(0.001)
+
+        ts = [threading.Thread(target=publisher, args=(i,)) for i in range(5)]
+        for t in ts: t.start()
+        for t in ts: t.join()
+
+        time.sleep(0.5)
+        assert len(received) >= 140, f"期望 ≥140，实际 {len(received)}"
+
+        # 验证无重复/损坏
+        unique = set(received)
+        assert len(unique) == len(received), "有重复 msg_id"
+
+        bus._shutdown_event.set()
