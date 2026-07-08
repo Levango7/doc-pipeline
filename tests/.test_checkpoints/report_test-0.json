@@ -1,0 +1,12 @@
+{
+  "id": "test-0",
+  "pipeline": "c",
+  "input": "C:\\Users\\winge\\AppData\\Local\\Temp\\tmpcyyyv7xt\\i.md",
+  "status": "failed",
+  "progress": 0,
+  "steps": [],
+  "started_at": 1783468185.178033,
+  "finished_at": 1783468185.1794686,
+  "duration_sec": 0.0,
+  "error": "'types.SimpleNamespace' object has no attribute 'parallelism'"
+}

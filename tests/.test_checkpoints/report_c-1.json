@@ -1,0 +1,20 @@
+{
+  "id": "c-1",
+  "pipeline": "c",
+  "input": "C:\\Users\\winge\\AppData\\Local\\Temp\\tmpvput1rwl\\i.md",
+  "status": "done",
+  "progress": 100,
+  "steps": [
+    {
+      "name": "plan_cp_l0_fast_pool_0",
+      "agent": "fast_pool_0",
+      "status": "success",
+      "duration_ms": 2.0,
+      "error": ""
+    }
+  ],
+  "started_at": 1783519957.7345316,
+  "finished_at": 1783519957.740531,
+  "duration_sec": 0.01,
+  "error": ""
+}
