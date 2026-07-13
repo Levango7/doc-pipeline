@@ -328,7 +328,10 @@ class FetcherAgent(BaseAgent):
         scored = []
         for blk in blocks:
             blk = re.sub(r'<[^>]+>', '', blk)          # 去标签
-            blk = re.sub(r'&[a-z]+;', ' ', blk)          # 去 HTML 实体
+            blk = re.sub(r'&[a-zA-Z]+;', ' ', blk)      # 去命名 HTML 实体（含大写）
+            blk = re.sub(r'&#\d+;', ' ', blk)            # 去数字实体
+            blk = re.sub(r'&#x[0-9a-fA-F]+;', ' ', blk) # 去十六进制实体
+            blk = re.sub(r'[¶§†‡•·]', ' ', blk)         # 去常见 Unicode 噪声字符
             blk = re.sub(r'\s+', ' ', blk).strip()
             if len(blk) < 30:
                 continue
@@ -347,6 +350,10 @@ class FetcherAgent(BaseAgent):
         # 4. 兜底：若密度法提取过少，退回到全文档去标签
         if len(text) < MIN_CONTENT_LENGTH:
             fallback = re.sub(r'<[^>]+>', ' ', html)
+            fallback = re.sub(r'&[a-zA-Z]+;', ' ', fallback)       # 命名实体（含大写）
+            fallback = re.sub(r'&#\d+;', ' ', fallback)             # 数字实体 ¶
+            fallback = re.sub(r'&#x[0-9a-fA-F]+;', ' ', fallback)  # 十六进制实体 ¶
+            fallback = re.sub(r'[¶§†‡•·]', ' ', fallback)          # Unicode 噪声字符
             fallback = re.sub(r'\s+', ' ', fallback).strip()
             if len(fallback) > len(text):
                 text = fallback
@@ -364,8 +371,19 @@ class FetcherAgent(BaseAgent):
             if re.search(pattern, text, re.IGNORECASE):
                 return False
 
-        # 3. 软相关度：不再硬过滤，交由质量门控评估
-        # （原 match_count==0 直接过滤会误杀大量用词不同的相关页）
+        # 3. 内容级主题相关性：query 中的英文专有名词必须在正文中出现
+        #    例如 query="Apache Kafka 核心架构" → "kafka" 必须在正文中出现
+        #    这能过滤掉搜索结果中"Apache"匹配但实际是 Apache HTTP Server 的无关页面
+        query_en_tokens = re.findall(r'[a-zA-Z]{3,}', query)
+        # 排除通用词
+        generic_en = {"apache", "the", "and", "for", "with", "from", "that", "this", "are", "was"}
+        specific_en = [t.lower() for t in query_en_tokens if t.lower() not in generic_en]
+        if specific_en:
+            text_lower = text.lower()
+            # 至少 1 个专有名词要在正文中出现
+            if not any(tok in text_lower for tok in specific_en):
+                return False
+
         return True
 
     def _content_relevance(self, text: str, query: str) -> float:

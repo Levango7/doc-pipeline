@@ -305,7 +305,11 @@ class WriterAgent(BaseAgent):
             reverse=True,
         )
         article_contents = []
+        seen_urls = set()  # 按 URL 去重，避免 pool 研究者返回相同 URL 导致重复
         for art in sorted_articles:
+            art_url = art.get("url", "")
+            if art_url and art_url in seen_urls:
+                continue
             local_path = art.get("local_path", "")
             if local_path and os.path.exists(local_path):
                 try:
@@ -317,6 +321,8 @@ class WriterAgent(BaseAgent):
                         "source": art.get("source", ""),
                         "text": text,
                     })
+                    if art_url:
+                        seen_urls.add(art_url)
                 except Exception:
                     continue
 
@@ -343,10 +349,11 @@ class WriterAgent(BaseAgent):
 
         # 每个章节填充内容（TF-IDF 语义匹配）
         all_refs = []
+        global_seen_paras = set()  # 全局段落去重，避免同一段落在多个章节中重复出现
         for sec in skeleton:
             content_parts.append(f"## {sec['heading']}")
             content_parts.append("")
-            filled = self._fill_section(sec, article_contents)
+            filled = self._fill_section(sec, article_contents, global_seen_paras)
             if filled["paragraphs"]:
                 for para in filled["paragraphs"]:
                     content_parts.append(para)
@@ -655,10 +662,12 @@ class WriterAgent(BaseAgent):
         return skeleton
 
     def _fill_section(self, section: dict,
-                      articles: list[dict]) -> dict:
+                      articles: list[dict],
+                      global_seen: set | None = None) -> dict:
         """从文章中提取与章节相关的段落（TF-IDF 语义匹配）"""
         keywords = section.get("keywords", [])
         paragraphs = []
+        seen_para_hashes = global_seen if global_seen is not None else set()
 
         for art in articles:
             text = art.get("text", "")
@@ -675,6 +684,11 @@ class WriterAgent(BaseAgent):
                 if re.search(r'^(navigation|menu|footer|copyright|©|广告|推荐|热门|相关文章)',
                              p, re.IGNORECASE):
                     continue
+                # 段落内容去重：取前 200 字的 hash 作为签名
+                para_sig = hashlib.sha256(p[:200].encode()).hexdigest()
+                if para_sig in seen_para_hashes:
+                    continue
+                seen_para_hashes.add(para_sig)
                 paragraphs.append({"text": p, "title": title, "url": url})
 
         if not paragraphs:

@@ -657,21 +657,34 @@ class ResearcherAgent(BaseAgent):
 
         策略：从 query 提取关键词（去停用词），统计在标题+摘要中的命中比例。
         完全无命中 → 0；关键词全部命中 → 1。
+        中文用 2-gram 滑动窗口拆分，避免长中文串作为一个 token 永远不匹配。
         """
         if not query:
             return 0.5
         import re
-        # query 关键词：去标点、去停用词，取中文 2+ 字词和英文单词
+        # query 关键词：去标点、去停用词，取中文 2-gram 词和英文单词
         stop = {"的", "了", "是", "在", "我", "有", "和", "与", "及", "一个", "这份",
                 "介绍", "简单", "基本", "概念", "生成", "一份", "文档", "技术", "测试",
                 "这是", "用于", "验证", "流水线", "是否", "正常", "工作", "a", "the",
                 "of", "to", "and", "is", "for", "this", "that", "with", "in", "on"}
         tokens: list[str] = []
-        # 中文：按字/词拆（简单 2-gram 覆盖）
-        cn = re.findall(r"[一-鿿]{2,}", query)
-        for w in cn:
-            if w not in stop and len(w) >= 2:
-                tokens.append(w)
+        # 中文：先按连接词/介词拆分，再取 2+ 字片段作为 token
+        # "核心架构与生产实践" → "核心架构", "生产实践" → 各自作为 token
+        cn_runs = re.findall(r"[一-鿿]{2,}", query)
+        cn_connectors = re.compile(r"[与和及的等在对于以]")
+        for run in cn_runs:
+            # 按连接词拆分
+            segments = cn_connectors.split(run)
+            for seg in segments:
+                seg = seg.strip()
+                if len(seg) >= 2 and seg not in stop:
+                    tokens.append(seg)
+                # 长段额外取 2-gram 补充匹配能力
+                if len(seg) > 4:
+                    for i in range(len(seg) - 1):
+                        gram = seg[i:i+2]
+                        if gram not in stop:
+                            tokens.append(gram)
         # 英文：单词
         en = re.findall(r"[a-zA-Z]{2,}", query.lower())
         for w in en:
