@@ -236,6 +236,20 @@ class WriterAgent(BaseAgent):
 
         payload = msg.payload
         task_id = payload.get("task_id", "")
+
+        # 从 per-agent config 刷新运行时配置（__init__ 时 config 为空，需在此更新）
+        runtime_cfg = payload.get("config", {})
+        if runtime_cfg:
+            if "prompt_profile" in runtime_cfg:
+                self._prompt_profile = runtime_cfg["prompt_profile"]
+            if "llm_api_url" in runtime_cfg:
+                self._llm_api_url = runtime_cfg["llm_api_url"]
+            if "llm_api_key" in runtime_cfg:
+                self._llm_api_key = runtime_cfg["llm_api_key"]
+            if "llm_model" in runtime_cfg:
+                self._llm_model = runtime_cfg["llm_model"]
+            self.log_info(f"运行时配置已刷新: prompt_profile={self._prompt_profile}, model={self._llm_model}")
+
         template_name = payload.get("template", "default")
         title = payload.get("title", "自动生成文档")
         query = payload.get("query", "")
@@ -272,6 +286,12 @@ class WriterAgent(BaseAgent):
                     results = pending_entry[1]
 
         if not results:
+            # 无搜索结果也无文章：若 LLM 可用，仍尝试基于 query 生成文档
+            if query and self._llm_api_key:
+                self.log_info(f"任务 {task_id}: 无文章无摘要，用 LLM 基于主题生成文档")
+                restructured = self._restructure_document("", [], query, title)
+                if restructured:
+                    return {"status": "ok", "task_id": task_id, "content": restructured}
             return {
                 "status": "ok",
                 "task_id": task_id,
@@ -286,6 +306,20 @@ class WriterAgent(BaseAgent):
         content = self._generate_document(chunks, template_name, title)
         with self._pending_lock:
             self.pending_results.pop(task_id, None)
+
+        # LLM 重构：即使只有搜索摘要，也用 LLM 生成完整技术文档
+        if query and self._llm_api_key:
+            # 将搜索摘要转为伪文章上下文
+            snippet_articles = []
+            for r in results[:5]:
+                snippet_articles.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "text": r.get("snippet", ""),
+                })
+            restructured = self._restructure_document(content, snippet_articles, query, title)
+            if restructured:
+                content = restructured
 
         self.report(AgentStatus.RUNNING, f"整合完成，生成 {len(content)} 字符")
         return {
