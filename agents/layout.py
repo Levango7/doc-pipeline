@@ -1,4 +1,4 @@
-"""Layout Agent v2 - 排版优化插件"""
+"""Layout Agent v3.1 - 排版优化插件"""
 import time
 from pathlib import Path
 import sys
@@ -6,8 +6,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
 
 AGENT_NAME = "layout"
-AGENT_VERSION = "2.0"
-AGENT_DESC = "排版优化 Agent - 智能图表修复、表格对齐"
+AGENT_VERSION = "3.1"
+AGENT_DESC = "排版优化 Agent - 智能图表修复、表格对齐（不直接写文件，由 safe_writer 统一写入）"
 AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 70
 INPUT_TOPICS = ["checker.done", "layout.optimize", "layout.input"]
@@ -28,18 +28,19 @@ class LayoutAgent(BaseAgent):
         content = payload.get("content", "")
         target = payload.get("target") or payload.get("file") or payload.get("target_file")
 
-        # 优先处理 message 内的 content（DAG 流式传递）
         if content:
             result = self._optimize_content(content)
             result["content"] = result.get("optimized", content)
+            if target:
+                result["target"] = target
             return result
 
         if not target:
             return {"status": "error", "message": "未指定文件或内容"}
-        return self._optimize(target)
+        return self._optimize_file(target, content)
 
     def _optimize_content(self, content: str) -> dict:
-        """直接优化 content 字符串（不依赖文件）"""
+        """直接优化 content 字符串（不依赖文件，DAG 流式传递模式）"""
         try:
             scripts_dir = Path(__file__).parent.parent / "scripts"
             if str(scripts_dir) not in sys.path:
@@ -56,35 +57,36 @@ class LayoutAgent(BaseAgent):
             self.log_warning(f"排版优化失败（保留原文）: {e}")
             return {"status": "ok", "optimized": content, "fixed": 0}
 
-    def _optimize(self, target: str) -> dict:
+    def _optimize_file(self, target: str, content: str = "") -> dict:
+        """文件模式：读取文件、优化、返回结果（不直接写入，由 safe_writer 统一写入）"""
         import os
         target = str(Path(target).resolve())
-        if not os.path.exists(target):
-            return {"status": "error", "message": f"文件不存在: {target}"}
+        if not content:
+            if not os.path.exists(target):
+                return {"status": "error", "message": f"文件不存在: {target}"}
+            try:
+                with open(target, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            except Exception as e:
+                return {"status": "error", "message": f"读取文件失败: {e}"}
         try:
             scripts_dir = Path(__file__).parent.parent / "scripts"
             if str(scripts_dir) not in sys.path:
                 sys.path.insert(0, str(scripts_dir))
             from layout_optimizer import LayoutOptimizer
-            with open(target, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
             opt = LayoutOptimizer(content)
-            result = opt.run()
-            fixed = result.get("stats", {}).get("borders_fixed", 0)
+            opt.run()
+            fixed = opt.get_result_stats().get("borders_fixed", 0) if hasattr(opt, "get_result_stats") else 0
             self.report(AgentStatus.RUNNING, f"修复 {fixed} 处边框")
-            if fixed > 0 and not self._dry_run:
-                new_content = opt.get_result()
-                from safe_writer import safe_write
-                backup_dir = Path(target).parent / "backups"
-                write_result = safe_write(
-                    target=target,
-                    content=new_content,
-                    backup_dir=str(backup_dir),
-                    reason="layout_optimizer",
-                    agent="LayoutAgent"
-                )
-                result["write_result"] = write_result
-            return {"status": "ok", "target": target, "borders_fixed": fixed, "has_changes": fixed > 0}
+            optimized = opt.get_result() if not self._dry_run else content
+            return {
+                "status": "ok",
+                "target": target,
+                "content": optimized,
+                "optimized": optimized,
+                "fixed": fixed,
+                "has_changes": fixed > 0,
+            }
         except Exception as e:
             self.log_error(f"排版优化失败: {e}")
             return {"status": "error", "message": str(e)}
@@ -92,7 +94,13 @@ class LayoutAgent(BaseAgent):
     def handle_checker_done(self, msg: Message):
         payload = msg.payload
         target = payload.get("target")
-        if target:
-            self.report(AgentStatus.RUNNING, f"排版优化 {Path(target).name}")
-            result = self._optimize(target)
+        content = payload.get("content", "")
+        if target or content:
+            self.report(AgentStatus.RUNNING, f"排版优化 {Path(target).name if target else 'content'}")
+            if content:
+                result = self._optimize_content(content)
+                if target:
+                    result["target"] = target
+            else:
+                result = self._optimize_file(target)
             self.publish("layout.done", result)

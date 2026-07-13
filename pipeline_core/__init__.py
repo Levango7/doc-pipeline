@@ -1,30 +1,37 @@
 """
-pipeline_core v2 - 文档生成流水线核心框架（改进版）
-================================================
-改进点：
-  - 消息总线支持异步广播和死信队列
+pipeline_core v3 - 文档生成流水线核心框架
+=========================================
+核心特性：
+  - 消息总线支持异步广播和死信队列 (v3)
   - Registry 支持健康检查和自动恢复
   - BaseAgent 支持结构化日志和性能统计
-  - PipelineOrchestrator 支持断点续传和可视化
+  - PipelineOrchestrator 支持 DAG 并行、断点续传、自动重做
+  - Per-agent 熔断器 + 令牌桶限流
+  - QualityGate 多维度评分 + 自动反馈循环
+  - 临时文件自动清理
 """
 
+from .config import ConfigCenter
 from .registry import Registry, AgentMeta, AgentStatus, AgentStats, AgentPriority
+from .base_agent import BaseAgent, AgentLogger
 from .pipeline import PipelineOrchestrator, PipelineTask, TaskStatus, StepResult
 from .message_bus_v3 import MessageBus, Message, MessageType, MessagePriority, MessageMetrics
+from .message_store import PersistentStore
 from .circuit_breaker import CircuitBreakerRegistry, backoff_with_jitter
 from .scheduler import Scheduler, ExecutionPlan, ExecutionNode, AgentConfig
+from .agent_loader import AgentLoader
+from .dag_executor import DAGExecutor
+from .checkpoint_manager import CheckpointManager
 
 __all__ = [
-    # Message Bus
+    "ConfigCenter",
     "MessageBus", "Message", "MessageType", "MessagePriority", "MessageMetrics",
-    # Registry
+    "PersistentStore",
     "Registry", "AgentMeta", "AgentStatus", "AgentStats", "AgentPriority",
-    # Base Agent
     "BaseAgent", "AgentLogger",
-    # Pipeline
     "PipelineOrchestrator", "PipelineTask", "TaskStatus", "StepResult",
-    # Scheduler (v3)
     "Scheduler", "ExecutionPlan", "ExecutionNode", "AgentConfig",
+    "AgentLoader", "DAGExecutor", "CheckpointManager",
 ]
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"

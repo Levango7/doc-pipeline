@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import threading
 from pathlib import Path
 from datetime import datetime
 import sys
@@ -27,6 +28,7 @@ class SafeWriterAgent(BaseAgent):
         super().__init__(name, meta, config, message_bus, registry)
         self.pending: dict = {}
         self._default_backup_dir = config.get("backup_dir", "backups")
+        self._manifest_lock = threading.Lock()
         self.log_info(f"SafeWriter v{AGENT_VERSION} 初始化完成")
 
     def handle(self, msg: Message) -> dict | None:
@@ -68,59 +70,74 @@ class SafeWriterAgent(BaseAgent):
         fd, tmp_path = tempfile.mkstemp(suffix=Path(target).suffix, prefix=".tmp_", dir=tmp_dir)
         os.close(fd)
         try:
-            content_bytes = content.encode(enc)
-            with open(tmp_path, "wb") as f:
-                f.write(content_bytes)
-            new_size = len(content_bytes)
-            new_lines = content.count("\n") + 1
-            self.log_info(f"写入临时: {new_size:,} bytes, {new_lines} 行")
-        except Exception as e:
-            return {"status": "error", "message": f"写入失败: {e}"}
-        issues = []
-        if len(content.strip()) == 0:
-            issues.append("P0: 内容为空")
-        if info.get("exists") and new_size > 0:
-            r = new_size / info["size"]
-            if r < 0.5:
-                issues.append(f"P1: 文件<50% ({info['size']:,}->{new_size:,})")
-            if r > 5.0:
-                issues.append(f"P1: 文件>5倍 ({info['size']:,}->{new_size:,})")
-        if issues:
-            for iss in issues:
-                self.log_warning(f"验证失败: {iss}")
-            os.remove(tmp_path)
-            return {"status": "error", "issues": issues, "backup": backup_path}
-        try:
-            if os.path.exists(target):
-                os.remove(target)
-            os.rename(tmp_path, target)
-            man = self._load_manifest(manifest_path)
-            rel = target
-            if rel not in man["files"]:
-                man["files"][rel] = {"backups": [], "latest": None}
-            man["files"][rel]["backups"].append({
-                "path": backup_path,
-                "timestamp": datetime.now().isoformat(),
-                "size": info.get("size", 0),
-                "reason": reason,
-                "agent": self.name,
-                "task_id": task_id,
-            })
-            man["files"][rel]["latest"] = man["files"][rel]["backups"][-1]
-            self._save_manifest(manifest_path, man)
-            self._cleanup(backup_dir, manifest_path)
-            self.log_info(f"完成: {target} ({new_size:,} bytes)")
-            return {"status": "ok", "backup": backup_path, "size": new_size, "lines": new_lines}
-        except Exception as e:
-            self.log_error(f"替换失败: {e}")
-            return {"status": "error", "message": str(e)}
+            try:
+                content_bytes = content.encode(enc)
+                with open(tmp_path, "wb") as f:
+                    f.write(content_bytes)
+                new_size = len(content_bytes)
+                new_lines = content.count("\n") + 1
+                self.log_info(f"写入临时: {new_size:,} bytes, {new_lines} 行")
+            except Exception as e:
+                return {"status": "error", "message": f"写入失败: {e}"}
+            issues = []
+            if len(content.strip()) == 0:
+                issues.append("P0: 内容为空")
+            if info.get("exists") and new_size > 0:
+                r = new_size / info["size"]
+                if r < 0.5:
+                    issues.append(f"P1: 文件<50% ({info['size']:,}->{new_size:,})")
+                if r > 5.0:
+                    issues.append(f"P1: 文件>5倍 ({info['size']:,}->{new_size:,})")
+            if issues:
+                for iss in issues:
+                    self.log_warning(f"验证失败: {iss}")
+                return {"status": "error", "issues": issues, "backup": backup_path}
+            try:
+                os.replace(tmp_path, target)
+                tmp_path = None
+                with self._manifest_lock:
+                    man = self._load_manifest(manifest_path)
+                    rel = target
+                    if rel not in man["files"]:
+                        man["files"][rel] = {"backups": [], "latest": None}
+                    man["files"][rel]["backups"].append({
+                        "path": backup_path,
+                        "timestamp": datetime.now().isoformat(),
+                        "size": info.get("size", 0),
+                        "reason": reason,
+                        "agent": self.name,
+                        "task_id": task_id,
+                    })
+                    man["files"][rel]["latest"] = man["files"][rel]["backups"][-1]
+                    self._save_manifest(manifest_path, man)
+                self._cleanup(backup_dir, manifest_path)
+                self.log_info(f"完成: {target} ({new_size:,} bytes)")
+                return {"status": "ok", "backup": backup_path, "size": new_size, "lines": new_lines}
+            except Exception as e:
+                self.log_error(f"替换失败: {e}")
+                return {"status": "error", "message": str(e)}
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
     def _get_info(self, path):
         if not Path(path).exists():
             return {"exists": False}
+        st = os.stat(path)
+        size = st.st_size
+        md5 = hashlib.md5()
+        lines = 1
         with open(path, "rb") as f:
-            raw = f.read()
-        return {"exists": True, "size": len(raw), "lines": raw.count(b"\n") + 1, "md5": hashlib.md5(raw).hexdigest()}
+            while True:
+                chunk = f.read(8192)
+                if not chunk:
+                    break
+                md5.update(chunk)
+                lines += chunk.count(b"\n")
+        return {"exists": True, "size": size, "lines": lines, "md5": md5.hexdigest()}
 
     def _load_manifest(self, path):
         if not Path(path).exists():

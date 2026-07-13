@@ -15,6 +15,7 @@ import time
 import asyncio
 import hashlib
 import tempfile
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 import sys
@@ -83,6 +84,7 @@ class FetcherAgent(BaseAgent):
         self._retry = int(config.get("retry", 2))
         # 下载量统计
         self._stats = {"attempted": 0, "success": 0, "failed": 0, "filtered": 0}
+        self._stats_lock = threading.Lock()
         self.log_info(f"Fetcher v{AGENT_VERSION} 初始化完成，临时目录: {self._temp_dir}"
                       f" | Async I/O: {'启用' if USE_ASYNC else '未安装 aiohttp，使用同步模式'}"
                       f" | UA池: {len(self._ua_pool)} | 重试: {self._retry}")
@@ -98,6 +100,7 @@ class FetcherAgent(BaseAgent):
 
         if not results:
             self.log_info(f"任务 {task_id}: 无搜索结果")
+            self.cleanup_task_temp(task_id)
             return {"status": "ok", "task_id": task_id, "articles": [], "query": query}
 
         results = results[:max_downloads]
@@ -107,28 +110,40 @@ class FetcherAgent(BaseAgent):
         task_dir = self._temp_dir / task_id
         task_dir.mkdir(parents=True, exist_ok=True)
 
-        if USE_ASYNC:
-            # 异步并发下载（aiohttp）
+        with self._stats_lock:
+            self._stats = {"attempted": 0, "success": 0, "failed": 0, "filtered": 0}
+
+        use_async = USE_ASYNC
+        try:
+            asyncio.get_running_loop()
+            use_async = False
+        except RuntimeError:
+            pass
+        if use_async:
             articles = asyncio.run(self._fetch_all_async(results, query, task_id, task_dir))
         else:
-            # 同步顺序下载（线程池并发）
             articles = self._fetch_all_sync(results, query, task_id, task_dir)
 
-        self.log_info(f"任务 {task_id}: 下载完成 ({self._stats['success']}成功/{self._stats['failed']}失败/{self._stats['filtered']}过滤)")
+        with self._stats_lock:
+            stats_snapshot = dict(self._stats)
 
-        return {
+        self.log_info(f"任务 {task_id}: 下载完成 ({stats_snapshot['success']}成功/{stats_snapshot['failed']}失败/{stats_snapshot['filtered']}过滤)")
+
+        result = {
             "status": "ok",
             "task_id": task_id,
             "query": query,
             "articles": articles,
             "stats": {
                 "total": len(results),
-                "attempted": self._stats["attempted"],
-                "success": self._stats["success"],
-                "failed": self._stats["failed"],
-                "filtered": self._stats["filtered"],
+                "attempted": stats_snapshot["attempted"],
+                "success": stats_snapshot["success"],
+                "failed": stats_snapshot["failed"],
+                "filtered": stats_snapshot["filtered"],
             },
         }
+        self.cleanup_task_temp(task_id)
+        return result
 
     def _fetch_all_sync(self, results: list, query: str, task_id: str, task_dir: Path) -> list:
         """同步模式：线程池并发下载"""
@@ -172,7 +187,8 @@ class FetcherAgent(BaseAgent):
         if not url:
             return None
 
-        self._stats["attempted"] += 1
+        with self._stats_lock:
+            self._stats["attempted"] += 1
         last_err = None
         for attempt in range(self._retry + 1):
             ua = self._ua_pool[(idx + attempt) % len(self._ua_pool)]
@@ -183,15 +199,17 @@ class FetcherAgent(BaseAgent):
                         if resp.status != 200:
                             last_err = f"HTTP {resp.status}"
                             if resp.status in (403, 429, 503):
-                                continue  # 重试换 UA
-                            self._stats["failed"] += 1
+                                continue
+                            with self._stats_lock:
+                                self._stats["failed"] += 1
                             self.log_debug(f"  {last_err}: {url[:60]}")
                             return None
                         html = await resp.text()
 
                 plain_text = self._extract_text(html)
                 if not self._is_content_usable(plain_text, url, query):
-                    self._stats["filtered"] += 1
+                    with self._stats_lock:
+                        self._stats["filtered"] += 1
                     self.log_debug(f"  过滤不可用内容: {url[:60]}")
                     return None
 
@@ -204,7 +222,8 @@ class FetcherAgent(BaseAgent):
                     f.write(f"{'='*60}\n\n")
                     f.write(plain_text)
 
-                self._stats["success"] += 1
+                with self._stats_lock:
+                    self._stats["success"] += 1
                 return {
                     "title": title,
                     "url": url,
@@ -219,7 +238,8 @@ class FetcherAgent(BaseAgent):
             except Exception as e:
                 last_err = str(e)
                 continue
-        self._stats["failed"] += 1
+        with self._stats_lock:
+            self._stats["failed"] += 1
         self.log_debug(f"  下载失败(重试{self._retry}次): {url[:60]} - {last_err}")
         return None
 
@@ -232,27 +252,30 @@ class FetcherAgent(BaseAgent):
         if not url:
             return None
 
-        self._stats["attempted"] += 1
+        with self._stats_lock:
+            self._stats["attempted"] += 1
         last_err = None
         for attempt in range(self._retry + 1):
             ua = self._ua_pool[(idx + attempt) % len(self._ua_pool)]
             try:
                 headers = {**self._base_headers, "User-Agent": ua}
-                r = requests.get(url, timeout=PAGE_TIMEOUT, headers=headers,
-                                 allow_redirects=True)
-                if r.status_code != 200:
-                    last_err = f"HTTP {r.status_code}"
-                    if r.status_code in (403, 429, 503):
-                        continue
-                    self._stats["failed"] += 1
-                    self.log_debug(f"  {last_err}: {url[:60]}")
-                    return None
+                with requests.get(url, timeout=PAGE_TIMEOUT, headers=headers,
+                                 allow_redirects=True) as r:
+                    if r.status_code != 200:
+                        last_err = f"HTTP {r.status_code}"
+                        if r.status_code in (403, 429, 503):
+                            continue
+                        with self._stats_lock:
+                            self._stats["failed"] += 1
+                        self.log_debug(f"  {last_err}: {url[:60]}")
+                        return None
 
-                html = r.text
-                plain_text = self._extract_text(html)
+                    html = r.text
+                    plain_text = self._extract_text(html)
 
                 if not self._is_content_usable(plain_text, url, query):
-                    self._stats["filtered"] += 1
+                    with self._stats_lock:
+                        self._stats["filtered"] += 1
                     self.log_debug(f"  过滤不可用内容: {url[:60]}")
                     return None
 
@@ -265,7 +288,8 @@ class FetcherAgent(BaseAgent):
                     f.write(f"{'='*60}\n\n")
                     f.write(plain_text)
 
-                self._stats["success"] += 1
+                with self._stats_lock:
+                    self._stats["success"] += 1
                 return {
                     "title": title,
                     "url": url,
@@ -280,7 +304,8 @@ class FetcherAgent(BaseAgent):
             except Exception as e:
                 last_err = str(e)
                 continue
-        self._stats["failed"] += 1
+        with self._stats_lock:
+            self._stats["failed"] += 1
         self.log_debug(f"  下载失败(重试{self._retry}次): {url[:60]} - {last_err}")
         return None
 
@@ -355,3 +380,45 @@ class FetcherAgent(BaseAgent):
         t = text.lower()
         hit = sum(1 for tok in q_tokens if tok in t)
         return min(hit / len(q_tokens), 1.0)
+
+    def cleanup_task_temp(self, task_id: str) -> int:
+        """清理指定任务的临时文件，返回清理的文件数量"""
+        import shutil
+        count = 0
+        if not self._temp_dir.exists():
+            return 0
+        for item in self._temp_dir.iterdir():
+            if task_id in item.name:
+                try:
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+                    count += 1
+                except OSError:
+                    pass
+        if count:
+            self.log_info(f"清理任务 {task_id} 的临时文件: {count} 个")
+        return count
+
+    def cleanup_stale_temp(self, max_age_hours: int = 24) -> int:
+        """清理过期的临时文件（默认 24 小时前）"""
+        import shutil
+        import time as _time
+        cutoff = _time.time() - max_age_hours * 3600
+        count = 0
+        if not self._temp_dir.exists():
+            return 0
+        for item in self._temp_dir.iterdir():
+            try:
+                if item.stat().st_mtime < cutoff:
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+                    count += 1
+            except OSError:
+                pass
+        if count:
+            self.log_info(f"清理过期临时文件: {count} 个（>{max_age_hours}h）")
+        return count

@@ -18,7 +18,6 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from enum import Enum, auto
 from typing import Callable, Optional, Any
-from collections import defaultdict
 
 
 class AgentStatus(Enum):
@@ -57,6 +56,11 @@ class AgentMeta:
     config_schema: dict = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
     config: dict = field(default_factory=dict)  # 实例配置，用于 respawn 恢复
+    extracts_queries: bool = False       # agent 从输入文件提取查询词
+    supports_regeneration: bool = False  # agent 触发质量重做循环
+    regeneration_target: str = ""        # 重做目标 agent 名称
+    regeneration_recheck: str = ""       # 重做后重新检查的 agent 名称
+    results_merge: str = ""              # 池化结果合并策略: "extend" | "first"
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
@@ -116,7 +120,7 @@ class Registry:
         self._agent_metas: dict[str, AgentMeta] = {}
         self._instances: dict[str, Any] = {}
         self._status: dict[str, AgentStatus] = {}
-        self._stats: dict[str, AgentStats] = defaultdict(AgentStats)
+        self._stats: dict[str, AgentStats] = {}
         self._registry_file = registry_file
         self._lock = threading.RLock()
         self._health_check_enabled = enable_health_check
@@ -191,6 +195,11 @@ class Registry:
                 results.append(result)
             return results
 
+    def list_agent_names(self) -> list[str]:
+        """返回所有已注册 agent 的名称列表"""
+        with self._lock:
+            return list(self._agents.keys())
+
     def find(self, role: str) -> list[dict]:
         """按角色/主题查找 Agent"""
         with self._lock:
@@ -207,24 +216,29 @@ class Registry:
             remaining = set(self._agents.keys())
             visited = set()
             temp_mark = set()
+            cycle_path = []
 
-            def visit(name: str):
+            def visit(name: str, path: list[str]):
                 if name in temp_mark:
-                    return
+                    cycle_start = path.index(name)
+                    cycle = path[cycle_start:] + [name]
+                    raise ValueError(f"检测到循环依赖: {' -> '.join(cycle)}")
                 if name in visited:
                     return
                 temp_mark.add(name)
+                path.append(name)
                 deps = self._agents[name].get("dependencies", [])
                 for dep in deps:
                     if dep in remaining:
-                        visit(dep)
+                        visit(dep, path)
+                path.pop()
                 temp_mark.remove(name)
                 visited.add(name)
                 sorted_names.append(name)
 
             for name in list(remaining):
                 if name not in visited:
-                    visit(name)
+                    visit(name, cycle_path)
 
             sorted_names.sort(key=lambda n: self._agents[n].get("priority", 50))
             return sorted_names
@@ -253,9 +267,9 @@ class Registry:
             self._status[name] = status
 
             if status == AgentStatus.RUNNING:
-                self._stats[name].record_start()
+                self._stats.setdefault(name, AgentStats()).record_start()
             elif status == AgentStatus.ERROR:
-                stats = self._stats[name]
+                stats = self._stats.setdefault(name, AgentStats())
                 stats.record_error(f"Status changed to ERROR from {old_status}")
                 self._check_respawn(name)
 
@@ -265,50 +279,48 @@ class Registry:
 
     def record_processing_time(self, name: str, ms: float):
         with self._lock:
-            if name in self._stats:
-                self._stats[name].record_finish(ms)
+            self._stats.setdefault(name, AgentStats()).record_finish(ms)
 
     # ─── Respawn ─────────────────────────────────
 
     def _check_respawn(self, name: str):
         """检查并执行 respawn"""
-        meta = self._agent_metas.get(name)
-        stats = self._stats.get(name)
-        if not meta:
-            return
-        if not meta.respawn:
-            return
-        if stats and stats.respawn_count >= meta.respawn_max:
-            print(f"[Registry] {name} 已达最大 respawn 次数 ({meta.respawn_max})，不再重试")
-            return
+        with self._lock:
+            meta = self._agent_metas.get(name)
+            if not meta:
+                return
+            if not meta.respawn:
+                return
+            stats = self._stats.setdefault(name, AgentStats())
+            if stats.respawn_count >= meta.respawn_max:
+                print(f"[Registry] {name} 已达最大 respawn 次数 ({meta.respawn_max})，不再重试")
+                return
 
-        print(f"[Registry] 尝试重启 Agent: {name}")
-        stats and stats.record_respawn()
+            print(f"[Registry] 尝试重启 Agent: {name}")
+            stats.record_respawn()
 
-        # 停止旧实例
-        old_instance = self._instances.get(name)
-        if old_instance and hasattr(old_instance, 'on_stop'):
-            try:
-                old_instance.on_stop()
-            except Exception as e:
-                print(f"[Registry] 停止旧实例失败: {e}")
+            old_instance = self._instances.get(name)
+            if old_instance and hasattr(old_instance, 'on_stop'):
+                try:
+                    old_instance.on_stop()
+                except Exception as e:
+                    print(f"[Registry] 停止旧实例失败: {e}")
 
-        # 重建新实例
-        if old_instance and hasattr(old_instance, '__class__'):
-            try:
-                new_instance = old_instance.__class__(
-                    name=name,
-                    meta=meta,
-                    config=meta.config,
-                    message_bus=getattr(old_instance, 'bus', None),
-                    registry=self,
-                )
-                self._instances[name] = new_instance
-                self._status[name] = AgentStatus.LOADED
-                print(f"[Registry] {name} 重启成功")
-            except Exception as e:
-                print(f"[Registry] {name} 重启失败: {e}")
-                self._status[name] = AgentStatus.ERROR
+            if old_instance and hasattr(old_instance, '__class__'):
+                try:
+                    new_instance = old_instance.__class__(
+                        name=name,
+                        meta=meta,
+                        config=meta.config,
+                        message_bus=getattr(old_instance, 'bus', None),
+                        registry=self,
+                    )
+                    self._instances[name] = new_instance
+                    self._status[name] = AgentStatus.LOADED
+                    print(f"[Registry] {name} 重启成功")
+                except Exception as e:
+                    print(f"[Registry] {name} 重启失败: {e}")
+                    self._status[name] = AgentStatus.ERROR
 
     # ─── 健康检查 ─────────────────────────────────
 
@@ -351,6 +363,7 @@ class Registry:
                     "version": "2.0",
                     "saved_at": time.time(),
                     "agents": list(self._agents.values()),
+                    "metas": {k: v.to_dict() for k, v in self._agent_metas.items()},
                     "stats": {k: v.to_dict() for k, v in self._stats.items()},
                 }, f, ensure_ascii=False, indent=2)
 
@@ -363,8 +376,45 @@ class Registry:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 for a in data.get("agents", []):
-                    self._agents[a["name"]] = a
-                    self._status[a["name"]] = AgentStatus.REGISTERED
+                    name = a["name"]
+                    self._agents[name] = a
+                    self._status[name] = AgentStatus.REGISTERED
+
+                metas_data = data.get("metas")
+                if metas_data:
+                    for name, meta_dict in metas_data.items():
+                        self._agent_metas[name] = AgentMeta(**meta_dict)
+                else:
+                    for name, a in self._agents.items():
+                        self._agent_metas[name] = AgentMeta(
+                            name=name,
+                            version=a.get("version", "1.0"),
+                            description=a.get("description", ""),
+                            author=a.get("author", ""),
+                            priority=a.get("priority", 50),
+                            input_topics=a.get("input_topics", []),
+                            output_topics=a.get("output_topics", []),
+                            dependencies=a.get("dependencies", []),
+                            cache_ttl=a.get("cache_ttl", 0),
+                            respawn=a.get("respawn", False),
+                            respawn_max=a.get("respawn_max", 3),
+                            health_check_interval=a.get("health_check_interval", 30),
+                            config_schema=a.get("config_schema", {}),
+                            tags=a.get("tags", []),
+                            config=a.get("config", {}),
+                        )
+                stats_data = data.get("stats", {})
+                for name, stats_dict in stats_data.items():
+                    stats = AgentStats()
+                    stats.start_count = stats_dict.get("start_count", 0)
+                    stats.error_count = stats_dict.get("error_count", 0)
+                    stats.respawn_count = stats_dict.get("respawn_count", 0)
+                    stats.total_runtime_ms = stats_dict.get("total_runtime_ms", 0.0)
+                    stats.avg_processing_time_ms = stats_dict.get("avg_processing_time_ms", 0.0)
+                    stats.last_start = stats_dict.get("last_start")
+                    stats.last_error = stats_dict.get("last_error")
+                    stats.last_error_msg = stats_dict.get("last_error_msg", "")
+                    self._stats[name] = stats
             except Exception as e:
                 print(f"[Registry] 加载失败: {e}")
 

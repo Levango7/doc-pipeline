@@ -97,3 +97,89 @@ class TestSchedulerFromDict:
         }
         plan = scheduler._build_plan(raw, "raw_test")
         assert plan.raw["agents"][0]["config"]["nested"]["k"] == "v"
+
+    def test_pool_dependencies_expanded(self, scheduler):
+        """pool_size>1 的上游，下游依赖应展开为 pool 实例名"""
+        raw = {
+            "name": "pool_test",
+            "agents": [
+                {
+                    "name": "researcher",
+                    "pool_size": 2,
+                    "dependencies": [],
+                    "config": {},
+                },
+                {
+                    "name": "fetcher",
+                    "pool_size": 1,
+                    "dependencies": ["researcher"],
+                    "config": {},
+                },
+                {
+                    "name": "writer",
+                    "pool_size": 1,
+                    "dependencies": ["fetcher"],
+                    "config": {},
+                },
+            ],
+            "topology": {"levels": [["researcher"], ["fetcher"], ["writer"]]},
+        }
+        plan = scheduler._build_plan(raw, "pool_test")
+
+        # 验证 researcher 展开
+        r_names = [n.agent_name for n in plan.levels[0]]
+        assert "researcher_pool_0" in r_names
+        assert "researcher_pool_1" in r_names
+        assert "researcher" not in r_names
+
+        # 验证 fetcher 依赖已展开为 pool 名
+        fetcher_node = plan.levels[1][0]
+        assert "researcher_pool_0" in fetcher_node.dependencies
+        assert "researcher_pool_1" in fetcher_node.dependencies
+        assert "researcher" not in fetcher_node.dependencies
+
+        # 验证 writer 依赖仍是简单名（fetcher pool_size=1）
+        writer_node = plan.levels[2][0]
+        assert writer_node.dependencies == ["fetcher"]
+
+    def test_pool_no_expand_single(self, scheduler):
+        """pool_size=1 时依赖不展开"""
+        raw = {
+            "name": "simple",
+            "agents": [
+                {"name": "a", "pool_size": 1, "dependencies": [], "config": {}},
+                {"name": "b", "pool_size": 1, "dependencies": ["a"], "config": {}},
+            ],
+            "topology": {"levels": [["a"], ["b"]]},
+        }
+        plan = scheduler._build_plan(raw, "simple")
+        assert plan.levels[0][0].agent_name == "a"
+        assert plan.levels[1][0].dependencies == ["a"]
+
+    def test_pool_multi_level_deps(self, scheduler):
+        """三层 cascade：r(pool=3) → f(pool=2) → w(pool=1)"""
+        raw = {
+            "name": "cascade",
+            "agents": [
+                {"name": "r", "pool_size": 3, "dependencies": [], "config": {}},
+                {"name": "f", "pool_size": 2, "dependencies": ["r"], "config": {}},
+                {"name": "w", "pool_size": 1, "dependencies": ["f"], "config": {}},
+            ],
+            "topology": {"levels": [["r"], ["f"], ["w"]]},
+        }
+        plan = scheduler._build_plan(raw, "cascade")
+        # researcher 实例
+        r_names = [n.agent_name for n in plan.levels[0]]
+        assert len(r_names) == 3
+        # fetcher 实例
+        f_nodes = plan.levels[1]
+        assert len(f_nodes) == 2
+        for fn in f_nodes:
+            assert len(fn.dependencies) == 3
+            for i in range(3):
+                assert f"r_pool_{i}" in fn.dependencies
+        # writer 依赖
+        w_node = plan.levels[2][0]
+        assert len(w_node.dependencies) == 2
+        for i in range(2):
+            assert f"f_pool_{i}" in w_node.dependencies

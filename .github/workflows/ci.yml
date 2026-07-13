@@ -27,16 +27,34 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
+          pip install pytest pytest-cov ruff mypy bandit pip-audit
+
+      - name: Lint (ruff)
+        run: |
+          ruff check .
 
       - name: Syntax check (all modules)
         run: |
           python -m py_compile pipeline_core/*.py agents/*.py run.py
           echo "SYNTAX OK"
 
-      - name: Run tests
+      - name: Type check (mypy)
         run: |
-          python -m pytest tests/ -v --tb=short
+          mypy pipeline_core/ agents/ --ignore-missing-imports
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests/ -v --tb=short --cov=. --cov-report=term-missing --cov-report=html
+
+      - name: Security scan (bandit)
+        continue-on-error: true
+        run: |
+          bandit -r pipeline_core/ -r agents/ -f json -o bandit-report.json
+
+      - name: Dependency audit (pip-audit)
+        continue-on-error: true
+        run: |
+          pip-audit
 
       - name: Pipeline smoke test (docgen)
         run: |

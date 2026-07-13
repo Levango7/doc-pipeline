@@ -3,6 +3,7 @@ import time
 import json
 from pathlib import Path
 import pytest
+from types import SimpleNamespace
 
 
 class TestOrchestratorRegistration:
@@ -121,3 +122,95 @@ class TestOrchestratorPauseResume:
         orch.resume(task.id)
         time.sleep(1)
         assert task.status.name == "DONE", f"task stuck at {task.status}"
+
+
+class TestRateLimitIntegration:
+    """RateLimiter 与 Orchestrator 集成测试"""
+
+    def test_unconfigured_agent_not_limited(self):
+        """未配置 rate_limit 的 agent 不受限流影响"""
+        from pipeline_core import PipelineOrchestrator
+
+        o = PipelineOrchestrator()
+        for i in range(10):
+            ok = o._acquire_rate_limit("unlimited_agent", rate_limit_cfg={}, timeout=1)
+            assert ok, f"第 {i+1} 次 acquire 被限（不应限流）"
+
+    def test_configured_agent_throttled(self):
+        """rate=5 burst=5 的 agent 第 6 次应阻塞（burst 耗尽）"""
+        from pipeline_core import PipelineOrchestrator
+
+        o = PipelineOrchestrator()
+        # 耗尽令牌桶（非阻塞 acquire）
+        for i in range(5):
+            ok = o._acquire_rate_limit("bursty", {"rate": 5, "burst": 5}, timeout=1)
+            assert ok, f"burst 内第 {i+1} 次应放行"
+
+        # 第 6 次：桶已空，block=False 应失败
+        from pipeline_core.rate_limiter import RateLimiter
+        limiter = o._rate_limiters.get_or_create("bursty")
+        ok = limiter.acquire(1, block=False)
+        assert ok is False, "burst 耗尽后非阻塞 acquire 应返回 False"
+
+    def test_rate_limit_in_execute_skipped_when_not_configured(self):
+        """_execute_node 中未配置限流时不报错（回归保护）"""
+        from pipeline_core import PipelineOrchestrator
+        from pipeline_core.scheduler import AgentConfig
+
+        o = PipelineOrchestrator()
+        node = SimpleNamespace(
+            agent_name="no_rl",
+            agent_config=SimpleNamespace(
+                rate_limit={},
+                circuit_breaker={},
+                config={}, pool_size=1, idempotency=False,
+                max_retries=1, retry_initial_delay=0.1, retry_backoff="linear",
+            ),
+            dependencies=[], timeout=5,
+        )
+        task = SimpleNamespace(
+            id="no_rl_test", result={},
+            dag_nodes={"no_rl": SimpleNamespace(result=None, status="pending", attempts=0)},
+            status="running",
+        )
+        plan = SimpleNamespace(pipeline_name="test", raw={"pipeline": {"output": "out.md"}})
+
+        import tempfile, os
+        tdir = tempfile.mkdtemp()
+        input_file = os.path.join(tdir, "input.md")
+        with open(input_file, "w") as f:
+            f.write("query")
+
+        # 不应抛异常
+        result = o._execute_node_from_scheduler(task, node, input_file, plan)
+        # 没有注册 agent，应返回 error 而非异常
+        assert isinstance(result, dict) and "error" in result, \
+            f"未注册 agent 应返回 error，实际 {result}"
+
+    def test_scheduler_parses_rate_limit(self, tmp_path):
+        """scheduler 从 YAML 解析 rate_limit → AgentConfig"""
+        from pipeline_core.scheduler import Scheduler
+        import yaml
+
+        raw = {
+            "pipeline": {"name": "test"},
+            "topology": {"levels": [["a1", "a2"]]},
+            "agents": [
+                {"name": "a1", "rate_limit": {"rate": 10, "burst": 20}},
+                {"name": "a2"},
+            ],
+        }
+        pfile = tmp_path / "test_rate_limit.yaml"
+        with open(pfile, "w") as f:
+            yaml.dump(raw, f)
+
+        scheduler = Scheduler(str(tmp_path))
+        plan = scheduler.parse("test_rate_limit")
+
+        # 验证 ExecutionNode 的 rate_limit
+        nodes = [n for level in plan.levels for n in level]
+        node_a1 = next(n for n in nodes if n.agent_name == "a1")
+        assert node_a1.agent_config.rate_limit == {"rate": 10, "burst": 20}
+
+        node_a2 = next(n for n in nodes if n.agent_name == "a2")
+        assert node_a2.agent_config.rate_limit == {}, "未配置的 agent 应是空 dict"

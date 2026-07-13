@@ -9,8 +9,10 @@ Researcher Agent v2 - 增强型内容检索插件
   - 搜索历史记录
 """
 import json
+import os
 import time
 import hashlib
+import re
 import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -33,6 +35,8 @@ OUTPUT_TOPICS = ["researcher.done", "researcher.progress", "researcher.partial"]
 DEPENDENCIES = []
 CACHE_TTL = 86400  # 24小时
 RESPAWN = True
+EXTRACTS_QUERIES = True
+RESULTS_MERGE = "extend"
 
 
 @dataclass
@@ -61,85 +65,104 @@ class SearchResult:
 
 
 class LRUCache:
-    """LRU 缓存（带 TTL）"""
-    
+    """LRU 缓存（带 TTL）—— 基于 OrderedDict，O(1) 淘汰"""
+
     def __init__(self, max_size: int = 1000, ttl: int = 86400):
         self.max_size = max_size
         self.ttl = ttl
-        self._cache: dict[str, dict] = {}
-        self._access_order: list[str] = []
+        from collections import OrderedDict
+        self._cache: OrderedDict = OrderedDict()
         self._lock = threading.Lock()
-    
+
     def get(self, key: str) -> Optional[list]:
         with self._lock:
             entry = self._cache.get(key)
             if not entry:
                 return None
-            
-            # 检查 TTL
             if time.time() - entry["ts"] > self.ttl:
-                self._remove(key)
+                self._cache.pop(key, None)
                 return None
-            
-            # 更新访问顺序
-            self._access_order.remove(key)
-            self._access_order.append(key)
-            
+            self._cache.move_to_end(key)
             return entry["data"]
-    
+
     def set(self, key: str, data: list):
         with self._lock:
-            # 淘汰旧条目
             while len(self._cache) >= self.max_size:
-                oldest = self._access_order.pop(0)
-                self._cache.pop(oldest, None)
-            
+                self._cache.popitem(last=False)
             self._cache[key] = {"data": data, "ts": time.time()}
-            self._access_order.append(key)
-    
+
     def _remove(self, key: str):
         self._cache.pop(key, None)
-        if key in self._access_order:
-            self._access_order.remove(key)
-    
+
     def clear(self):
         with self._lock:
             self._cache.clear()
-            self._access_order.clear()
 
 
 class ResearcherAgent(BaseAgent):
     """增强型内容检索 Agent"""
 
+    DEFAULT_SPAM_DOMAINS = {
+        "yuanbao.tencent.com", "wb.admaster.com.cn", "clickc.admaster.com.cn",
+        "admaster.com.cn", "adsensor.org", "duomai.com", "tanx.com",
+        "ex.bidswitch.com", "ib.adnxs.com", "nexage.com", "pubmatic.com",
+        "adzerk.net", "doubleclick.net", "googleadservices.com",
+        "googlesyndication.com", "amazon-adsystem.com",
+    }
+
+    DEFAULT_LOW_QUALITY_DOMAINS = set()
+
+    DEFAULT_PROSEARCH_PATHS = [
+        r"F:\Program Files\QClaw\resources\openclaw\config\skills\online-search\scripts\prosearch.cjs",
+        r"F:\Program Files (x86)\qclaw\resources\openclaw\config\skills\online-search\scripts\prosearch.cjs",
+    ]
+
     def __init__(self, name, meta, config, message_bus, registry):
         super().__init__(name, meta, config, message_bus, registry)
         
-        # 缓存
         cache_size = config.get("cache_size", 1000)
         self._cache = LRUCache(max_size=cache_size, ttl=self.meta.cache_ttl or CACHE_TTL)
         
-        # 去重集合
         self.dedup_set: set = set()
         self._dedup_lock = threading.Lock()
         
-        # 搜索历史
         self._search_history: list[dict] = []
+        self._history_lock = threading.Lock()
         self._max_history = config.get("max_history", 100)
         
-        # 并发控制
         self._max_workers = config.get("max_workers", 3)
         
-        # 搜索引擎配置
         self._search_engines = config.get("search_engines", ["bing", "sogou", "360"])
         
-        # 限流器（每引擎独立限流）
         from pipeline_core.rate_limiter import RateLimiterRegistry
         self._rate_limiters = RateLimiterRegistry()
         
-        # 质量评分配置
-        self._min_score = config.get("min_score", 0.3)
+        self._min_score = config.get("min_score", 0.25)
+
+        self._spam_domains = set(config.get("spam_domains", [])) or self.DEFAULT_SPAM_DOMAINS
+        config_lq = config.get("low_quality_domains", None)
+        if config_lq is not None:
+            self._low_quality_domains = set(config_lq)
+        else:
+            self._low_quality_domains = set(self.DEFAULT_LOW_QUALITY_DOMAINS)
+
+        self._tracking_url_patterns = config.get("tracking_url_patterns", [
+            "/evt/", "/click/", "/rd/", "/goto?", "redirect?",
+            "adclick", "adredirect", "union", "trace",
+        ])
+
+        self._prosearch_paths = []
+        env_path = os.environ.get("PROSEARCH_SCRIPT_PATH", "")
+        if env_path:
+            self._prosearch_paths.append(env_path)
+        config_paths = config.get("prosearch_paths", [])
+        if config_paths:
+            self._prosearch_paths.extend(config_paths)
+        self._prosearch_paths.extend(self.DEFAULT_PROSEARCH_PATHS)
+
+        self._title_min_pattern = re.compile(r"[一-鿿]{2,}|[a-zA-Z]{3,}")
         
-        self.log_info(f"Researcher v{AGENT_VERSION} 初始化完成")
+        self.log_info(f"Researcher v{AGENT_VERSION} 初始化完成 (engines={self._search_engines})")
 
     def handle(self, msg: Message) -> dict | None:
         """处理检索请求"""
@@ -153,52 +176,52 @@ class ResearcherAgent(BaseAgent):
 
         # 从流水线配置覆盖运行时参数
         cfg = payload.get("config", {})
+        engines_used = self._search_engines
         if isinstance(cfg, dict):
             if "search_engines" in cfg:
-                self._search_engines = cfg["search_engines"]
+                engines_used = cfg["search_engines"]
             if "max_results" in cfg:
                 max_results = cfg["max_results"]
         
         if not queries:
             return {"status": "ok", "task_id": task_id, "total": 0,
-                    "results": [], "query_count": 0, "engines_used": self._search_engines}
+                    "results": [], "query_count": 0, "engines_used": engines_used}
 
         # 清洗 query：过滤噪音/验证性/无意义的行
         queries = self._clean_queries(queries)
+        # 清洗 query 文本：去 markdown 格式、序号前缀
+        queries = [self._clean_query_text(q) for q in queries]
+        # 去重清洗后的查询
+        queries = list(dict.fromkeys(q for q in queries if q))
         if not queries:
             return {"status": "ok", "task_id": task_id, "total": 0,
-                    "results": [], "query_count": 0, "engines_used": self._search_engines}
+                    "results": [], "query_count": 0, "engines_used": engines_used}
 
         self.log_info(f"任务 {task_id}: {len(queries)} 个查询")
         
         results = []
         
         if parallel and len(queries) > 1:
-            # 并行搜索
-            results = self._parallel_search(queries, task_id, max_results)
+            results = self._parallel_search(queries, task_id, max_results, engines_used)
         else:
-            # 串行搜索
             for i, query in enumerate(queries):
                 self.report(AgentStatus.RUNNING, f"[{i+1}/{len(queries)}] {query[:40]}...")
                 try:
-                    r = self._search(query, task_id)
+                    r = self._search(query, task_id, engines_used)
                     results.extend(r)
                 except Exception as e:
                     self.log_error(f"搜索失败 {query}: {e}")
         
-        # 质量评分和过滤
         results = self._score_and_filter(results)
         
-        # 去重
         results = self._deduplicate(results)
         
-        # 限制结果数
         results = results[:max_results]
         
-        # 记录历史
         self._record_history(task_id, queries, len(results))
         
         self.report(AgentStatus.RUNNING, f"检索完成，共 {len(results)} 条结果")
+        self.log_info(f"最终返回 {len(results)} 条搜索结果")
         
         return {
             "status": "ok",
@@ -206,17 +229,17 @@ class ResearcherAgent(BaseAgent):
             "total": len(results),
             "results": [r.to_dict() for r in results],
             "query_count": len(queries),
-            "engines_used": self._search_engines,
+            "engines_used": engines_used,
         }
 
-    def _parallel_search(self, queries: list[str], task_id: str, max_results: int) -> list[SearchResult]:
+    def _parallel_search(self, queries: list[str], task_id: str, max_results: int, engines: list[str]) -> list[SearchResult]:
         """并行搜索"""
         results = []
         completed = 0
         
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             future_to_query = {
-                executor.submit(self._search, query, task_id): query 
+                executor.submit(self._search, query, task_id, engines): query 
                 for query in queries
             }
             
@@ -243,8 +266,10 @@ class ResearcherAgent(BaseAgent):
         
         return results
 
-    def _search(self, query: str, task_id: str) -> list[SearchResult]:
+    def _search(self, query: str, task_id: str, engines: list[str] = None) -> list[SearchResult]:
         """执行单次搜索（含缓存）"""
+        if engines is None:
+            engines = self._search_engines
         cache_key = f"{task_id}:{query}"
         cached = self._cache.get(cache_key)
         if cached is not None:
@@ -253,8 +278,7 @@ class ResearcherAgent(BaseAgent):
 
         all_results = []
 
-        # 多引擎搜索（限流）
-        for engine in self._search_engines:
+        for engine in engines:
             try:
                 # 每引擎独立限流
                 rate_cfg = {"duckduckgo": (3, 5), "prosearch": (5, 10), "mock": (100, 100),
@@ -292,21 +316,15 @@ class ResearcherAgent(BaseAgent):
         """调用元宝搜索"""
         import subprocess
         
-        # 尝试多个可能的路径
-        possible_paths = [
-            r"F:\Program Files\QClaw\resources\openclaw\config\skills\online-search\scripts\prosearch.cjs",
-            r"F:\Program Files (x86)\qclaw\resources\openclaw\config\skills\online-search\scripts\prosearch.cjs",
-        ]
-        
         script = None
-        for path in possible_paths:
+        for path in self._prosearch_paths:
             if Path(path).exists():
                 script = path
                 break
         
         if not script:
-            self.log_warning("prosearch.cjs 未找到，使用模拟数据")
-            return self._mock_search(query, "prosearch")
+            self.log_debug("prosearch.cjs 未找到，跳过 prosearch 引擎")
+            return []
         
         try:
             result = subprocess.run(
@@ -321,8 +339,10 @@ class ResearcherAgent(BaseAgent):
         
         return []
 
-    def _bing_search(self, query: str, max_results: int = 10) -> list[SearchResult]:
-        """调用 Bing 搜索（国内可访问，免费，无需 API Key）"""
+    def _html_search(self, query: str, engine_name: str, url: str,
+                     params: dict, skip_domains: list[str],
+                     max_results: int = 10) -> list[SearchResult]:
+        """通用 HTML 搜索引擎抓取（Bing/Sogou/360 共用）"""
         import re, requests
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -331,47 +351,93 @@ class ResearcherAgent(BaseAgent):
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
         try:
-            r = requests.get("https://cn.bing.com/search",
-                             params={"q": query, "mkt": "zh-CN"},
-                             headers=headers, timeout=10)
-            if r.status_code != 200:
-                self.log_warning(f"Bing 返回 {r.status_code}")
-                return []
+            with requests.get(url, params=params, headers=headers, timeout=10) as r:
+                if r.status_code != 200:
+                    self.log_warning(f"{engine_name} 返回 {r.status_code}")
+                    return []
+                html_text = r.text
             results = []
             seen_urls = set()
-            # Bing 搜索结果链接特征：target="_blank" 的 <a href="https://...">
-            for m in re.finditer(r'<a[^>]+href="(https?://[^"]+)"[^>]*>', r.text):
-                url = m.group(1)
-                if url in seen_urls:
+            for m in re.finditer(r'<a[^>]+href="(https?://[^"]+)"[^>]*>', html_text):
+                url_found = m.group(1)
+                if url_found in seen_urls:
                     continue
-                seen_urls.add(url)
-                # 跳过搜索引擎自身和静态资源
-                if any(d in url for d in ("bing.com", "microsoft.com", "live.com",
-                                           "w3.org", "schema.org")):
+                seen_urls.add(url_found)
+                if any(d in url_found for d in skip_domains):
                     continue
-                if any(url.endswith(ext) for ext in (".css", ".js", ".svg", ".png", ".ico")):
+                if any(url_found.endswith(ext) for ext in (".css", ".js", ".svg", ".png", ".ico")):
                     continue
-                # 获取周围的文字作为标题
                 start = max(0, m.start() - 200)
-                ctx = r.text[start:m.end()]
-                # 从上下文提取中文/英文标题
+                ctx = html_text[start:m.end()]
                 title_match = re.search(r'(?:title|aria-label)="([^"]+)"', ctx)
-                title = title_match.group(1) if title_match else url.split("/")[-1][:60]
+                title = title_match.group(1) if title_match else url_found.split("/")[-1][:60]
                 title = re.sub(r'<[^>]+>', '', title).strip()
-                # 从 snippet 取一段摘要
                 snippet_start = m.end()
-                snippet_end = min(snippet_start + 500, len(r.text))
-                snippet = re.sub(r'<[^>]+>', '', r.text[snippet_start:snippet_end]).strip()[:200]
+                snippet_end = min(snippet_start + 500, len(html_text))
+                snippet = re.sub(r'<[^>]+>', '', html_text[snippet_start:snippet_end]).strip()[:200]
                 results.append(SearchResult(
                     title=title[:120] if len(title) > 120 else title,
-                    url=url,
+                    url=url_found,
                     snippet=snippet,
-                    source="bing",
+                    source=engine_name,
                     query=query,
                     score=0.8,
                 ))
                 if len(results) >= max_results:
                     break
+            self.log_info(f"{engine_name} [{query[:30]}]: {len(results)} 条结果")
+            return results
+        except Exception as e:
+            self.log_warning(f"{engine_name} 搜索失败 ({e})，返回空结果")
+            return []
+
+    def _bing_search(self, query: str, max_results: int = 10) -> list[SearchResult]:
+        """调用 Bing 搜索 — 只从 b_algo 容器提取真实搜索结果"""
+        import re, requests
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+        try:
+            with requests.get("https://cn.bing.com/search",
+                             params={"q": query, "mkt": "zh-CN"},
+                             headers=headers, timeout=10) as r:
+                if r.status_code != 200:
+                    self.log_warning(f"Bing 返回 {r.status_code}")
+                    return []
+                html_text = r.text
+
+            results = []
+            seen_urls = set()
+            for algo in re.finditer(r'<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>(.*?)</li>',
+                                    html_text, re.DOTALL):
+                block = algo.group(1)
+                link = re.search(r'href="(https?://[^"]+)"', block)
+                if not link:
+                    continue
+                url = link.group(1)
+                if any(d in url for d in ("bing.com", "microsoft.com", "live.com",
+                                           "w3.org", "schema.org")):
+                    continue
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+
+                title_m = re.search(r'<h2[^>]*>(.*?)</h2>', block, re.DOTALL)
+                title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip() if title_m else ""
+
+                snippet_m = re.search(r'<p[^>]*>(.*?)</p>', block, re.DOTALL)
+                snippet = re.sub(r'<[^>]+>', '', snippet_m.group(1)).strip()[:200] if snippet_m else ""
+
+                results.append(SearchResult(
+                    title=title[:120], url=url, snippet=snippet,
+                    source="bing", query=query, score=0.8,
+                ))
+                if len(results) >= max_results:
+                    break
+
             self.log_info(f"Bing [{query[:30]}]: {len(results)} 条结果")
             return results
         except Exception as e:
@@ -380,117 +446,26 @@ class ResearcherAgent(BaseAgent):
 
     def _sogou_search(self, query: str, max_results: int = 10) -> list[SearchResult]:
         """调用 Sogou 搜索（搜狗，国内可访问，免费，无需 API Key）"""
-        import re, requests
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        }
-        try:
-            r = requests.get("https://www.sogou.com/web",
-                             params={"query": query},
-                             headers=headers, timeout=10)
-            if r.status_code != 200:
-                self.log_warning(f"Sogou 返回 {r.status_code}")
-                return []
-            results = []
-            seen_urls = set()
-            # Sogou results: <div class="vrwrap"> with <a href="..."> links
-            for m in re.finditer(r'<a[^>]+href="(https?://[^"]+)"[^>]*>', r.text):
-                url = m.group(1)
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                # 跳过搜索引擎自身和静态资源
-                if any(d in url for d in ("sogou.com", "weixin.sogou.com",
-                                           "w3.org", "schema.org")):
-                    continue
-                if any(url.endswith(ext) for ext in (".css", ".js", ".svg", ".png", ".ico")):
-                    continue
-                # 获取周围的文字作为标题
-                start = max(0, m.start() - 200)
-                ctx = r.text[start:m.end()]
-                # 从上下文提取标题
-                title_match = re.search(r'(?:title|aria-label)="([^"]+)"', ctx)
-                title = title_match.group(1) if title_match else url.split("/")[-1][:60]
-                title = re.sub(r'<[^>]+>', '', title).strip()
-                # 从 snippet 取一段摘要
-                snippet_start = m.end()
-                snippet_end = min(snippet_start + 500, len(r.text))
-                snippet = re.sub(r'<[^>]+>', '', r.text[snippet_start:snippet_end]).strip()[:200]
-                results.append(SearchResult(
-                    title=title[:120] if len(title) > 120 else title,
-                    url=url,
-                    snippet=snippet,
-                    source="sogou",
-                    query=query,
-                    score=0.8,
-                ))
-                if len(results) >= max_results:
-                    break
-            self.log_info(f"Sogou [{query[:30]}]: {len(results)} 条结果")
-            return results
-        except Exception as e:
-            self.log_warning(f"Sogou 搜索失败 ({e})，返回空结果")
-            return []
+        return self._html_search(
+            query=query,
+            engine_name="sogou",
+            url="https://www.sogou.com/web",
+            params={"query": query},
+            skip_domains=["sogou.com", "weixin.sogou.com", "w3.org", "schema.org"],
+            max_results=max_results,
+        )
 
     def _360_search(self, query: str, max_results: int = 10) -> list[SearchResult]:
         """调用 360 搜索（好搜，国内可访问，免费，无需 API Key）"""
-        import re, requests
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        }
-        try:
-            r = requests.get("https://www.so.com/s",
-                             params={"q": query},
-                             headers=headers, timeout=10)
-            if r.status_code != 200:
-                self.log_warning(f"360 搜索返回 {r.status_code}")
-                return []
-            results = []
-            seen_urls = set()
-            # 360 搜索结果：<a href="https://..."> 或 data-url 属性
-            for m in re.finditer(r'<a[^>]+href="(https?://[^"]+)"[^>]*>', r.text):
-                url = m.group(1)
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                # 跳过搜索引擎自身和静态资源
-                if any(d in url for d in ("so.com", "360.cn", "haosou.com",
-                                           "w3.org", "schema.org")):
-                    continue
-                if any(url.endswith(ext) for ext in (".css", ".js", ".svg", ".png", ".ico")):
-                    continue
-                # 获取周围的文字作为标题
-                start = max(0, m.start() - 200)
-                ctx = r.text[start:m.end()]
-                # 从上下文提取标题
-                title_match = re.search(r'(?:title|aria-label)="([^"]+)"', ctx)
-                title = title_match.group(1) if title_match else url.split("/")[-1][:60]
-                title = re.sub(r'<[^>]+>', '', title).strip()
-                # 从 snippet 取一段摘要
-                snippet_start = m.end()
-                snippet_end = min(snippet_start + 500, len(r.text))
-                snippet = re.sub(r'<[^>]+>', '', r.text[snippet_start:snippet_end]).strip()[:200]
-                results.append(SearchResult(
-                    title=title[:120] if len(title) > 120 else title,
-                    url=url,
-                    snippet=snippet,
-                    source="360",
-                    query=query,
-                    score=0.8,
-                ))
-                if len(results) >= max_results:
-                    break
-            self.log_info(f"360 [{query[:30]}]: {len(results)} 条结果")
-            return results
-        except Exception as e:
-            self.log_warning(f"360 搜索失败 ({e})，返回空结果")
-            return []
+        return self._html_search(
+            query=query,
+            engine_name="360",
+            url="https://www.so.com/s",
+            params={"q": query},
+            skip_domains=["so.com", "360.cn", "haosou.com", "w3.org", "schema.org"],
+            max_results=max_results,
+        )
+
 
     def _duckduckgo_search(self, query: str, max_results: int = 10) -> list[SearchResult]:
         """调用 DuckDuckGo 实时搜索（免费，无需 API Key）"""
@@ -572,31 +547,109 @@ class ResearcherAgent(BaseAgent):
             cleaned.append(q)
         return cleaned
 
+    @staticmethod
+    def _clean_query_text(query: str) -> str:
+        """清洗查询文本：去 markdown 格式、序号前缀、特殊符号"""
+        import re
+        q = query.strip()
+        # 去 markdown 加粗/斜体
+        q = re.sub(r"\*\*(.+?)\*\*", r"\1", q)
+        q = re.sub(r"\*(.+?)\*", r"\1", q)
+        # 去 markdown 链接文本 [text](url) → text
+        q = re.sub(r"\[(.+?)\]\(.*?\)", r"\1", q)
+        # 去编号前缀 "1. **xxx** → xxx"
+        q = re.sub(r"^\d+[\.、]\s*", "", q)
+        # 去列表前缀
+        q = re.sub(r"^[-*]\s+", "", q)
+        # 统一中文破折号
+        q = re.sub(r"[—–]+", " - ", q)
+        return q.strip()
+
+    def _is_spam_url(self, url: str) -> bool:
+        """检查 URL 是否属于垃圾域名"""
+        import urllib.parse
+        try:
+            domain = urllib.parse.urlparse(url).hostname or ""
+            # 精确匹配
+            if domain in self._spam_domains:
+                return True
+            # 后缀匹配
+            for spam in self._spam_domains:
+                if domain and domain.endswith("." + spam):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _normalize_url(self, url: str) -> str:
+        """URL 归一化：去跟踪参数，用于更准确的去重"""
+        import urllib.parse
+        try:
+            parsed = urllib.parse.urlparse(url)
+            # 丢弃常见跟踪参数
+            track_params = {"utm_source", "utm_medium", "utm_campaign", "utm_term",
+                           "utm_content", "fbclid", "gclid", "ref", "source",
+                           "trid", "tridChannel", "spm", "scm"}
+            clean_query = "&".join(
+                f"{k}={v}" for k, v in urllib.parse.parse_qsl(parsed.query)
+                if k.lower() not in track_params
+            )
+            return urllib.parse.urlunparse((
+                parsed.scheme, parsed.netloc, parsed.path,
+                parsed.params, clean_query, parsed.fragment
+            )).rstrip("?&") or url
+        except Exception:
+            return url
+
     def _score_and_filter(self, results: list[SearchResult]) -> list[SearchResult]:
-        """质量评分和过滤（含 query 相关性）"""
+        """质量评分和过滤（含域名黑名单 + query 相关性 + 标题质量）"""
+        import re
+        filtered = []
         for r in results:
+            # 0a. 垃圾域名直接丢弃
+            if self._is_spam_url(r.url):
+                continue
+
+            # 0b. 跟踪/重定向 URL 丢弃
+            url_lower = r.url.lower()
+            if any(p in url_lower for p in self._tracking_url_patterns):
+                continue
+
+            # 0c. 标题质量检查：至少包含一个真正的内容词
+            if not self._title_min_pattern.search(r.title):
+                continue
+
             # 1. 基础质量分（结构完整度）
             struct = 0.0
-            if 10 <= len(r.title) <= 100:
+            if 10 <= len(r.title) <= 120:
                 struct += 0.15
             if len(r.snippet) > 50:
                 struct += 0.15
-            if r.source:
+            if r.source and r.source in ("bing", "sogou", "360", "prosearch"):
                 struct += 0.1
             if r.url and r.url.startswith("http"):
                 struct += 0.1
 
-            # 2. query 相关性分（核心：内容是否跟查询有关）
+            # 域名质量加成
+            import urllib.parse
+            try:
+                domain = urllib.parse.urlparse(r.url).hostname or ""
+                for lq in self._low_quality_domains:
+                    if lq in domain:
+                        struct -= 0.2
+                        break
+            except Exception:
+                pass
+
+            # 2. query 相关性分
             rel = self._relevance_score(r, r.query)
             r.relevance = rel
 
-            # 综合分：相关性占主导（60%），结构占 40%
-            r.score = min(struct * 0.4 + rel * 0.6, 1.0)
+            # 综合分：相关性占主导（65%），结构占 35%
+            r.score = min(max(struct, 0) * 0.35 + rel * 0.65, 1.0)
 
-        # 过滤低质量 + 不相关结果
-        filtered = [r for r in results if r.score >= self._min_score]
-        # 额外硬过滤：与 query 完全无关（rel=0）的结果直接丢弃
-        filtered = [r for r in filtered if getattr(r, "relevance", 0) > 0]
+            if r.score >= self._min_score and r.relevance > 0:
+                filtered.append(r)
 
         # 按评分排序
         filtered.sort(key=lambda x: x.score, reverse=True)
@@ -638,34 +691,48 @@ class ResearcherAgent(BaseAgent):
         return hit / len(tokens)
 
     def _deduplicate(self, results: list[SearchResult]) -> list[SearchResult]:
-        """基于 URL + 标题去重"""
+        """基于归一化 URL + 标题去重"""
         with self._dedup_lock:
-            seen = set()
+            seen_urls = set()
+            seen_titles = set()
             deduped = []
-            
+
             for r in results:
-                sig = (r.url or "") + "|" + (r.title or "")
-                if sig not in seen:
-                    seen.add(sig)
-                    deduped.append(r)
-            
+                # URL 归一化去重（去跟踪参数后的裸 URL）
+                clean_url = self._normalize_url(r.url or "")
+                url_sig = clean_url.split("?")[0] if "?" in clean_url else clean_url
+                if url_sig in seen_urls:
+                    continue
+                seen_urls.add(url_sig)
+
+                # 标题去重（取前 30 字，忽略大小写）
+                title_sig = (r.title or "").strip().lower()[:30]
+                if title_sig and title_sig in seen_titles:
+                    continue
+                if title_sig:
+                    seen_titles.add(title_sig)
+
+                deduped.append(r)
+
             return deduped
 
     def _record_history(self, task_id: str, queries: list[str], result_count: int):
         """记录搜索历史"""
-        self._search_history.append({
-            "task_id": task_id,
-            "queries": queries,
-            "result_count": result_count,
-            "timestamp": time.time(),
-        })
-        
-        if len(self._search_history) > self._max_history:
-            self._search_history = self._search_history[-self._max_history:]
+        with self._history_lock:
+            self._search_history.append({
+                "task_id": task_id,
+                "queries": queries,
+                "result_count": result_count,
+                "timestamp": time.time(),
+            })
+            
+            if len(self._search_history) > self._max_history:
+                self._search_history = self._search_history[-self._max_history:]
 
     def get_search_history(self) -> list[dict]:
         """获取搜索历史"""
-        return self._search_history
+        with self._history_lock:
+            return list(self._search_history)
 
     def clear_cache(self):
         """清空缓存"""

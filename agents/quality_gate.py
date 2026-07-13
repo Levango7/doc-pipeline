@@ -36,6 +36,9 @@ OUTPUT_TOPICS = ["quality_gate.done", "quality_gate.failed"]
 DEPENDENCIES = ["writer"]
 CACHE_TTL = 0
 RESPAWN = False
+SUPPORTS_REGENERATION = True
+REGENERATION_TARGET = "writer"
+REGENERATION_RECHECK = "quality_gate"
 AGENT_TAGS = ["quality", "gate"]
 
 # 默认配置文件路径
@@ -45,19 +48,23 @@ DEFAULT_PROFILE = "technical-doc.yaml"
 
 def load_profile(profile_name: str) -> dict:
     """加载 Quality Profile YAML"""
-    # 支持完整路径或名称
-    path = Path(profile_name)
-    if not path.exists():
-        path = QUALITY_DIR / profile_name
-        if not path.suffix:
-            path = path.with_suffix(".yaml")
-    if not path.exists():
-        path = QUALITY_DIR / DEFAULT_PROFILE
-    if not path.exists():
-        return {}  # 无可用 profile 时返回空
+    try:
+        path = Path(profile_name)
+        if not path.exists():
+            path = QUALITY_DIR / profile_name
+            if not path.suffix:
+                path = path.with_suffix(".yaml")
+        if not path.exists():
+            path = QUALITY_DIR / DEFAULT_PROFILE
+        if not path.exists():
+            print(f"[quality_gate] 警告: 未找到 profile 文件", flush=True)
+            return {}
 
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        print(f"[quality_gate] 警告: 加载 profile 失败: {e}", flush=True)
+        return {}
 
 
 class QualityGateAgent(BaseAgent):
@@ -340,8 +347,11 @@ class QualityGateAgent(BaseAgent):
     def _overall_score(self, scores: dict[str, float]) -> float:
         if not self._weights:
             return sum(scores.values()) / max(len(scores), 1)
+        total_weight = sum(self._weights.values())
+        if total_weight <= 0:
+            return sum(scores.values()) / max(len(scores), 1)
         total = sum(scores.get(k, 0) * w for k, w in self._weights.items())
-        return total
+        return total / total_weight
 
     def _score_breakdown(self, scores: dict[str, float]) -> str:
         parts = [f"{k}={v:.0f}" for k, v in sorted(scores.items())]

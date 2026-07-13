@@ -1,12 +1,13 @@
 """
-BaseAgent v2 - 增强型 Agent 基类
-=============================
-改进点：
+BaseAgent v3.1 - 增强型 Agent 基类
+=================================
+核心特性：
   - 结构化日志记录
   - 性能指标自动收集
   - 健康检查接口
   - 配置热重载
   - 优雅关闭
+  - 统一消息类型（使用 message_bus_v3.Message）
 """
 import os
 import json
@@ -14,53 +15,11 @@ import time
 import hashlib
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Optional, Callable
-from enum import Enum
+from typing import Any, Optional
 
-
-class AgentStatus(Enum):
-    UNREGISTERED = "unregistered"
-    LOADED = "loaded"
-    RUNNING = "running"
-    STOPPED = "stopped"
-    ERROR = "error"
-
-
-@dataclass
-class AgentMeta:
-    """Agent 元信息"""
-    name: str = ""
-    version: str = "1.0"
-    description: str = ""
-    author: str = ""
-    priority: int = 50
-    input_topics: list = field(default_factory=list)
-    output_topics: list = field(default_factory=list)
-    dependencies: list = field(default_factory=list)
-    cache_ttl: int = 0
-    respawn: bool = False
-    respawn_max: int = 3
-    health_check_interval: int = 30
-    config_schema: dict = field(default_factory=dict)
-    tags: list = field(default_factory=list)
-
-    def to_dict(self):
-        return asdict(self)
-
-
-@dataclass
-class Message:
-    """简化消息结构（避免循环导入）"""
-    id: str = ""
-    type: str = ""
-    topic: str = ""
-    from_agent: str = ""
-    to_agent: str = ""
-    payload: dict = field(default_factory=dict)
-    timestamp: float = field(default_factory=time.time)
-    correlation_id: str = ""
+from .registry import AgentMeta, AgentStatus
+from .message_bus_v3 import Message
 
 
 class AgentLogger:
@@ -71,11 +30,9 @@ class AgentLogger:
         self.log_dir = Path(log_dir) if log_dir else Path("logs")
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
-        # 创建 logger
         self._logger = logging.getLogger(f"agent.{agent_name}")
         self._logger.setLevel(logging.DEBUG)
 
-        # 避免重复添加 handler
         if not self._logger.handlers:
             # 文件 handler
             log_file = self.log_dir / f"{agent_name}_{time.strftime('%Y%m%d')}.log"
@@ -220,6 +177,31 @@ class BaseAgent(ABC):
         self._logger.info("Agent 停止")
         self.status = AgentStatus.STOPPED
 
+    def on_pause(self):
+        """流水线暂停时调用（可覆盖）。清理临时资源、保存中间状态。"""
+        self._logger.info("Agent 暂停")
+
+    def on_resume(self):
+        """流水线恢复时调用（可覆盖）。重新初始化资源、恢复中间状态。"""
+        self._logger.info("Agent 恢复")
+
+    def on_snapshot(self) -> dict:
+        """创建检查点时调用（可覆盖）。返回 agent 状态快照，用于断点续传。
+        返回的 dict 会被序列化保存到 checkpoint 中。"""
+        self._logger.debug("Agent 快照")
+        return {
+            "name": self.name,
+            "status": self.status.value if hasattr(self.status, 'value') else str(self.status),
+            "success_count": self._success_count,
+            "error_count": self._error_count,
+        }
+
+    def on_restore(self, state: dict):
+        """从检查点恢复时调用（可覆盖）。恢复 agent 到快照时的状态。"""
+        self._logger.info("Agent 状态恢复")
+        self._success_count = state.get("success_count", 0)
+        self._error_count = state.get("error_count", 0)
+
     def is_healthy(self) -> bool:
         """健康检查（可覆盖）"""
         # 默认健康检查：错误率不超过 50%
@@ -261,10 +243,11 @@ class BaseAgent(ABC):
         if self.bus:
             self.bus.publish(topic, self.name, payload)
 
-    def emit_event(self, topic: str, payload: dict):
-        """发送事件"""
+    def emit_event(self, event_type: str, payload: dict):
+        """发送事件通知（广播到 agent.event topic）"""
         if self.bus:
-            self.bus.emit_event(topic, self.name, payload)
+            event_payload = {"event": event_type, "from": self.name, **payload}
+            self.bus.publish("agent.event", self.name, event_payload)
 
     def reply(self, original_msg: Message, payload: dict):
         """回复消息"""

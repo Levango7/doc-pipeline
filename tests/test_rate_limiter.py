@@ -65,3 +65,36 @@ class TestRateLimiterRegistry:
         assert "rl_hlth" in h
         assert "available_tokens" in h["rl_hlth"]
         assert "rate" in h["rl_hlth"]
+
+
+class TestRateLimiterStats:
+    """total_blocked 统计正确性（防 Bug 5 回归）"""
+
+    def test_blocked_not_double_counted(self, rate_limiters):
+        """阻塞 acquire 超时时 total_blocked 不能双倍计数"""
+        rl = rate_limiters.get_or_create("rl_stats", rate=0.01, burst=1)
+        # 耗尽 burst
+        rl.acquire(1.0, block=False)
+        # 阻塞获取，应超时
+        ok = rl.acquire(1.0, block=True, timeout=0.1)
+        assert ok is False
+        s = rl.stats()
+        assert s["total_blocked"] == 1, f"expected 1, got {s['total_blocked']}"
+
+    def test_blocked_count_immediate_fail(self, rate_limiters):
+        """非阻塞 acquire 失败时 total_blocked 应为 1"""
+        rl = rate_limiters.get_or_create("rl_noblock_stats", rate=0.01, burst=1)
+        rl.acquire(1.0, block=False)
+        ok = rl.acquire(1.0, block=False)
+        assert ok is False
+        s = rl.stats()
+        assert s["total_blocked"] == 1, f"expected 1, got {s['total_blocked']}"
+
+    def test_acquired_separate_from_blocked(self, rate_limiters):
+        """成功获取不增加 blocked 计数"""
+        rl = rate_limiters.get_or_create("rl_sep", rate=100, burst=10)
+        rl.acquire(1.0, block=False)
+        rl.acquire(1.0, block=False)
+        s = rl.stats()
+        assert s["total_acquired"] == 2
+        assert s["total_blocked"] == 0

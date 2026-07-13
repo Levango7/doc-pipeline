@@ -233,7 +233,7 @@ docker run -p 8910:8910 -v $(pwd)/checkpoints:/app/checkpoints doc-pipeline
 python -m pytest tests/ -v
 ```
 
-**50 个测试全部通过**，覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器、QualityGate、Agent 集成。
+**89 个测试全部通过**，覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API。
 
 ---
 

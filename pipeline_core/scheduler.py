@@ -26,6 +26,7 @@ class AgentConfig:
     circuit_breaker: dict = field(default_factory=dict)
     dependencies: list = field(default_factory=list)
     pool_size: int = 1
+    rate_limit: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.pool_size < 1:
@@ -133,25 +134,52 @@ class Scheduler:
         pipeline_name = path.stem
         return self._build_plan(raw, pipeline_name)
 
+    def _deep_merge(self, base: dict, override: dict) -> dict:
+        result = base.copy()
+        for key, value in override.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = self._deep_merge(result[key], value)
+            else:
+                result[key] = value
+        return result
+
     def _build_plan(self, raw: dict, pipeline_name: str) -> ExecutionPlan:
         import uuid
+        import logging
+        logger = logging.getLogger(__name__)
         plan_id = str(uuid.uuid4())[:8]
 
         # ── 1. 构建 agent lookup ──
         agent_map: dict[str, AgentConfig] = {}
         defaults = raw.get("defaults", {})
         for a in raw.get("agents", []):
-            merged = {**defaults, **a}
+            merged = self._deep_merge(defaults, a)
+
+            pool_size_val = merged.get("pool_size", 1)
+            try:
+                pool_size = int(pool_size_val)
+            except (ValueError, TypeError):
+                logger.warning(f"[{merged.get('name', 'unknown')}] pool_size 值无效: {pool_size_val!r}, 使用默认值 1")
+                pool_size = 1
+
+            timeout_val = merged.get("timeout", 300)
+            try:
+                timeout = float(timeout_val)
+            except (ValueError, TypeError):
+                logger.warning(f"[{merged.get('name', 'unknown')}] timeout 值无效: {timeout_val!r}, 使用默认值 300")
+                timeout = 300.0
+
             cfg = AgentConfig(
                 name=merged.get("name", "unknown"),
                 version=str(merged.get("version", "1.0")),
                 parallelism=merged.get("parallelism", {}),
                 config=merged.get("config", {}),
-                timeout=float(merged.get("timeout", 300)),
+                timeout=timeout,
                 retry=merged.get("retry", {}),
                 circuit_breaker=merged.get("circuit_breaker", {}),
                 dependencies=list(merged.get("dependencies", [])),
-                pool_size=int(merged.get("pool_size", 1)),
+                pool_size=pool_size,
+                rate_limit=merged.get("rate_limit", {}),
             )
             agent_map[cfg.name] = cfg
 
@@ -191,7 +219,16 @@ class Scheduler:
             nodes: list[ExecutionNode] = []
             for name in level:
                 cfg = agent_map[name]
-                deps = [d for d in cfg.dependencies if d in agent_map and d in appeared]
+                # 展开依赖中的 pool 名：某 agent 有 pool > 1 时，依赖指向所有实例
+                deps = []
+                for d in cfg.dependencies:
+                    if d in agent_map and d in appeared:
+                        dep_cfg = agent_map[d]
+                        if dep_cfg.pool_size > 1:
+                            for pool_idx in range(dep_cfg.pool_size):
+                                deps.append(f"{d}_pool_{pool_idx}")
+                        else:
+                            deps.append(d)
 
                 # 展开 pooling
                 for pool_idx in range(cfg.pool_size):
@@ -344,6 +381,4 @@ class Scheduler:
             except Exception as e:
                 issues.append(f"[{node.agent_name}] 模块加载失败: {e}")
 
-        if not issues:
-            issues.append("所有 Agent 依赖校验通过")
         return issues

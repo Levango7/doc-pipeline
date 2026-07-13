@@ -15,6 +15,9 @@ agents:
     timeout: 300
     dependencies: []
     pool_size: 2
+    rate_limit:
+      rate: 5
+      burst: 10
     config:
       search_engines:
         - bing

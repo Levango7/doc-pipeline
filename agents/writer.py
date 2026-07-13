@@ -13,8 +13,10 @@ Writer Agent v2 - 增强型内容整合插件
 import json
 import os
 import time
+from collections import OrderedDict
 import re
 import hashlib
+import threading
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -35,7 +37,7 @@ AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 30
 INPUT_TOPICS = ["writer.input", "researcher.done", "researcher.partial", "fetcher.done"]
 OUTPUT_TOPICS = ["writer.done", "writer.progress"]
-DEPENDENCIES = ["researcher"]
+DEPENDENCIES = ["researcher", "fetcher"]
 CACHE_TTL = 0
 RESPAWN = False
 
@@ -82,6 +84,7 @@ class WriterAgent(BaseAgent):
     def __init__(self, name, meta, config, message_bus, registry):
         super().__init__(name, meta, config, message_bus, registry)
         self.pending_results: dict = {}
+        self._pending_lock = threading.Lock()
         self._template_mgr = TemplateManager()
         self._pending_expire_secs = config.get("pending_expire_secs", 300)
         self._section_scores = {
@@ -102,9 +105,19 @@ class WriterAgent(BaseAgent):
         if self._llm_api_key:
             self.log_info("LLM 润色已启用")
 
-        # 润色缓存
-        self._polish_cache: dict[str, tuple[float, str]] = {}  # key -> (expire_ts, content)
-        self._polish_cache_ttl = config.get("polish_cache_ttl", 3600)  # 1h 缓存
+        self._polish_cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
+        self._polish_cache_ttl = config.get("polish_cache_ttl", 3600)
+        self._polish_cache_max = config.get("polish_cache_max", 200)
+        self._cache_lock = threading.Lock()
+
+        # Prompt 模板配置
+        self._prompt_profile = config.get("prompt_profile", "default")
+        self._prompts_dir = Path(__file__).parent.parent / "pipelines" / "prompts"
+        self._prompt_template_cache: dict[str, dict] = {}
+        self._restructure_cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
+        self._restructure_cache_ttl = config.get("restructure_cache_ttl", 7200)
+        self._restructure_cache_max = config.get("restructure_cache_max", self._polish_cache_max)
+        self.log_info(f"Prompt profile: {self._prompt_profile}")
 
         # 规则过渡句模板（0 成本兜底）
         self._transition_templates = [
@@ -123,14 +136,15 @@ class WriterAgent(BaseAgent):
         if not self._llm_api_key or not content.strip():
             return content
 
-        # ── Layer 4: 缓存检查 ──
         cache_key = hashlib.md5((content[:200] + query).encode()).hexdigest()
         now = time.time()
-        if cache_key in self._polish_cache:
-            expire_ts, cached = self._polish_cache[cache_key]
-            if now < expire_ts:
-                self.log_info("LLM 润色缓存命中，跳过")
-                return cached
+        with self._cache_lock:
+            cached_entry = self._polish_cache.get(cache_key)
+            if cached_entry:
+                expire_ts, cached = cached_entry
+                if now < expire_ts:
+                    self.log_info("LLM 润色缓存命中，跳过")
+                    return cached
 
         # ── Layer 1: 质量门控 ──
         # 如果文档已完整（3+ 章节、有引用、500+ 字），跳过 LLM
@@ -186,8 +200,8 @@ class WriterAgent(BaseAgent):
                          "Authorization": f"Bearer {self._llm_api_key}"})
             try:
                 t0 = time.time()
-                resp = urllib.request.urlopen(req, timeout=30)
-                body = json.loads(resp.read().decode())
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    body = json.loads(resp.read().decode())
                 polished = body["choices"][0]["message"]["content"]
                 polished_segments.append(polished)
                 self.log_debug(f"  段{i}: {len(seg)}→{len(polished)} 字, {time.time()-t0:.1f}s")
@@ -198,8 +212,11 @@ class WriterAgent(BaseAgent):
         result = "\n\n".join(polished_segments)
         elapsed = time.time() - now
 
-        # 写入缓存
-        self._polish_cache[cache_key] = (now + self._polish_cache_ttl, result)
+        with self._cache_lock:
+            while len(self._polish_cache) >= self._polish_cache_max:
+                self._polish_cache.popitem(last=False)
+            self._polish_cache[cache_key] = (now + self._polish_cache_ttl, result)
+            self._polish_cache.move_to_end(cache_key)
         self.log_info(f"LLM 润色完成 ({len(segments)}段, {elapsed:.1f}s, {len(content)}→{len(result)} 字)")
         return result
 
@@ -239,7 +256,10 @@ class WriterAgent(BaseAgent):
         # ── 次选：搜索摘要（旧模式） ──
         results = payload.get("results", [])
         if not results:
-            results = self.pending_results.get(task_id, [])
+            with self._pending_lock:
+                pending_entry = self.pending_results.get(task_id)
+                if pending_entry:
+                    results = pending_entry[1]
 
         if not results:
             return {
@@ -254,7 +274,8 @@ class WriterAgent(BaseAgent):
         chunks = self._classify_chunks(chunks)
         chunks = self._deduplicate_chunks(chunks)
         content = self._generate_document(chunks, template_name, title)
-        self.pending_results.pop(task_id, None)
+        with self._pending_lock:
+            self.pending_results.pop(task_id, None)
 
         self.report(AgentStatus.RUNNING, f"整合完成，生成 {len(content)} 字符")
         return {
@@ -353,8 +374,14 @@ class WriterAgent(BaseAgent):
 
         content = "\n".join(content_parts)
 
-        # LLM 润色段落衔接
-        if query:
+        # LLM 重构：生成严谨技术文档结构（篇-章-节 + mermaid + 表格 + 代码块）
+        if query and self._llm_api_key:
+            restructured = self._restructure_document(content, article_contents, query, title)
+            if restructured:
+                content = restructured
+
+        # LLM 润色段落衔接（当重构未运行时）
+        if query and not content.startswith("# ") and content.count("##") < 2:
             polished = self._polish_with_llm(content, query)
         else:
             polished = content
@@ -372,6 +399,207 @@ class WriterAgent(BaseAgent):
                 "char_count": len(content),
             }
         }
+
+    def _load_prompt_template(self, profile_name: str) -> dict:
+        """从 pipelines/prompts/ 加载 YAML prompt 模板"""
+        if profile_name in self._prompt_template_cache:
+            return self._prompt_template_cache[profile_name]
+
+        yaml_path = self._prompts_dir / f"{profile_name}.yaml"
+        if not yaml_path.exists():
+            self.log_warning(f"Prompt 模板不存在: {yaml_path}，使用内置默认")
+            return {}
+
+        try:
+            import yaml
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                template = yaml.safe_load(f)
+            self._prompt_template_cache[profile_name] = template
+            n_sections = len(template.get("sections", []))
+            self.log_info(f"加载 prompt 模板: {profile_name} ({n_sections} sections)")
+            return template
+        except Exception as e:
+            self.log_error(f"加载 prompt 模板失败: {e}")
+            return {}
+
+    def _restructure_document(self, content: str, articles: list[dict],
+                               query: str, title: str) -> str | None:
+        """多轮 LLM 生成：每轮一篇，逐步拼接成完整文档（prompt 从外部模板加载）"""
+        if not self._llm_api_key:
+            return None
+
+        cache_key_short = hashlib.md5((query + title[:50]).encode()).hexdigest()
+        now_ts = time.time()
+        with self._cache_lock:
+            cached_entry = self._restructure_cache.get(cache_key_short)
+            if cached_entry:
+                exp_ts, cached_val = cached_entry
+                if now_ts < exp_ts:
+                    self.log_info("LLM 重构缓存命中，跳过")
+                    return cached_val
+                else:
+                    del self._restructure_cache[cache_key_short]
+
+        # 加载 prompt 模板
+        template = self._load_prompt_template(self._prompt_profile)
+        system_prompt = template.get("system_prompt", "")
+        sections = template.get("sections", [])
+
+        if not sections:
+            self.log_warning("Prompt 模板为空或加载失败，跳过 LLM 重构")
+            return None
+
+        # 文章摘要（第一轮提供素材）
+        article_summaries = []
+        for art in articles[:3]:
+            text = (art.get("text") or "")[:3000]
+            article_summaries.append(
+                f"--- 文章: {art.get('title','')} ---\n"
+                f"来源: {art.get('url','')}\n{text}\n"
+            )
+        context = "\n".join(article_summaries)
+
+        def _llm_generate(section_prompt: str, max_tok: int = 4096, time_out: int = 120) -> str:
+            """调用 LLM 生成一段内容（使用 urllib，避免 requests 依赖）"""
+            prompt = (
+                f"{system_prompt}\n\n"
+                f"{section_prompt}\n\n"
+                f"素材文章参考（如有）:\n{context[:2000]}\n"
+            )
+            data = json.dumps({
+                "model": self._llm_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "max_tokens": max_tok,
+            }).encode()
+            req = urllib.request.Request(
+                self._llm_api_url, data=data,
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Bearer {self._llm_api_key}"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=time_out) as resp:
+                    body = json.loads(resp.read().decode())
+                text = body["choices"][0]["message"]["content"].strip()
+                if text.startswith("#"):
+                    return text
+                self.log_warning(f"LLM 返回非markdown: {text[:60]}")
+                return text
+            except Exception as e:
+                self.log_warning(f"LLM 生成异常: {e}")
+                return ""
+
+        def _clean_mermaid(text: str) -> str:
+            """修复常见的 Mermaid 语法问题 + 删除孤立的 end"""
+            import re
+            def fix_mermaid_block(m):
+                block = m.group(0)
+                lines = block.split("\n")
+                in_block = False
+                for i, line in enumerate(lines):
+                    if "```mermaid" in line:
+                        in_block = True
+                        continue
+                    if in_block and "```" in line:
+                        break
+                    if in_block and line.strip():
+                        first = line.strip()
+                        if not any(first.startswith(kw) for kw in
+                                ["graph", "sequenceDiagram", "flowchart", "classDiagram",
+                                 "stateDiagram", "erDiagram", "gantt", "pie"]):
+                            lines[i] = "graph TD  " + first
+                        break
+                subgraph_count = 0
+                cleaned = []
+                for line in lines:
+                    s = line.strip()
+                    if s.startswith("subgraph"):
+                        subgraph_count += 1
+                        cleaned.append(line)
+                    elif s == "end":
+                        if subgraph_count > 0:
+                            subgraph_count -= 1
+                            cleaned.append(line)
+                    else:
+                        cleaned.append(line)
+                while subgraph_count > 0:
+                    cleaned.append("    end")
+                    subgraph_count -= 1
+                return "\n".join(cleaned)
+            text = re.sub(r"```mermaid.*?```", fix_mermaid_block, text, flags=re.DOTALL)
+            def fix_br(m):
+                return m.group(0).replace("<br/>", "<br>")
+            text = re.sub(r"```mermaid.*?```", fix_br, text, flags=re.DOTALL)
+            return text
+
+        def _fix_references(text: str) -> str:
+            """删除空的参考资料段落"""
+            import re
+            text = re.sub(r"\n## 参考资料\n\s*$", "", text)
+            text = re.sub(r"\n## 参考资料\s*\n(?=## )", "\n", text)
+            return text.strip()
+
+        # 多轮生成：从模板 sections 循环
+        parts = []
+        for i, sec in enumerate(sections):
+            sec_name = sec.get("name", f"Section {i+1}")
+            sec_prompt = sec.get("prompt", "")
+            # 替换占位符
+            sec_prompt = sec_prompt.replace("{title}", title).replace("{query}", query)
+
+            part = _llm_generate(sec_prompt, max_tok=4096, time_out=180)
+            if part:
+                self.log_info(f"R{i+1} [{sec_name}] 完成: {len(part)} 字符")
+                parts.append(part)
+            else:
+                self.log_info(f"R{i+1} [{sec_name}] 失败，跳过")
+
+        if not parts:
+            return None
+
+        # ── 拼接 ──
+        final = parts[0]
+        for p in parts[1:]:
+            final += "\n\n" + p
+
+        # 修复截断的 Mermaid 块
+        def _fix_truncated_blocks(text: str) -> str:
+            """删除截断的 Mermaid 块（只有开标签没闭标签）"""
+            lines = text.split("\n")
+            in_mermaid = False
+            final_lines = []
+            for line in lines:
+                if "```mermaid" in line:
+                    in_mermaid = True
+                    final_lines.append(line)
+                elif in_mermaid and "```" in line:
+                    in_mermaid = False
+                    final_lines.append(line)
+                elif in_mermaid:
+                    final_lines.append(line)
+                else:
+                    final_lines.append(line)
+            if in_mermaid:
+                for i in range(len(final_lines) - 1, -1, -1):
+                    if "```mermaid" in final_lines[i]:
+                        final_lines = final_lines[:i]
+                        break
+            return "\n".join(final_lines)
+
+        final = _fix_truncated_blocks(final)
+        final = _clean_mermaid(final)
+        final = _fix_references(final)
+
+        # 确保文档以标题开头
+        if not final.startswith(f"# {title}"):
+            final = f"# {title}\n\n" + final
+
+        self.log_info(f"多轮拼接完成: {len(final)} 字符")
+        with self._cache_lock:
+            while len(self._restructure_cache) >= self._restructure_cache_max:
+                self._restructure_cache.popitem(last=False)
+            self._restructure_cache[cache_key_short] = (time.time() + self._restructure_cache_ttl, final)
+        return final
 
     def _plan_skeleton(self, query: str, title: str,
                        articles: list[dict]) -> list[dict]:
@@ -627,7 +855,12 @@ class WriterAgent(BaseAgent):
     def _expire_stale_pending(self):
         """清理过期的 pending 结果"""
         now = time.time()
-        stale = [tid for tid, (ts, _) in self.pending_results.items()
-                 if now - ts > self._pending_expire_secs]
-        for tid in stale:
-            self.pending_results.pop(tid, None)
+        with self._pending_lock:
+            stale = []
+            for tid, entry in self.pending_results.items():
+                if isinstance(entry, tuple) and len(entry) == 2:
+                    ts, _ = entry
+                    if now - ts > self._pending_expire_secs:
+                        stale.append(tid)
+            for tid in stale:
+                self.pending_results.pop(tid, None)

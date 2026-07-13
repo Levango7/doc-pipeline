@@ -279,6 +279,7 @@ class TestFailureIntegration:
                 circuit_breaker={"enabled": True, "failure_threshold": 2, "recovery_timeout": 1},
                 pool_size=1, idempotency=True, max_retries=1,
                 retry_initial_delay=0.1, retry_backoff="linear",
+                rate_limit={},
             ),
             dependencies=[],
             timeout=5,

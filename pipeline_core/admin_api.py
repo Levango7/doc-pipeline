@@ -23,6 +23,7 @@ import json
 import os
 import mimetypes
 import threading
+import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Optional
@@ -148,20 +149,49 @@ class AdminHandler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "not found"}, 404)
         except Exception as e:
+            traceback.print_exc()
             self._json({"error": str(e)}, 500)
 
     def do_POST(self):
-        # 静态资源/健康免鉴权
-        if self._serve_static(self.path):
-            return
-        if self.path == "/health":
-            self._handle_health()
-            return
-        if not self._check_auth():
-            self._json({"error": "unauthorized"}, 401)
-            return
-        # 复用 GET 路由（POST 也支持 cancel/rerun）
-        self.do_GET()
+        try:
+            # 读取请求体
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length) if content_length > 0 else b""
+
+            # 静态资源/健康免鉴权
+            if self._serve_static(self.path):
+                return
+            if self.path == "/health":
+                self._handle_health()
+                return
+            if not self._check_auth():
+                self._json({"error": "unauthorized"}, 401)
+                return
+
+            # 处理 POST 专属路由
+            if self.path.startswith("/tasks/"):
+                task_id = self.path.split("/tasks/")[1].split("/")[0]
+                if self.path.endswith("/cancel"):
+                    self._handle_cancel_task(task_id)
+                    return
+                elif self.path.endswith("/rerun"):
+                    self._handle_rerun_task(task_id)
+                    return
+                elif self.path.endswith("/pause"):
+                    self._handle_pause_task(task_id)
+                    return
+                elif self.path.endswith("/resume"):
+                    self._handle_resume_task(task_id)
+                    return
+            elif self.path.startswith("/dlq/") and self.path.endswith("/replay"):
+                dlq_id = int(self.path.split("/dlq/")[1].split("/")[0])
+                self._handle_replay_dlq(dlq_id)
+                return
+
+            self._json({"error": "method not allowed"}, 405)
+        except Exception as e:
+            traceback.print_exc()
+            self._json({"error": str(e)}, 500)
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -181,9 +211,9 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_metrics(self):
         if not self.orch:
             return self._text("orchestrator not set\n")
-        obs = getattr(self.orch, "_observability", None)
-        if obs and hasattr(obs, "to_prometheus"):
-            self._prometheus(obs.to_prometheus())
+        metrics = getattr(self.orch, "_metrics", None)
+        if metrics and hasattr(metrics, "to_prometheus"):
+            self._prometheus(metrics.to_prometheus())
         else:
             self._text("# no metrics available\n")
 
@@ -224,7 +254,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_cancel_task(self, task_id: str):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
-        ok = self.orch.cancel_task(task_id)
+        ok = self.orch.cancel(task_id)
         self._json({"cancelled": ok, "task_id": task_id})
 
     def _handle_rerun_task(self, task_id: str):
@@ -244,12 +274,14 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_pause_task(self, task_id: str):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
-        self._json({"paused": True, "task_id": task_id})
+        ok = self.orch.pause(task_id)
+        self._json({"paused": ok, "task_id": task_id})
 
     def _handle_resume_task(self, task_id: str):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
-        self._json({"resumed": True, "task_id": task_id})
+        ok = self.orch.resume(task_id)
+        self._json({"resumed": ok, "task_id": task_id})
 
     def _handle_list_agents(self):
         if not self.orch:
@@ -260,7 +292,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_list_dlq(self):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
-        dlq = self.orch.bus.get_dlq()
+        dlq = self.orch.bus.list_dlq()
         self._json({"dlq": dlq, "count": len(dlq)})
 
     def _handle_replay_dlq(self, dlq_id: int):
@@ -281,19 +313,21 @@ class AdminHandler(BaseHTTPRequestHandler):
                 "id": t.id,
                 "status": t.status.value if hasattr(t.status, "value") else str(t.status),
                 "pipeline": t.pipeline_name,
+                "progress": getattr(t, "progress", 0),
+                "steps": len(getattr(t, "steps", [])),
                 "created_at": getattr(t, "created_at", None),
                 "finished_at": getattr(t, "finished_at", None),
                 "error": getattr(t, "error", None),
             }
             for t in tasks
         ]
+        agents_list = orch.registry.list()
         agents = []
-        for name in orch.registry.list():
-            meta = orch.registry.get(name)
+        for a in agents_list:
             agents.append({
-                "name": name,
-                "version": meta.version if meta else "",
-                "status": meta.status.value if meta and hasattr(meta.status, "value") else "unknown",
+                "name": a.get("name", ""),
+                "version": a.get("version", ""),
+                "status": a.get("status", "unknown"),
             })
         self._json({
             "status": "ok",
@@ -307,12 +341,16 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not self.orch:
             return self._json({"status": "error", "message": "orchestrator not set"})
         orch = self.orch
+        try:
+            from pipeline_core import __version__ as _v
+        except ImportError:
+            _v = "unknown"
         pipeline_info = {
             "agents_dir": str(orch.agents_dir),
             "checkpoint_dir": str(orch.checkpoint_dir),
             "registered_agents": orch.registry.list(),
             "active_tasks": len(orch.list_tasks()),
-            "version": "3.0.0",
+            "version": _v,
         }
         from pathlib import Path
         pipelines_dir = Path(orch.agents_dir).parent / "pipelines"
@@ -361,6 +399,7 @@ class AdminAPI:
     def stop(self):
         if self._server:
             self._server.shutdown()
+            self._server.server_close()
             if self._thread:
                 self._thread.join(timeout=2)
             self._server = None

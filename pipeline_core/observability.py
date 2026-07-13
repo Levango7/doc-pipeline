@@ -156,13 +156,23 @@ class MetricsRegistry:
                 if not values:
                     continue
                 base = key.split('{')[0]
+                labels = key[len(base):] if key.startswith(base) else ""
                 lines.append(f"# TYPE {base} histogram")
                 lines.append(f"# HELP {base} Request duration in ms")
-                for v in values[-100:]:  # last 100
-                    lines.append(f"{key} {v}")
-                lines.append(f"{base}_bucket{{le=\"+Inf\"}} {len(values)}")
-                lines.append(f"{base}_count {len(values)}")
-                lines.append(f"{base}_sum {sum(values)}")
+                # 定义标准 bucket 边界（Prometheus 默认）
+                buckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+                counts = [0] * len(buckets)
+                for v in values:
+                    for i, le in enumerate(buckets):
+                        if v <= le:
+                            counts[i] += 1
+                cum = 0
+                for i, le in enumerate(buckets):
+                    cum += counts[i]
+                    lines.append(f"{base}_bucket{{le=\"{le}\"{labels}}} {cum}")
+                lines.append(f"{base}_bucket{{le=\"+Inf\"{labels}}} {len(values)}")
+                lines.append(f"{base}_count{labels} {len(values)}")
+                lines.append(f"{base}_sum{labels} {sum(values)}")
 
         return "\n".join(lines) + "\n"
 

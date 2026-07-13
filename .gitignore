@@ -7,11 +7,14 @@ tmp/
 
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .pytest_cache/
 *.egg-info/
 .venv/
 venv/
+dist/
+build/
 
 # 运行产物
 *.lock
@@ -25,8 +28,22 @@ logs/
 out_*.md
 plan*.md
 ROADMAP.md
+.test_checkpoints/
+.test_outputs/
 
 # 密钥
 .env
 *.secret
 config/secrets.yaml
+
+# Agent history (runtime artifacts)
+.agent_history/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db

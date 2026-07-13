@@ -34,6 +34,7 @@ class RateLimiter:
         self._tokens = float(burst)
         self._last_refill = time.time()
         self._lock = threading.RLock()
+        self._condition = threading.Condition()
 
         # 统计
         self._total_acquired = 0
@@ -56,7 +57,11 @@ class RateLimiter:
             return True
 
         if not block:
-            return self._try_acquire(tokens)
+            ok = self._try_acquire(tokens)
+            if not ok:
+                with self._lock:
+                    self._total_blocked += 1
+            return ok
 
         deadline = None if timeout is None else time.time() + timeout
         while True:
@@ -65,11 +70,18 @@ class RateLimiter:
                 return True
 
             if deadline and time.time() >= deadline:
-                self._total_blocked += 1
+                with self._lock:
+                    self._total_blocked += 1
                 return False
 
             # 等待一个令牌的时间
-            time.sleep(1.0 / max(self.rate, 1))
+            wait_time = tokens / max(self.rate, 1)
+            if deadline:
+                wait_time = min(wait_time, deadline - time.time() + 0.001)
+            if wait_time <= 0:
+                return False
+            with self._condition:
+                self._condition.wait(wait_time)
 
     def _try_acquire(self, tokens: float) -> bool:
         with self._lock:
@@ -78,7 +90,6 @@ class RateLimiter:
                 self._tokens -= tokens
                 self._total_acquired += 1
                 return True
-            self._total_blocked += 1
             return False
 
     def _refill(self):

@@ -2,11 +2,11 @@
 # Doc-Pipeline — Production Dockerfile
 # =============================================================================
 # Two-stage build:
-#   Stage 1 (builder): pip-install dependencies
+#   Stage 1 (builder): pip-install dependencies into venv
 #   Stage 2 (runtime): minimal image with project code + deps
 # =============================================================================
 
-# ── Stage 1: Builder ─────────────────────────────────────────────────────────
+# -- Stage 1: Builder --------------------------------------------------------
 FROM python:3.11-slim AS builder
 
 # Prevent Python from writing .pyc / buffering stdout
@@ -17,10 +17,10 @@ WORKDIR /build
 
 # Install build tools (none needed — pure Python deps)
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
 
-# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
+# -- Stage 2: Runtime --------------------------------------------------------
 FROM python:3.11-slim AS runtime
 
 # System setup: non-root user + runtime dirs
@@ -35,11 +35,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Copy Python packages from builder
-COPY --from=builder /root/.local /root/.local
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
 
-# Make installed CLI tools (if any) available in PATH
-ENV PATH=/root/.local/bin:$PATH
+# Make venv binaries available in PATH
+ENV PATH=/opt/venv/bin:$PATH
 
 # Copy project code
 COPY --chown=app:app . .

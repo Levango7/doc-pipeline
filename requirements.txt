@@ -9,3 +9,11 @@ duckduckgo-search>=4.0.0
 
 # 异步 I/O（可选，未安装时 fetcher 降级为同步）
 aiohttp>=3.8.0
+
+
+# 开发/CI 依赖（不在运行时 requirements 中安装，CI 单独 pip install）：
+# ruff>=0.4.0       # lint + format
+# mypy>=1.10.0      # 类型检查
+# bandit>=1.7.0     # 安全扫描
+# pip-audit>=2.7.0  # 依赖审计
+# pytest-cov>=5.0   # 覆盖率

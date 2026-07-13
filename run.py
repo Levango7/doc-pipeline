@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-run.py - 文档生成流水线入口 v3
-=============================
-改进点：
+run.py - 文档生成流水线入口 v3.1
+===============================
+核心特性：
   - 支持声明式流水线配置 (YAML) via Scheduler + run_plan
-  - DAG 并行执行 + 自动重做循环 + 熔断器
-  - 完整审计日志 + 事务 checkpoint
+  - DAG 并行执行 + 自动重做循环 + 熔断器 + 指数退避重试
+  - 完整审计日志 + 事务 checkpoint + 临时文件自动清理
 """
 import argparse
 import sys
@@ -16,14 +16,14 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from pipeline_core import PipelineOrchestrator, TaskStatus
+from pipeline_core import PipelineOrchestrator, TaskStatus, __version__
 from pipeline_core.scheduler import Scheduler
 
 
 def print_banner():
-    print("""
+    print(f"""
 ╔══════════════════════════════════════════════════════════════╗
-║          Doc-Pipeline v3.0 - 文档生成流水线                   ║
+║          Doc-Pipeline v{__version__} - 文档生成流水线               ║
 ║          声明式 DAG | 自动重做 | 熔断器 | 审计日志             ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
@@ -44,7 +44,7 @@ def output_json_result(task, output_path, steps, status):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="文档生成流水线 v3.0 - 声明式 DAG + 自动重做",
+        description=f"文档生成流水线 v{__version__} - 声明式 DAG + 自动重做",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
