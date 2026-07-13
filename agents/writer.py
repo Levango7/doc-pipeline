@@ -130,6 +130,27 @@ class WriterAgent(BaseAgent):
             ("", "", "接下来，我们继续探讨相关内容。"),  # 通用回退
         ]
 
+    def _llm_chat(self, messages: list[dict], max_tokens: int = 4096,
+                  temperature: float = 0.3, timeout: int = 120) -> str:
+        """统一 LLM 调用（自动适配 Cloudflare Workers AI 格式）"""
+        is_cf = "/ai/run" in self._llm_api_url
+        if is_cf:
+            payload = {"model": self._llm_model, "input": {"messages": messages},
+                       "max_tokens": max_tokens, "temperature": temperature}
+        else:
+            payload = {"model": self._llm_model, "messages": messages,
+                       "max_tokens": max_tokens, "temperature": temperature}
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            self._llm_api_url, data=data,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {self._llm_api_key}"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode())
+        if is_cf:
+            body = body.get("result", body)
+        return body["choices"][0]["message"]["content"]
+
     def _polish_with_llm(self, content: str, query: str) -> str:
         """用 LLM 润色文档段落衔接（含缓存+质量门控+分段+规则兜底）"""
         if not self._llm_api_key or not content.strip():
@@ -187,21 +208,11 @@ class WriterAgent(BaseAgent):
 
             # 小段 fallback: LLM 润色
             seg_prompt = f"润色以下段落，改善语句流畅性，保持原意不变：\n\n{seg[:2000]}"
-            data = json.dumps({
-                "model": self._llm_model,
-                "messages": [{"role": "user", "content": seg_prompt}],
-                "max_tokens": 1024,
-                "temperature": 0.3,
-            }).encode()
-            req = urllib.request.Request(
-                self._llm_api_url, data=data,
-                headers={"Content-Type": "application/json",
-                         "Authorization": f"Bearer {self._llm_api_key}"})
             try:
                 t0 = time.time()
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    body = json.loads(resp.read().decode())
-                polished = body["choices"][0]["message"]["content"]
+                polished = self._llm_chat(
+                    [{"role": "user", "content": seg_prompt}],
+                    max_tokens=1024, temperature=0.3, timeout=30)
                 polished_segments.append(polished)
                 self.log_debug(f"  段{i}: {len(seg)}→{len(polished)} 字, {time.time()-t0:.1f}s")
             except Exception as e:
@@ -472,21 +483,10 @@ class WriterAgent(BaseAgent):
                 f"{section_prompt}\n\n"
                 f"素材文章参考（如有）:\n{context[:2000]}\n"
             )
-            data = json.dumps({
-                "model": self._llm_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-                "max_tokens": max_tok,
-            }).encode()
-            req = urllib.request.Request(
-                self._llm_api_url, data=data,
-                headers={"Content-Type": "application/json",
-                         "Authorization": f"Bearer {self._llm_api_key}"},
-            )
             try:
-                with urllib.request.urlopen(req, timeout=time_out) as resp:
-                    body = json.loads(resp.read().decode())
-                text = body["choices"][0]["message"]["content"].strip()
+                text = self._llm_chat(
+                    [{"role": "user", "content": prompt}],
+                    max_tokens=max_tok, temperature=0.3, timeout=time_out).strip()
                 if text.startswith("#"):
                     return text
                 self.log_warning(f"LLM 返回非markdown: {text[:60]}")
