@@ -18,6 +18,8 @@ build/
 
 # 运行产物
 *.lock
+# pipeline lockfile 应纳入版本控制
+!pipelines/*.lock
 *.log
 .DS_Store
 bus_data/

@@ -1,6 +1,7 @@
 """DAG 执行器 —— 负责 DAG 构建、节点调度、熔断器、限流、指标"""
 from __future__ import annotations
 import re
+import copy
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,6 +27,7 @@ class DAGExecutor:
         self._checkpoint_save = checkpoint_save_fn
         self._audit_log = audit_log_fn
         self._execution_stats: list[dict] = []
+        self._query_cache: dict[str, list[str]] = {}  # input_file -> queries 缓存
 
     def _log(self, level: str, msg: str, **kw):
         """结构化日志记录"""
@@ -225,59 +227,82 @@ class DAGExecutor:
             idempotency_key=idempotency_key,
         )
 
-        # ── QualityGate 自动重做循环 ──
+        # ── QualityGate 自动重做循环（外提为独立方法）──
         meta = self.registry.get_meta(node.agent_name)
         if getattr(meta, "supports_regeneration", False) and isinstance(result, dict):
-            regenerate_agent = getattr(meta, "regeneration_target", "writer")
-            recheck_agent = getattr(meta, "regeneration_recheck", "quality_gate")
-            try:
-                generation = 0
-                max_gen = node.agent_config.config.get("max_regenerations", 3)
-                while (result.get("needs_regenerate") and result.get("can_regenerate")
-                       and generation < max_gen and not task.stop_event.is_set()):
-                    generation += 1
-                    feedback = {
-                        "quality_scores": result.get("scores", {}),
-                        "overall_score": result.get("overall_score", 0),
-                        "style_issues": result.get("style_issues", []),
-                        "citation_report": result.get("citation_report", {}),
-                        "generation_count": result.get("generation_count", 0) + 1,
-                    }
-                    self._log("info", "质量门控重做", score=result.get('overall_score', 0), generation=generation)
-                    writer_payload = {**msg_payload}
-                    writer_payload.update(feedback)
-                    writer_result = self.bus.request(
-                        topic=f"{regenerate_agent}.input", from_a="orchestrator", to_a=regenerate_agent,
-                        payload=writer_payload, timeout=node.timeout,
-                        idempotency_key=f"regenerate_{task.id}_{regenerate_agent}_g{generation}",
-                    )
-                    if writer_result and writer_result.get("content"):
-                        msg_payload["content"] = writer_result["content"]
-                        msg_payload["generation_count"] = feedback["generation_count"]
-                        self._set_task_output(task, regenerate_agent, writer_result)
-
-                    qg_payload = {**msg_payload}
-                    qg_payload.update(feedback)
-                    result = self.bus.request(
-                        topic=f"{recheck_agent}.input", from_a="orchestrator", to_a=recheck_agent,
-                        payload=qg_payload, timeout=node.timeout,
-                        idempotency_key=f"regenerate_{task.id}_{recheck_agent}_g{generation}",
-                    )
-                    if result:
-                        self._set_task_output(task, recheck_agent, result)
-
-                final_status = "accepted_with_warnings" if result.get("needs_regenerate") else "pass"
-                result["status"] = final_status
-                if result.get("needs_regenerate"):
-                    self._log("warning", "质量分仍不达标", generation=generation, score=result.get('overall_score', 0))
-                else:
-                    self._log("info", "质量分通过", generation=generation, score=result.get('overall_score', 0))
-            except Exception as e:
-                self._log("error", "质量重做异常", error=str(e))
-                result = result or {"status": "error", "error": str(e)}
+            result = self._handle_regeneration(
+                task, node, result, msg_payload,
+                regenerate_agent=getattr(meta, "regeneration_target", "writer"),
+                recheck_agent=getattr(meta, "regeneration_recheck", "quality_gate"),
+                max_gen=node.agent_config.config.get("max_regenerations", 3),
+            )
 
         self.registry.set_status(base_agent, AgentStatus.STOPPED)
         return result or {}
+
+    def _handle_regeneration(self, task, node, result: dict,
+                             msg_payload: dict,
+                             regenerate_agent: str = "writer",
+                             recheck_agent: str = "quality_gate",
+                             max_gen: int = 3) -> dict:
+        """QualityGate 自动重做循环 —— 独立方法，只重跑 affected node。
+
+        与原内嵌逻辑相比：
+        - 不重新调度整个 level，减少线程池空转
+        - 避免重复检查点写入
+        - 使用 deepcopy 防止 feedback 污染原 payload
+        """
+        try:
+            generation = 0
+            while (result.get("needs_regenerate") and result.get("can_regenerate")
+                   and generation < max_gen and not task.stop_event.is_set()):
+                generation += 1
+                feedback = {
+                    "quality_scores": result.get("scores", {}),
+                    "overall_score": result.get("overall_score", 0),
+                    "style_issues": result.get("style_issues", []),
+                    "citation_report": result.get("citation_report", {}),
+                    "generation_count": result.get("generation_count", 0) + 1,
+                }
+                self._log("info", "质量门控重做",
+                          score=result.get('overall_score', 0), generation=generation)
+
+                # deepcopy 防止 feedback 污染原 msg_payload
+                writer_payload = copy.deepcopy(msg_payload)
+                writer_payload.update(feedback)
+                writer_result = self.bus.request(
+                    topic=f"{regenerate_agent}.input", from_a="orchestrator", to_a=regenerate_agent,
+                    payload=writer_payload, timeout=node.timeout,
+                    idempotency_key=f"regenerate_{task.id}_{regenerate_agent}_g{generation}",
+                )
+                if writer_result and writer_result.get("content"):
+                    msg_payload["content"] = writer_result["content"]
+                    msg_payload["generation_count"] = feedback["generation_count"]
+                    self._set_task_output(task, regenerate_agent, writer_result)
+
+                qg_payload = copy.deepcopy(msg_payload)
+                qg_payload.update(feedback)
+                result = self.bus.request(
+                    topic=f"{recheck_agent}.input", from_a="orchestrator", to_a=recheck_agent,
+                    payload=qg_payload, timeout=node.timeout,
+                    idempotency_key=f"regenerate_{task.id}_{recheck_agent}_g{generation}",
+                )
+                if result:
+                    self._set_task_output(task, recheck_agent, result)
+
+            final_status = "accepted_with_warnings" if result.get("needs_regenerate") else "pass"
+            result["status"] = final_status
+            if result.get("needs_regenerate"):
+                self._log("warning", "质量分仍不达标",
+                          generation=generation, score=result.get('overall_score', 0))
+            else:
+                self._log("info", "质量分通过",
+                          generation=generation, score=result.get('overall_score', 0))
+        except Exception as e:
+            self._log("error", "质量重做异常", error=str(e))
+            result = result or {"status": "error", "error": str(e)}
+
+        return result
 
     def execute_level(self, task, level: list, input_file: str,
                       plan, executor: ThreadPoolExecutor) -> bool:
@@ -351,7 +376,10 @@ class DAGExecutor:
                     )
                     self._log("warning", f"Node {node.agent_name} 失败，{delay:.1f}s 后重试 (尝试 {dag_node.attempts + 1}/{node.max_retries})",
                               task_id=task.id, error=str(e)[:100])
-                    time.sleep(delay)
+                    # 用 stop_event.wait 替代 time.sleep，支持取消中断
+                    if task.stop_event.wait(delay):
+                        # 任务被取消，中断重试
+                        break
                     dag_node.attempts += 1
                     dag_node.status = "pending"
                     try:
@@ -446,7 +474,11 @@ class DAGExecutor:
     # ─── 查询词提取 ─────────────────────────────
 
     def _extract_queries(self, input_file: str, node) -> list[str]:
-        """从输入文件提取查询词（按行，过滤注释/空行/噪音行）"""
+        """从输入文件提取查询词（按行，过滤注释/空行/噪音行）。
+        使用 per-file 缓存避免同一 level 内多个节点重复读取文件。"""
+        cache_key = input_file
+        if cache_key in self._query_cache:
+            return self._query_cache[cache_key]
         with open(input_file, "r", encoding="utf-8") as f:
             content = f.read()
         noise = [r"^这是一个测试", r"^用于验证", r"验证流水线", r"是否正常工作",
@@ -463,6 +495,7 @@ class DAGExecutor:
             queries.append(q)
         if not queries:
             queries = [node.agent_config.config.get("default_query", "Python 异步编程")]
+        self._query_cache[cache_key] = queries
         return queries
 
     # ─── 任务输出读写 ─────────────────────────────

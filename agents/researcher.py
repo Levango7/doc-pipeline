@@ -19,9 +19,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from dataclasses import dataclass, field
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
 
 

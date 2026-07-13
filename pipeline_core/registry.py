@@ -11,6 +11,7 @@ Registry v2 - 增强型 Agent 注册中心
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import threading
@@ -18,6 +19,8 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from enum import Enum, auto
 from typing import Callable, Optional, Any
+
+_logger = logging.getLogger(__name__)
 
 
 class AgentStatus(Enum):
@@ -157,7 +160,7 @@ class Registry:
                     try:
                         instance.on_stop()
                     except Exception as e:
-                        print(f"[Registry] 停止 {name} 时出错: {e}")
+                        _logger.warning(f"[Registry] 停止 {name} 时出错: {e}")
 
             self._agents.pop(name, None)
             self._instances.pop(name, None)
@@ -293,10 +296,10 @@ class Registry:
                 return
             stats = self._stats.setdefault(name, AgentStats())
             if stats.respawn_count >= meta.respawn_max:
-                print(f"[Registry] {name} 已达最大 respawn 次数 ({meta.respawn_max})，不再重试")
+                _logger.warning(f"[Registry] {name} 已达最大 respawn 次数 ({meta.respawn_max})，不再重试")
                 return
 
-            print(f"[Registry] 尝试重启 Agent: {name}")
+            _logger.info(f"[Registry] 尝试重启 Agent: {name}")
             stats.record_respawn()
 
             old_instance = self._instances.get(name)
@@ -304,7 +307,7 @@ class Registry:
                 try:
                     old_instance.on_stop()
                 except Exception as e:
-                    print(f"[Registry] 停止旧实例失败: {e}")
+                    _logger.warning(f"[Registry] 停止旧实例失败: {e}")
 
             if old_instance and hasattr(old_instance, '__class__'):
                 try:
@@ -317,9 +320,9 @@ class Registry:
                     )
                     self._instances[name] = new_instance
                     self._status[name] = AgentStatus.LOADED
-                    print(f"[Registry] {name} 重启成功")
+                    _logger.info(f"[Registry] {name} 重启成功")
                 except Exception as e:
-                    print(f"[Registry] {name} 重启失败: {e}")
+                    _logger.error(f"[Registry] {name} 重启失败: {e}")
                     self._status[name] = AgentStatus.ERROR
 
     # ─── 健康检查 ─────────────────────────────────
@@ -348,7 +351,7 @@ class Registry:
                             self._check_respawn(name)
                     except Exception as e:
                         self._status[name] = AgentStatus.ERROR
-                        print(f"[Registry] {name} 健康检查失败: {e}")
+                        _logger.error(f"[Registry] {name} 健康检查失败: {e}")
 
     # ─── 持久化 ─────────────────────────────────
 
@@ -416,7 +419,7 @@ class Registry:
                     stats.last_error_msg = stats_dict.get("last_error_msg", "")
                     self._stats[name] = stats
             except Exception as e:
-                print(f"[Registry] 加载失败: {e}")
+                _logger.error(f"[Registry] 加载失败: {e}")
 
     def shutdown(self):
         """关闭注册中心"""

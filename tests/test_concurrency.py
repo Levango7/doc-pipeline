@@ -10,8 +10,6 @@ import sys, os, time, threading, tempfile
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from pipeline_core.message_bus_v3 import MessageBus
 
 

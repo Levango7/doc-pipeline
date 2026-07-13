@@ -50,7 +50,7 @@ DEFAULT_RULES = {
     },
     "incremental": {
         "enabled": True,
-        "hash_algorithm": "md5",
+        "hash_algorithm": "sha256",
     },
     "growth_monitor": {
         "enabled": True,
@@ -174,7 +174,7 @@ class IncrementalChecker:
         return sections
 
     def _hash(self, text: str) -> str:
-        algo = self.cfg.data.get("incremental", {}).get("hash_algorithm", "md5")
+        algo = self.cfg.data.get("incremental", {}).get("hash_algorithm", "sha256")
         h = hashlib.new(algo)
         h.update(text.encode("utf-8"))
         return h.hexdigest()

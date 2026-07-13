@@ -18,9 +18,6 @@ import tempfile
 import threading
 from pathlib import Path
 from urllib.parse import urlparse
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
 
 # Async I/O 支持（可选）
@@ -142,7 +139,8 @@ class FetcherAgent(BaseAgent):
                 "filtered": stats_snapshot["filtered"],
             },
         }
-        self.cleanup_task_temp(task_id)
+        # 注意：不在此处清理临时文件，因为下游 agent (writer) 需要读取 local_path。
+        # 临时文件由 orchestrator 在流水线完成后统一清理（cleanup_stale_temp）。
         return result
 
     def _fetch_all_sync(self, results: list, query: str, task_id: str, task_dir: Path) -> list:
@@ -213,7 +211,7 @@ class FetcherAgent(BaseAgent):
                     self.log_debug(f"  过滤不可用内容: {url[:60]}")
                     return None
 
-                safe_name = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fff-]', '_', title)[:60] or hashlib.md5(url.encode()).hexdigest()[:12]
+                safe_name = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fff-]', '_', title)[:60] or hashlib.sha256(url.encode()).hexdigest()[:12]
                 file_path = task_dir / f"{safe_name}.txt"
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(f"标题: {title}\n")
@@ -279,7 +277,7 @@ class FetcherAgent(BaseAgent):
                     self.log_debug(f"  过滤不可用内容: {url[:60]}")
                     return None
 
-                safe_name = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fff-]', '_', title)[:60] or hashlib.md5(url.encode()).hexdigest()[:12]
+                safe_name = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fff-]', '_', title)[:60] or hashlib.sha256(url.encode()).hexdigest()[:12]
                 file_path = task_dir / f"{safe_name}.txt"
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(f"标题: {title}\n")

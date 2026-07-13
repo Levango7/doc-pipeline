@@ -35,7 +35,15 @@ class AgentConfig:
 
 @dataclass
 class ExecutionNode:
-    """执行节点"""
+    """执行节点
+
+    命名约定：
+      - 当 agent 的 pool_size > 1 时，节点 agent_name 格式为 ``{base_name}_pool_{index}``，
+        例如 ``writer_pool_0``、``writer_pool_1``。
+      - 当 pool_size == 1 时，agent_name 即原始 agent 名称，无 _pool_ 后缀。
+      - 所有依赖展开、schema 校验、lockfile 生成均遵循此约定，
+        反向解析使用 ``agent_name.split("_pool_")[0]`` 还原 base_name。
+    """
     agent_name: str
     agent_config: AgentConfig
     dependencies: list = field(default_factory=list)
@@ -110,6 +118,21 @@ class Scheduler:
     def list_pipelines(self) -> list[str]:
         return [p.stem for p in self.pipeline_dir.glob("*.yaml")
                 if not p.name.startswith("_")]
+
+    def visualize(self, plan: ExecutionPlan) -> str:
+        """可视化执行计划（ExecutionPlan -> 文本树）"""
+        lines = [f"执行计划: {plan.pipeline_name}", "=" * 60]
+        for i, level in enumerate(plan.levels):
+            lines.append(f"  Level {i + 1}:")
+            for node in level:
+                deps = ", ".join(node.dependencies) if node.dependencies else "-"
+                pool = f" (pool={node.agent_config.pool_size})" if node.agent_config.pool_size > 1 else ""
+                lines.append(f"    {node.agent_name}{pool}")
+                lines.append(f"      依赖: {deps}")
+                lines.append(f"      超时: {node.timeout}s  重试: {node.max_retries}")
+            lines.append("")
+        lines.append(f"  总节点数: {plan.node_count}")
+        return "\n".join(lines)
 
     def load(self, pipeline_name: str) -> dict:
         path = self.pipeline_dir / f"{pipeline_name}.yaml"
@@ -295,7 +318,7 @@ class Scheduler:
         for level in plan.levels:
             for node in level:
                 cfg = node.agent_config
-                config_hash = hashlib.md5(
+                config_hash = hashlib.sha256(
                     json.dumps(cfg.config, sort_keys=True).encode()
                 ).hexdigest()[:12]
                 lock["agents"][node.agent_name] = {

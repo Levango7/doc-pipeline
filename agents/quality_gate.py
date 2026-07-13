@@ -22,7 +22,6 @@ import yaml
 from pathlib import Path
 from typing import Optional
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
 from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
 
 
@@ -48,6 +47,8 @@ DEFAULT_PROFILE = "technical-doc.yaml"
 
 def load_profile(profile_name: str) -> dict:
     """加载 Quality Profile YAML"""
+    import logging
+    _log = logging.getLogger(__name__)
     try:
         path = Path(profile_name)
         if not path.exists():
@@ -57,13 +58,13 @@ def load_profile(profile_name: str) -> dict:
         if not path.exists():
             path = QUALITY_DIR / DEFAULT_PROFILE
         if not path.exists():
-            print(f"[quality_gate] 警告: 未找到 profile 文件", flush=True)
+            _log.warning("QualityGate: 未找到 profile 文件")
             return {}
 
         with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except Exception as e:
-        print(f"[quality_gate] 警告: 加载 profile 失败: {e}", flush=True)
+        _log.warning(f"QualityGate: 加载 profile 失败: {e}")
         return {}
 
 

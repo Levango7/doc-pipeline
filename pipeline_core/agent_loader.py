@@ -14,6 +14,10 @@ class AgentLoader:
         self.bus = bus
         self.agents_dir = Path(agents_dir)
         self._logger = logger
+        # 统一将项目根目录加入 sys.path，替代各 agent 文件中的 sys.path.insert hack
+        project_root = str(self.agents_dir.parent.resolve())
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
 
     def discover(self) -> list[str]:
         """自动发现 agents 目录下的插件"""

@@ -8,8 +8,6 @@
 import sys, os, time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from pipeline_core.message_bus_v3 import MessageBus
 from pipeline_core.circuit_breaker import CircuitBreaker, CircuitState
 from pipeline_core.base_agent import BaseAgent, AgentMeta, AgentStatus

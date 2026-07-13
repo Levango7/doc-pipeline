@@ -18,7 +18,7 @@ class ResultCache:
         os.makedirs(cache_dir, exist_ok=True)
 
     def _key(self, query: str) -> str:
-        return hashlib.md5(query.encode()).hexdigest()
+        return hashlib.sha256(query.encode()).hexdigest()
 
     def _path(self, query: str) -> str:
         return os.path.join(self.cache_dir, f"{self._key(query)}.json")

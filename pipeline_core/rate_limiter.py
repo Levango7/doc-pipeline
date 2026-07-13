@@ -11,9 +11,12 @@ RateLimiter v1 - 令牌桶限流器
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Optional
+
+_logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
@@ -102,7 +105,7 @@ class RateLimiter:
         """动态调整速率"""
         with self._lock:
             self.rate = new_rate
-            print(f"[RateLimiter] {self.name} 速率调整为 {new_rate}/s", flush=True)
+            _logger.info(f"[RateLimiter] {self.name} 速率调整为 {new_rate}/s")
 
     @property
     def available(self) -> float:

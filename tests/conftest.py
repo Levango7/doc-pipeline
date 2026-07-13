@@ -6,6 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+
 from pipeline_core.message_bus_v3 import MessageBus
 from pipeline_core.circuit_breaker import CircuitBreakerRegistry
 from pipeline_core.rate_limiter import RateLimiterRegistry
@@ -21,6 +22,25 @@ AGENTS_DIR = str(PROJECT / "agents")
 PIPELINES_DIR = str(PROJECT / "pipelines")
 CHECKPOINT_DIR = PROJECT / ".test_checkpoints"
 OUTPUT_DIR = PROJECT / ".test_outputs"
+
+
+# ── 覆盖 pytest 内置 tmp_path，避免 Windows Temp 权限问题 ──
+_LOCAL_TMP = PROJECT / ".pytest_tmp"
+_tmp_counter = [0]
+
+
+@pytest.fixture
+def tmp_path():
+    """使用项目本地 .pytest_tmp 目录替代系统 Temp，规避 WinError 5 权限拒绝"""
+    _tmp_counter[0] += 1
+    d = _LOCAL_TMP / f"tmp_{os.getpid()}_{_tmp_counter[0]}"
+    d.mkdir(parents=True, exist_ok=True)
+    yield d
+    # 清理：best-effort
+    try:
+        shutil.rmtree(str(d), ignore_errors=True)
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True)

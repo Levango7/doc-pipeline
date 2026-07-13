@@ -24,9 +24,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 from collections import defaultdict
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
 
 
@@ -136,7 +133,7 @@ class WriterAgent(BaseAgent):
         if not self._llm_api_key or not content.strip():
             return content
 
-        cache_key = hashlib.md5((content[:200] + query).encode()).hexdigest()
+        cache_key = hashlib.sha256((content[:200] + query).encode()).hexdigest()
         now = time.time()
         with self._cache_lock:
             cached_entry = self._polish_cache.get(cache_key)
@@ -428,7 +425,7 @@ class WriterAgent(BaseAgent):
         if not self._llm_api_key:
             return None
 
-        cache_key_short = hashlib.md5((query + title[:50]).encode()).hexdigest()
+        cache_key_short = hashlib.sha256((query + title[:50]).encode()).hexdigest()
         now_ts = time.time()
         with self._cache_lock:
             cached_entry = self._restructure_cache.get(cache_key_short)

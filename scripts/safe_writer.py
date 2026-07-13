@@ -39,14 +39,14 @@ def now_ts() -> str:
 def file_info(path: str) -> dict:
     """读取文件基本信息"""
     if not os.path.exists(path):
-        return {"exists": False, "size": 0, "lines": 0, "md5": ""}
+        return {"exists": False, "size": 0, "lines": 0, "sha256": ""}
     with open(path, "rb") as f:
         raw = f.read()
     return {
         "exists": True,
         "size": len(raw),
         "lines": raw.count(b"\n") + 1,
-        "md5": hashlib.md5(raw).hexdigest(),
+        "sha256": hashlib.sha256(raw).hexdigest(),
     }
 
 
@@ -54,7 +54,7 @@ def file_checksum(path: str) -> str | None:
     if not os.path.exists(path):
         return None
     with open(path, "rb") as f:
-        return hashlib.md5(f.read()).hexdigest()
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 # =============================================================================
@@ -301,7 +301,7 @@ def safe_write(target: str, content: str,
             "timestamp": datetime.datetime.now().isoformat(),
             "size": info["size"],
             "lines": info["lines"],
-            "md5": info["md5"],
+            "sha256": info["sha256"],
             "reason": reason,
             "agent": agent,
         }

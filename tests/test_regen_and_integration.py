@@ -9,8 +9,6 @@
 import sys, os, time, tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from pipeline_core.message_bus_v3 import MessageBus, Message, MessageType
 from pipeline_core.base_agent import BaseAgent, AgentMeta
 from agents.quality_gate import QualityGateAgent

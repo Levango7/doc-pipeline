@@ -281,7 +281,7 @@ doc-pipeline/
 │       ├── technical-doc.yaml
 │       └── tutorial.yaml
 ├── dashboard/           # 前端仪表盘
-├── tests/               # 50 个测试
+├── tests/               # 89 个测试
 ├── checkpoints/         # 断点 + 日志（自动轮转）
 ├── run.py               # CLI 入口
 ├── Dockerfile
@@ -298,7 +298,7 @@ doc-pipeline/
 | 端到端（docgen, 20 页抓取） | ~7s |
 | Fetcher 并发 | 20 页 / 3s (aiohttp) |
 | LLM 额度消耗 | 0（质量门控跳过，规则兜底） |
-| 测试覆盖 | 50 tests |
+| 测试覆盖 | 89 tests |
 
 ---
 

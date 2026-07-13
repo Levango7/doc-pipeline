@@ -7,8 +7,6 @@ import shutil
 import threading
 from pathlib import Path
 from datetime import datetime
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
 from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
 
 AGENT_NAME = "safe_writer"
@@ -128,16 +126,16 @@ class SafeWriterAgent(BaseAgent):
             return {"exists": False}
         st = os.stat(path)
         size = st.st_size
-        md5 = hashlib.md5()
+        sha256 = hashlib.sha256()
         lines = 1
         with open(path, "rb") as f:
             while True:
                 chunk = f.read(8192)
                 if not chunk:
                     break
-                md5.update(chunk)
+                sha256.update(chunk)
                 lines += chunk.count(b"\n")
-        return {"exists": True, "size": size, "lines": lines, "md5": md5.hexdigest()}
+        return {"exists": True, "size": size, "lines": lines, "sha256": sha256.hexdigest()}
 
     def _load_manifest(self, path):
         if not Path(path).exists():

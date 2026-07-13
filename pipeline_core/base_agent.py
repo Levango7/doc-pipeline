@@ -15,11 +15,70 @@ import time
 import hashlib
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 from .registry import AgentMeta, AgentStatus
 from .message_bus_v3 import Message
+
+
+# ─── AgentResult ──────────────────────────────
+
+@dataclass
+class AgentResult:
+    """Agent 处理结果的统一返回类型。
+
+    替代裸 dict 返回，提供类型安全和字段约束。
+    所有 agent 的 handle() 方法应返回 AgentResult 或 None。
+
+    字段说明：
+      - status: "ok" | "error" | "skip" | "pass" | "accepted_with_warnings"
+      - content: 处理后的主要内容（文本/数据）
+      - data: 附加结构化数据（scores、metadata 等）
+      - error: 错误信息（status="error" 时填充）
+      - meta: 任意元信息（generation_count、timing 等）
+    """
+    status: str = "ok"
+    content: Any = None
+    data: dict = field(default_factory=dict)
+    error: str = ""
+    meta: dict = field(default_factory=dict)
+
+    @property
+    def is_ok(self) -> bool:
+        return self.status in ("ok", "pass", "accepted_with_warnings")
+
+    @property
+    def is_error(self) -> bool:
+        return self.status == "error"
+
+    def to_dict(self) -> dict:
+        """序列化为 dict（兼容旧代码中期望 dict 的调用方）"""
+        d = {"status": self.status}
+        if self.content is not None:
+            d["content"] = self.content
+        if self.data:
+            d.update(self.data)
+        if self.error:
+            d["error"] = self.error
+        if self.meta:
+            d["meta"] = self.meta
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "AgentResult":
+        """从 dict 构造（兼容旧 agent 返回的裸 dict）"""
+        if not d:
+            return cls(status="skip")
+        status = d.get("status", "ok")
+        content = d.get("content")
+        error = d.get("error", "")
+        # 将非保留字段归入 data
+        reserved = {"status", "content", "error", "meta"}
+        data = {k: v for k, v in d.items() if k not in reserved}
+        meta = d.get("meta", {})
+        return cls(status=status, content=content, data=data, error=error, meta=meta)
 
 
 class AgentLogger:
@@ -261,7 +320,7 @@ class BaseAgent(ABC):
         if self.meta.cache_ttl <= 0:
             return None
 
-        fpath = self._cache_dir / f"{hashlib.md5(key.encode()).hexdigest()}.json"
+        fpath = self._cache_dir / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
         if not fpath.exists():
             return None
 
@@ -283,7 +342,7 @@ class BaseAgent(ABC):
         if self.meta.cache_ttl <= 0:
             return
 
-        fpath = self._cache_dir / f"{hashlib.md5(key.encode()).hexdigest()}.json"
+        fpath = self._cache_dir / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
         try:
             with open(fpath, "w", encoding="utf-8") as f:
                 json.dump({"key": key, "ts": time.time(), "data": data},

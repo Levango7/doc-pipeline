@@ -39,7 +39,8 @@ class TestRateLimiterBasics:
         rl = rate_limiters.get_or_create("rl_refill", rate=10, burst=5)
         for _ in range(5):
             rl.acquire(1.0, block=False)
-        assert rl.available == 0
+        # 容忍微秒级 refill 误差（flaky fix: == 0 → < 0.01）
+        assert rl.available < 0.01
         time.sleep(0.6)
         assert rl.available >= 1.0
 

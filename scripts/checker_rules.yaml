@@ -61,7 +61,7 @@ rules:
 
 incremental:
   enabled: true
-  hash_algorithm: md5
+  hash_algorithm: sha256
 
 growth_monitor:
   enabled: true

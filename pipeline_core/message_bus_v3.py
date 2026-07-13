@@ -6,6 +6,7 @@ MessageBus v3 - 持久化消息总线
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import traceback
@@ -18,6 +19,8 @@ from .message_store import (
     MessageType, MessagePriority, Message, MessageMetrics,
     PersistentStore,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 # ─── MessageBus ──────────────────────────────
@@ -270,8 +273,7 @@ class MessageBus:
             except Empty:
                 continue
             except Exception as e:
-                print(f"[MessageBus] _process_loop error: {e}", flush=True)
-                traceback.print_exc()
+                _logger.error(f"[MessageBus] _process_loop error: {e}", exc_info=True)
 
     # ─── 查询 ─────────────────────────────────
 

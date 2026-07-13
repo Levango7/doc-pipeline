@@ -20,6 +20,7 @@ Admin API v1 - 轻量级 REST API（零外部依赖）
 from __future__ import annotations
 
 import json
+import logging
 import os
 import mimetypes
 import threading
@@ -27,6 +28,8 @@ import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Optional
+
+_logger = logging.getLogger(__name__)
 
 
 class AdminHandler(BaseHTTPRequestHandler):
@@ -381,19 +384,19 @@ class AdminAPI:
             AdminHandler.api_key = self.api_key
             if self.serve_static and self.dashboard_dir:
                 AdminHandler.dashboard_dir = self.dashboard_dir
-                print(f"[AdminAPI] 静态文件目录: {self.dashboard_dir}", flush=True)
+                _logger.info(f"[AdminAPI] 静态文件目录: {self.dashboard_dir}")
             if self.api_key:
-                print(f"[AdminAPI] 已启用 API Key 鉴权", flush=True)
+                _logger.info("[AdminAPI] 已启用 API Key 鉴权")
             self._server = HTTPServer((self.host, self.port), AdminHandler)
             self._thread = threading.Thread(
                 target=self._server.serve_forever, daemon=True,
                 name="admin-api",
             )
             self._thread.start()
-            print(f"[AdminAPI] 启动 http://{self.host}:{self.port}", flush=True)
+            _logger.info(f"[AdminAPI] 启动 http://{self.host}:{self.port}")
             return True
         except Exception as e:
-            print(f"[AdminAPI] 启动失败: {e}", flush=True)
+            _logger.error(f"[AdminAPI] 启动失败: {e}")
             return False
 
     def stop(self):
