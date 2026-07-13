@@ -23,6 +23,27 @@
 
 ## 🚀 快速开始
 
+### 前置条件
+
+- Python 3.10+
+- 网络连接（用于检索引擎抓取内容）
+- 无需 API Key — 默认使用 Bing/Sogou/360 搜索引擎
+
+### 3 步快速体验
+
+```bash
+# 1. 安装依赖
+pip install -r requirements.txt
+
+# 2. 生成文档
+python run.py test_input.md -o output/my_doc.md
+
+# 3. 查看结果
+type output\my_doc.md
+```
+
+完成！输入文件是一行主题描述，输出是结构化 Markdown 文档。
+
 ### 安装
 
 ```bash
@@ -181,6 +202,23 @@ citation:
 ```
 
 运行时通过 pipeline YAML 的 `quality_profile` 切换。
+
+### 生产环境配置
+
+项目提供 `config.production.json` 模板，与默认 `config.json`（测试用）的区别：
+
+| 配置项 | 测试 (config.json) | 生产 (config.production.json) |
+|--------|-------------------|------------------------------|
+| `search_engines` | `["mock"]` | `["bing", "sogou", "360"]` |
+| `fail_fast` | `true` | `false`（单 Agent 失败不中断流水线） |
+| `max_workers` | 3 | 5 |
+| `cache_size` | 1000 | 2000 |
+| `admin_api.enabled` | — | `false`（按需开启） |
+
+```bash
+# 使用生产配置
+python run.py input.md -c config.production.json -o output/doc.md
+```
 
 ---
 

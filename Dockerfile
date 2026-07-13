@@ -50,8 +50,13 @@ VOLUME ["/app/checkpoints", "/app/logs"]
 # Admin API
 EXPOSE 8910
 
+# Health check (admin API /health endpoint)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8910/health', timeout=3)" || exit 1
+
 # Drop privileges
 USER app:app
 
-# Default: show help
-CMD ["python", "run.py", "--help"]
+# Default: run pipeline with production config
+ENTRYPOINT ["python", "run.py"]
+CMD ["--help"]
