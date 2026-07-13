@@ -12,6 +12,7 @@ import sys
 import os
 import json
 import uuid
+import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -100,10 +101,53 @@ def main():
     parser.add_argument("--admin", action="store_true", help="启动管理 API 服务")
     parser.add_argument("--dashboard", action="store_true", help="启动管理 API + 仪表盘（隐含 --admin）")
     parser.add_argument("--daemon", action="store_true", help="守护进程模式：流水线执行完后保持 Admin API 常驻")
+    parser.add_argument("--check", action="store_true", help="运行启动自检后退出")
+    parser.add_argument("--three-pass", action="store_true", help="使用三阶段流水线（研究→结构→精修）")
+    parser.add_argument("--health-check", action="store_true", help="启动时运行 LLM 健康检查")
 
     args = parser.parse_args()
 
     print_banner()
+
+    # ─── 启动自检 ──────────────────────────────
+    if args.check:
+        from pipeline_core.bootstrap import run_startup_check
+        report = run_startup_check(run_health_check=args.health_check)
+        print(report.summary())
+        sys.exit(1 if report.has_errors else 0)
+
+    # 快速自检（非阻塞，仅警告）
+    try:
+        from pipeline_core.bootstrap import quick_check
+        if not quick_check():
+            print("[run] 启动自检发现错误，使用 --check 查看详情")
+    except Exception:
+        pass  # 自检失败不阻断启动
+
+    # ─── 三阶段流水线模式 ──────────────────────
+    if args.three_pass:
+        from pipeline_core.three_pass_pipeline import ThreePassPipeline
+        # 从输入文件读取主题
+        input_text = Path(args.input).read_text(encoding="utf-8").strip()
+        if not input_text:
+            print("[run] 输入文件为空")
+            return
+        output = args.output or f"output/three_pass_{int(time.time())}.md"
+        pipeline = ThreePassPipeline()
+        result = pipeline.generate(input_text, output_path=output)
+        print(f"\n{'='*60}")
+        print(f"三阶段流水线完成 | 状态: {result['status']}")
+        print(f"耗时: {result.get('duration', 0):.1f}s")
+        if result["status"] == "ok":
+            phases = result.get("phases", {})
+            for name, info in phases.items():
+                print(f"  {name}: {info['status']} ({info['duration']:.1f}s)")
+            print(f"输出: {result.get('output_path', '')}")
+            print(f"章节: {result.get('section_count', 0)} | 长度: {result.get('content_length', 0)} 字符")
+        else:
+            print(f"错误: {result.get('error', '')}")
+        print(f"{'='*60}")
+        return
 
     # 加载配置
     config = {}

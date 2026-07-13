@@ -1,0 +1,375 @@
+"""
+LLM Router — 多供应商 LLM 路由器
+=================================
+核心特性：
+  - 10 个 LLM 供应商自动 fallback
+  - 健康检查 + 自动故障转移
+  - 加权选择 + 优先级排序
+  - Cloudflare Workers AI 格式自动适配
+  - 从 .env 加载配置
+  - 线程安全
+
+供应商列表（按 .env 配置优先级）：
+  1. Cloudflare Workers AI (Kimi K2.6)
+  2. 小米 MiMo
+  3. 美团 LongCat
+  4. 商汤 SenseNova
+  5. Agnes AI
+  6. NVIDIA NIM
+  7. 百度千帆
+  8. Dahl
+  9. SiliconFlow
+  10. 本地 Ollama（可选）
+"""
+import json
+import os
+import time
+import logging
+import threading
+import urllib.request
+import urllib.error
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LLMProvider:
+    """LLM 供应商配置"""
+    name: str
+    api_url: str
+    api_key: str
+    model: str
+    priority: int = 100          # 数字越小优先级越高
+    enabled: bool = True
+    is_cloudflare: bool = False  # CF Workers AI 需特殊格式
+    max_tokens: int = 4096
+    timeout: int = 120
+    # 运行时状态
+    _healthy: bool = True
+    _last_error: str = ""
+    _last_check: float = 0.0
+    _fail_count: int = 0
+
+    @property
+    def healthy(self) -> bool:
+        return self._healthy
+
+    def mark_failed(self, error: str):
+        self._fail_count += 1
+        self._last_error = error
+        self._last_check = time.time()
+        if self._fail_count >= 3:
+            self._healthy = False
+            logger.warning(f"LLM 供应商 {self.name} 标记为不健康 (连续失败 {self._fail_count} 次)")
+
+    def mark_success(self):
+        self._fail_count = 0
+        self._healthy = True
+        self._last_error = ""
+        self._last_check = time.time()
+
+    def check_health(self) -> bool:
+        """主动健康检查（发送简单请求）"""
+        try:
+            messages = [{"role": "user", "content": "1+1=?"}]
+            result = _call_llm(self, messages, max_tokens=10, timeout=15)
+            self.mark_success()
+            return True
+        except Exception as e:
+            self.mark_failed(str(e))
+            return False
+
+
+def _call_llm(provider: LLMProvider, messages: list[dict],
+              max_tokens: int = 4096, temperature: float = 0.3,
+              timeout: int = None) -> str:
+    """底层 LLM 调用（自动适配 Cloudflare 格式）"""
+    timeout = timeout or provider.timeout
+    is_cf = provider.is_cloudflare or "/ai/run" in provider.api_url
+
+    if is_cf:
+        payload = {
+            "model": provider.model,
+            "input": {"messages": messages},
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+    else:
+        payload = {
+            "model": provider.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        provider.api_url, data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {provider.api_key}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode())
+
+    if is_cf:
+        body = body.get("result", body)
+
+    content = body["choices"][0]["message"]["content"]
+    return content.strip() if content else ""
+
+
+class LLMRouter:
+    """多供应商 LLM 路由器
+
+    用法：
+        router = LLMRouter.from_env()
+        reply = router.chat([{"role": "user", "content": "你好"}])
+        # 自动选择健康供应商，失败自动 fallback
+    """
+
+    def __init__(self, providers: list[LLMProvider] = None):
+        self._providers: list[LLMProvider] = providers or []
+        self._lock = threading.Lock()
+        self._sort_providers()
+        logger.info(f"LLMRouter 初始化: {len(self._providers)} 个供应商")
+
+    def _sort_providers(self):
+        """按优先级排序"""
+        self._providers.sort(key=lambda p: (p.priority, not p.enabled))
+
+    def add_provider(self, provider: LLMProvider):
+        with self._lock:
+            self._providers.append(provider)
+            self._sort_providers()
+
+    def get_active_providers(self) -> list[LLMProvider]:
+        """获取所有启用的供应商（按优先级排序）"""
+        return [p for p in self._providers if p.enabled and p.healthy]
+
+    def get_best_provider(self) -> Optional[LLMProvider]:
+        """获取最佳供应商"""
+        active = self.get_active_providers()
+        return active[0] if active else None
+
+    def chat(self, messages: list[dict], max_tokens: int = 4096,
+             temperature: float = 0.3, timeout: int = None,
+             preferred: str = None) -> tuple[str, str]:
+        """调用 LLM（自动 fallback）
+
+        返回: (content, provider_name)
+        异常: 所有供应商都失败时抛 RuntimeError
+        """
+        with self._lock:
+            candidates = list(self._providers)
+
+        # 优先使用指定供应商
+        if preferred:
+            for p in candidates:
+                if p.name == preferred and p.enabled and p.healthy:
+                    candidates.remove(p)
+                    candidates.insert(0, p)
+                    break
+
+        # 过滤可用供应商
+        usable = [p for p in candidates if p.enabled and p.healthy]
+        if not usable:
+            # 尝试重新激活不健康的供应商（可能已恢复）
+            logger.info("所有供应商不健康，尝试重新检查...")
+            usable = [p for p in candidates if p.enabled]
+            for p in usable:
+                if p.check_health():
+                    logger.info(f"供应商 {p.name} 已恢复")
+                else:
+                    logger.warning(f"供应商 {p.name} 仍不健康: {p._last_error}")
+            usable = [p for p in usable if p.healthy]
+
+        if not usable:
+            raise RuntimeError("所有 LLM 供应商不可用")
+
+        last_error = ""
+        for provider in usable:
+            try:
+                content = _call_llm(provider, messages, max_tokens, temperature, timeout)
+                provider.mark_success()
+                logger.debug(f"LLM 调用成功: {provider.name}")
+                return content, provider.name
+            except Exception as e:
+                provider.mark_failed(str(e))
+                last_error = f"{provider.name}: {e}"
+                logger.warning(f"LLM 供应商 {provider.name} 失败: {e}")
+                continue
+
+        raise RuntimeError(f"所有 LLM 供应商调用失败，最后错误: {last_error}")
+
+    def health_check_all(self) -> dict:
+        """检查所有供应商健康状态"""
+        results = {}
+        for p in self._providers:
+            if not p.enabled:
+                results[p.name] = {"status": "disabled", "healthy": False}
+                continue
+            healthy = p.check_health()
+            results[p.name] = {
+                "status": "healthy" if healthy else "unhealthy",
+                "healthy": healthy,
+                "fail_count": p._fail_count,
+                "last_error": p._last_error,
+                "model": p.model,
+                "priority": p.priority,
+            }
+        return results
+
+    def status(self) -> dict:
+        """获取路由器状态摘要"""
+        return {
+            "total_providers": len(self._providers),
+            "active": len(self.get_active_providers()),
+            "providers": [
+                {
+                    "name": p.name,
+                    "model": p.model,
+                    "priority": p.priority,
+                    "enabled": p.enabled,
+                    "healthy": p.healthy,
+                    "fail_count": p._fail_count,
+                }
+                for p in self._providers
+            ],
+        }
+
+    # ─── 从 .env 加载 ──────────────────────────────
+
+    @classmethod
+    def from_env(cls, env_path: str = None) -> "LLMRouter":
+        """从 .env 文件加载所有供应商配置
+
+        .env 格式（每个供应商三行）：
+            LLM_API_KEY=xxx
+            LLM_API_URL=xxx
+            LLM_MODEL=xxx
+        备选供应商以注释状态存在，取消注释即激活。
+        """
+        env = _load_env(env_path)
+        providers = []
+
+        # 供应商定义表: (name, url_key, model_key, key_key, priority, is_cf)
+        provider_defs = [
+            ("cloudflare",  "LLM_API_URL",  "LLM_MODEL",  "LLM_API_KEY",  10, True),
+            ("xiaomi_mimo", "MIMO_API_URL", "MIMO_MODEL", "MIMO_API_KEY", 20, False),
+            ("longcat",     "LONGCAT_API_URL","LONGCAT_MODEL","LONGCAT_API_KEY", 30, False),
+            ("sensenova",   "SENSENOVA_API_URL","SENSENOVA_MODEL","SENSENOVA_API_KEY", 40, False),
+            ("agnes",       "AGNES_API_URL", "AGNES_MODEL", "AGNES_API_KEY", 50, False),
+            ("nvidia",      "NVIDIA_API_URL","NVIDIA_MODEL","NVIDIA_API_KEY", 60, False),
+            ("qianfan",     "QIANFAN_API_URL","QIANFAN_MODEL","QIANFAN_API_KEY", 70, False),
+            ("dahl",        "DAHL_API_URL",  "DAHL_MODEL",  "DAHL_API_KEY",  80, False),
+            ("siliconflow", "SILICONFLOW_API_URL","SILICONFLOW_MODEL","SILICONFLOW_API_KEY", 90, False),
+            ("ollama",      "OLLAMA_API_URL","OLLAMA_MODEL","OLLAMA_API_KEY", 100, False),
+        ]
+
+        for name, url_key, model_key, key_key, priority, is_cf in provider_defs:
+            api_key = env.get(key_key, "")
+            api_url = env.get(url_key, "")
+            model = env.get(model_key, "")
+            if api_key and api_url and model:
+                providers.append(LLMProvider(
+                    name=name, api_url=api_url, api_key=api_key,
+                    model=model, priority=priority, is_cloudflare=is_cf,
+                ))
+
+        # 兼容：如果只有通用 LLM_API_KEY/URL/MODEL（无供应商前缀）
+        if not providers:
+            api_key = env.get("LLM_API_KEY", "")
+            api_url = env.get("LLM_API_URL", "")
+            model = env.get("LLM_MODEL", "")
+            if api_key and api_url and model:
+                is_cf = "/ai/run" in api_url
+                providers.append(LLMProvider(
+                    name="default", api_url=api_url, api_key=api_key,
+                    model=model, priority=10, is_cloudflare=is_cf,
+                ))
+
+        return cls(providers)
+
+    @classmethod
+    def from_dict(cls, config: dict) -> "LLMRouter":
+        """从字典配置加载"""
+        providers = []
+        for i, p_cfg in enumerate(config.get("providers", [])):
+            providers.append(LLMProvider(
+                name=p_cfg.get("name", f"provider_{i}"),
+                api_url=p_cfg["api_url"],
+                api_key=p_cfg["api_key"],
+                model=p_cfg["model"],
+                priority=p_cfg.get("priority", 100),
+                enabled=p_cfg.get("enabled", True),
+                is_cloudflare=p_cfg.get("is_cloudflare", False),
+                max_tokens=p_cfg.get("max_tokens", 4096),
+                timeout=p_cfg.get("timeout", 120),
+            ))
+        return cls(providers)
+
+
+def _load_env(env_path: str = None) -> dict:
+    """加载 .env 文件（支持注释行）"""
+    if env_path is None:
+        # 向上查找 .env
+        cwd = Path.cwd()
+        for p in [cwd] + list(cwd.parents):
+            candidate = p / ".env"
+            if candidate.exists():
+                env_path = str(candidate)
+                break
+
+    env = {}
+    if not env_path or not Path(env_path).exists():
+        # 回退到环境变量
+        return dict(os.environ)
+
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if value:
+                    env[key] = value
+    except Exception as e:
+        logger.warning(f"加载 .env 失败: {e}")
+
+    # 合并系统环境变量（系统优先）
+    for k, v in os.environ.items():
+        env.setdefault(k, v)
+
+    return env
+
+
+# ─── 便捷函数 ──────────────────────────────────
+
+_router_instance: Optional[LLMRouter] = None
+_router_lock = threading.Lock()
+
+
+def get_router() -> LLMRouter:
+    """获取全局 LLMRouter 单例"""
+    global _router_instance
+    with _router_lock:
+        if _router_instance is None:
+            _router_instance = LLMRouter.from_env()
+        return _router_instance
+
+
+def reset_router():
+    """重置全局路由器（配置变更后调用）"""
+    global _router_instance
+    with _router_lock:
+        _router_instance = None

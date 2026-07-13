@@ -275,6 +275,32 @@ class ResearcherAgent(BaseAgent):
 
         all_results = []
 
+        # 优先尝试 SearchEngineManager（多引擎统一接口 + Metaso API）
+        try:
+            from pipeline_core.search_engines import SearchEngineManager
+            manager = SearchEngineManager.from_env()
+            if manager.engines:
+                self.log_debug(f"SearchEngineManager 可用: {[e.name for e in manager.engines]}")
+                items = manager.search(query, max_results=10)
+                if items:
+                    for item in items:
+                        all_results.append(SearchResult(
+                            title=item.title,
+                            url=item.url,
+                            snippet=item.snippet,
+                            source=item.source,
+                            query=query,
+                        ))
+                    self.log_info(f"SearchEngineManager 返回 {len(all_results)} 条结果")
+        except Exception as e:
+            self.log_debug(f"SearchEngineManager 不可用，回退到内置引擎: {e}")
+
+        # 如果 SearchEngineManager 已返回足够结果，跳过内置引擎
+        if len(all_results) >= 5:
+            self._cache.set(cache_key, [r.to_dict() for r in all_results])
+            return all_results
+
+        # 回退：内置引擎串行搜索
         for engine in engines:
             try:
                 # 每引擎独立限流

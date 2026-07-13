@@ -132,7 +132,18 @@ class WriterAgent(BaseAgent):
 
     def _llm_chat(self, messages: list[dict], max_tokens: int = 4096,
                   temperature: float = 0.3, timeout: int = 120) -> str:
-        """统一 LLM 调用（自动适配 Cloudflare Workers AI 格式）"""
+        """统一 LLM 调用（优先用 LLMRouter 多供应商 fallback，回退到单 LLM）"""
+        # 优先尝试 LLMRouter（多供应商自动 fallback）
+        try:
+            from pipeline_core.llm_router import get_router
+            router = get_router()
+            if router and router.providers:
+                return router.chat(messages, max_tokens=max_tokens,
+                                   temperature=temperature, timeout=timeout)
+        except Exception as e:
+            self.log_debug(f"LLMRouter 不可用，回退到单 LLM: {e}")
+
+        # 回退：原有单 LLM 调用（自动适配 Cloudflare Workers AI 格式）
         is_cf = "/ai/run" in self._llm_api_url
         if is_cf:
             payload = {"model": self._llm_model, "input": {"messages": messages},
