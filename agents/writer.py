@@ -93,12 +93,14 @@ class WriterAgent(BaseAgent):
         }
         self.log_info(f"Writer v{AGENT_VERSION} 初始化完成")
 
-        # LLM 润色配置（硅基流动 DeepSeek V4 Flash）
+        # LLM 润色配置（支持任意 OpenAI 兼容接口）
         self._llm_api_url = config.get("llm_api_url",
-            "https://api.siliconflow.cn/v1/chat/completions")
+            os.environ.get("LLM_API_URL", "https://api.siliconflow.cn/v1/chat/completions"))
         self._llm_api_key = config.get("llm_api_key",
+            os.environ.get("LLM_API_KEY", "") or
             os.environ.get("SILICONFLOW_API_KEY", ""))
-        self._llm_model = config.get("llm_model", "deepseek-ai/DeepSeek-V4-Flash")
+        self._llm_model = config.get("llm_model",
+            os.environ.get("LLM_MODEL", "deepseek-ai/DeepSeek-V4-Flash"))
         if self._llm_api_key:
             self.log_info("LLM 润色已启用")
 

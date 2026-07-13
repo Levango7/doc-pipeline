@@ -16,6 +16,25 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+
+def _load_dotenv():
+    """从项目根目录 .env 文件加载环境变量（不覆盖已存在的）"""
+    env_path = Path(__file__).parent / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = val
+
+
+_load_dotenv()
+
 from pipeline_core import PipelineOrchestrator, TaskStatus, __version__
 from pipeline_core.scheduler import Scheduler
 
