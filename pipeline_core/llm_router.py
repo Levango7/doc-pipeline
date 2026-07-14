@@ -263,6 +263,7 @@ class LLMRouter:
             ("xiaomi_mimo", "MIMO_API_URL", "MIMO_MODEL", "MIMO_API_KEY", 20, False),
             ("longcat",     "LONGCAT_API_URL","LONGCAT_MODEL","LONGCAT_API_KEY", 30, False),
             ("sensenova",   "SENSENOVA_API_URL","SENSENOVA_MODEL","SENSENOVA_API_KEY", 40, False),
+            ("glm",         "GLM_API_URL",     "GLM_MODEL",     "GLM_API_KEY",     45, False),
             ("agnes",       "AGNES_API_URL", "AGNES_MODEL", "AGNES_API_KEY", 50, False),
             ("nvidia",      "NVIDIA_API_URL","NVIDIA_MODEL","NVIDIA_API_KEY", 60, False),
             ("qianfan",     "QIANFAN_API_URL","QIANFAN_MODEL","QIANFAN_API_KEY", 70, False),
