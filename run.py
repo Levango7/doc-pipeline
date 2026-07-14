@@ -119,7 +119,7 @@ def main():
         """
     )
 
-    parser.add_argument("input", help="输入文件")
+    parser.add_argument("input", nargs="?", default=None, help="输入文件")
     parser.add_argument("--task-id", "-t", default=None, help="任务ID（默认自动生成）")
     parser.add_argument("--pipeline", "-p", default="docgen", help="流水线名称")
     parser.add_argument("--pipeline-file", "-f", default=None, help="pipeline YAML 配置路径")
@@ -146,6 +146,12 @@ def main():
     parser.add_argument("--fix-ascii", action="store_true", help="将文档中的 ASCII 图转换为 Mermaid 图")
 
     args = parser.parse_args()
+
+    print_banner
+
+    # 非 --check 模式需要输入文件
+    if args.input is None and not args.check:
+        parser.error('需要指定输入文件，或使用 --check 运行启动自检')
 
     print_banner()
 

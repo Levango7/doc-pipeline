@@ -33,7 +33,7 @@ class ConfigCenter:
             "agents": {"dir": "agents", "cache_dir": "cache", "log_dir": "logs"},
             "execution": {"max_workers": 8, "fail_fast": True, "max_retries": 3},
             "quality_gate": {"min_score": 70, "max_regenerations": 3},
-            "llm": {"api_key_env": "SILICONFLOW_API_KEY", "model": "deepseek-ai/DeepSeek-V4-Flash"},
+            "llm": {"api_key_env": "LLM_API_KEY", "model": "@cf/moonshotai/kimi-k2.6"},
         }
         self._data = defaults.copy()
 

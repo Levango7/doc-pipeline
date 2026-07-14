@@ -37,10 +37,7 @@ agents:
     version: "2.0"
     timeout: 300
     dependencies: ["fetcher"]
-    config:
-      prompt_profile: generic-tech
-      llm_api_url: "https://api.cloudflare.com/client/v4/accounts/cac1cb45605e48a6810828169610af41/ai/run"
-      llm_model: "@cf/moonshotai/kimi-k2.6"
+    config:`n      prompt_profile: generic-tech
 
   - name: quality_gate
     version: "2.0"

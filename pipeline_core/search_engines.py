@@ -563,7 +563,7 @@ class SearchEngineManager:
             engines["duckduckgo"] = eng
 
         # HTML 抓取引擎
-        for name in ["bing", "sogou", "360"]:
+        for name in ["bing", "baidu", "sogou", "360"]:
             eng = create_engine(name)
             if eng:
                 engines[name] = eng

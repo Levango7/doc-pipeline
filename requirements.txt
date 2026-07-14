@@ -10,6 +10,9 @@ duckduckgo-search>=4.0.0
 # 异步 I/O（可选，未安装时 fetcher 降级为同步）
 aiohttp>=3.8.0
 
+# 网页正文提取（three_pass_pipeline 优先使用）
+trafilatura>=2.0.0
+
 
 # 开发/CI 依赖（不在运行时 requirements 中安装，CI 单独 pip install）：
 # ruff>=0.4.0       # lint + format

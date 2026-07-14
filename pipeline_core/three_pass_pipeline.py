@@ -85,8 +85,8 @@ class ThreePassPipeline:
         """初始化组件（优雅降级）"""
         # LLM 路由器
         try:
-            from pipeline_core.llm_router import LLMRouter
-            self._llm_router = LLMRouter.from_env()
+            from pipeline_core.llm_router import get_router
+            self._llm_router = get_router()
         except Exception as e:
             logger.warning(f"LLM 路由器初始化失败: {e}")
 
