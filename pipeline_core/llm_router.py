@@ -346,9 +346,9 @@ def _load_env(env_path: str = None) -> dict:
     except Exception as e:
         logger.warning(f"加载 .env 失败: {e}")
 
-    # 合并系统环境变量（系统优先）
+    # 合并系统环境变量（系统优先，覆盖 .env 中的同名变量）
     for k, v in os.environ.items():
-        env.setdefault(k, v)
+        env[k] = v
 
     return env
 

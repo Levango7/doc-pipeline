@@ -298,6 +298,7 @@ class ProSearchEngine(SearchEngineBase):
     name = "prosearch"
 
     DEFAULT_PATHS = [
+        os.environ.get("PROSEARCH_PATH", ""),
         r"F:\Program Files\QClaw\resources\openclaw\config\skills\online-search\scripts\prosearch.cjs",
         r"F:\Program Files (x86)\qclaw\resources\openclaw\config\skills\online-search\scripts\prosearch.cjs",
     ]

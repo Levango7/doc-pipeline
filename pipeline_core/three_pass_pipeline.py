@@ -174,8 +174,35 @@ class ThreePassPipeline:
         )
 
     def _plan_skeleton(self, query: str) -> DocumentPlan:
-        """规划文档骨架"""
+        """规划文档骨架（优先 LLM 动态生成，回退到模板）"""
         title = query
+
+        # 尝试 LLM 动态生成骨架
+        if self._llm_router:
+            try:
+                prompt = (
+                    f"为主题「{query}」规划一份技术文档的章节结构。\n"
+                    f"要求：\n"
+                    f"1. 输出 5-7 个章节，覆盖从概述到深入的核心内容\n"
+                    f"2. 每个章节需包含：title（章节标题）、prompt（写作提示）、keywords（3-5 个关键词）\n"
+                    f"3. 严格按照 JSON 格式输出，不要包含其他文字：\n"
+                    f'{{"sections": [{{"title": "...", "prompt": "...", "keywords": ["...", "..."]}}]}}'
+                )
+                content, _ = self._llm_router.chat(
+                    [{"role": "user", "content": prompt}],
+                    max_tokens=2048, temperature=0.3, timeout=45)
+                # 提取 JSON
+                json_match = re.search(r'\{[\s\S]*\}', content)
+                if json_match:
+                    plan_data = json.loads(json_match.group())
+                    sections = plan_data.get("sections", [])
+                    if len(sections) >= 3:
+                        logger.info(f"LLM 动态生成骨架: {len(sections)} 个章节")
+                        return DocumentPlan(title=title, query=query, sections=sections)
+            except Exception as e:
+                logger.warning(f"LLM 骨架生成失败，回退到模板: {e}")
+
+        # 回退：硬编码模板
         sections = [
             {"title": "概述", "prompt": f"介绍 {query} 的基本概念和背景", "keywords": ["概述", "简介", "概念", "背景"]},
             {"title": "核心架构", "prompt": f"分析 {query} 的核心架构和设计原理", "keywords": ["架构", "设计", "原理", "组件"]},

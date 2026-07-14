@@ -162,7 +162,7 @@ class FormatConverter:
             encoded = base64.urlsafe_b64encode(data).decode("ascii")
 
             req = urllib.request.Request(
-                f"https://kroki.io/mermaid/{fmt}/encoded",
+                f"https://kroki.io/mermaid/{fmt}/{encoded}",
                 headers={"Accept": f"image/{fmt}"},
             )
             with urllib.request.urlopen(req, timeout=15) as resp:

@@ -62,6 +62,43 @@ def output_json_result(task, output_path, steps, status):
     print(json.dumps(result, ensure_ascii=False))
 
 
+def _run_ascii_fix(output_path: str):
+    """将文档中的 ASCII 图转换为 Mermaid 图"""
+    try:
+        from scripts.convert_ascii import AsciiConverter
+        converter = AsciiConverter()
+        text = Path(output_path).read_text(encoding="utf-8")
+        converted = converter.detect_and_convert(text)
+        if converted != text:
+            Path(output_path).write_text(converted, encoding="utf-8")
+            print(f"\n[ascii] ASCII 图已转换为 Mermaid，保存至: {output_path}")
+        else:
+            print(f"\n[ascii] 未检测到 ASCII 图")
+    except Exception as e:
+        print(f"\n[ascii] ASCII 转换失败: {e}")
+
+
+def _run_export(md_path: str, fmt: str, export_path: str = None):
+    """导出 Markdown 为其他格式"""
+    try:
+        from scripts.format_converter import FormatConverter
+        converter = FormatConverter()
+        if fmt == "html":
+            out = export_path or md_path.replace(".md", ".html")
+            converter.markdown_to_html(md_path, out)
+            print(f"\n[export] HTML 已导出: {out}")
+        elif fmt == "word":
+            out = export_path or md_path.replace(".md", ".docx")
+            converter.markdown_to_word(md_path, out)
+            print(f"\n[export] Word 已导出: {out}")
+        elif fmt == "png":
+            out_dir = export_path or Path(md_path).parent / "images"
+            converter.render_mermaid_in_markdown(md_path, str(out_dir))
+            print(f"\n[export] Mermaid 图片已渲染至: {out_dir}")
+    except Exception as e:
+        print(f"\n[export] 导出失败: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=f"文档生成流水线 v{__version__} - 声明式 DAG + 自动重做",
@@ -104,6 +141,9 @@ def main():
     parser.add_argument("--check", action="store_true", help="运行启动自检后退出")
     parser.add_argument("--three-pass", action="store_true", help="使用三阶段流水线（研究→结构→精修）")
     parser.add_argument("--health-check", action="store_true", help="启动时运行 LLM 健康检查")
+    parser.add_argument("--export", choices=["html", "word", "png"], help="导出格式（html/word/png）")
+    parser.add_argument("--export-output", default=None, help="导出文件路径")
+    parser.add_argument("--fix-ascii", action="store_true", help="将文档中的 ASCII 图转换为 Mermaid 图")
 
     args = parser.parse_args()
 
@@ -350,6 +390,14 @@ def main():
             report_file = base_dir / "checkpoints" / f"report_{task_id}.json"
             if report_file.exists():
                 print(f"\n详细报告已保存: {report_file}")
+
+        # ─── ASCII 图转换 ──────────────────────
+        if args.fix_ascii and output_path:
+            _run_ascii_fix(output_path)
+
+        # ─── 格式导出 ──────────────────────────
+        if args.export and output_path:
+            _run_export(output_path, args.export, args.export_output)
 
     # 守护进程模式：任务完成后保持 Admin API 常驻
     if args.daemon:

@@ -137,9 +137,11 @@ class WriterAgent(BaseAgent):
         try:
             from pipeline_core.llm_router import get_router
             router = get_router()
-            if router and router.providers:
-                return router.chat(messages, max_tokens=max_tokens,
-                                   temperature=temperature, timeout=timeout)
+            if router and router.get_active_providers():
+                content, provider = router.chat(messages, max_tokens=max_tokens,
+                                                temperature=temperature, timeout=timeout)
+                self.log_debug(f"LLM 调用成功: {provider}")
+                return content
         except Exception as e:
             self.log_debug(f"LLMRouter 不可用，回退到单 LLM: {e}")
 
