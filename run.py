@@ -147,8 +147,6 @@ def main():
 
     args = parser.parse_args()
 
-    print_banner
-
     # 非 --check 模式需要输入文件
     if args.input is None and not args.check:
         parser.error('需要指定输入文件，或使用 --check 运行启动自检')

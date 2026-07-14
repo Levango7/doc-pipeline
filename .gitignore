@@ -41,6 +41,15 @@ config/secrets.yaml
 # Agent history (runtime artifacts)
 .agent_history/
 
+# Session context (runtime artifacts)
+context/
+
+# Pytest local temp
+.pytest_tmp/
+
+# Windows null device artifact
+nul
+
 # IDE
 .vscode/
 .idea/

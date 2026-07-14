@@ -37,7 +37,8 @@ agents:
     version: "2.0"
     timeout: 300
     dependencies: ["fetcher"]
-    config:`n      prompt_profile: generic-tech
+    config:
+      prompt_profile: generic-tech
 
   - name: quality_gate
     version: "2.0"
