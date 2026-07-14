@@ -292,6 +292,48 @@ class So360Engine(HtmlSearchEngine):
             return []
 
 
+class BaiduEngine(HtmlSearchEngine):
+    """百度搜索（HTML 抓取）"""
+    name = "baidu"
+
+    def search(self, query: str, max_results: int = 10) -> list[SearchItem]:
+        try:
+            url = f"https://www.baidu.com/s?wd={urllib.parse.quote(query)}&rn={max_results}"
+            html = self._fetch_html(url)
+            results = []
+            blocks = re.findall(
+                r'<div class="(?:result|c-container)[^"]*"[^>]*>(.*?)</div>\s*</div>',
+                html, re.DOTALL
+            )
+            seen_urls = set()
+            for block in blocks[:max_results]:
+                link_m = re.search(
+                    r'<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>',
+                    block, re.DOTALL
+                )
+                if not link_m:
+                    continue
+                link = link_m.group(1)
+                if link in seen_urls:
+                    continue
+                seen_urls.add(link)
+                title = re.sub(r"<[^>]+>", "", link_m.group(2)).strip()
+                snippet_m = re.search(
+                    r'<span[^>]*class="content-right_[^"]*"[^>]*>(.*?)</span>',
+                    block, re.DOTALL
+                )
+                snippet = re.sub(r"<[^>]+>", "", snippet_m.group(1)).strip() if snippet_m else ""
+                if title and link:
+                    results.append(SearchItem(
+                        title=title, url=link, snippet=snippet,
+                        source=self.name, query=query,
+                    ))
+            return results
+        except Exception as e:
+            logger.debug(f"百度搜索失败: {e}")
+            return []
+
+
 class ProSearchEngine(SearchEngineBase):
     """元宝搜索（本地 Node.js 脚本）"""
 
@@ -349,6 +391,7 @@ _ENGINE_REGISTRY = {
     "metaso": MetasoEngine,
     "duckduckgo": DuckDuckGoEngine,
     "bing": BingEngine,
+    "baidu": BaiduEngine,
     "sogou": SogouEngine,
     "360": So360Engine,
     "prosearch": ProSearchEngine,
@@ -438,6 +481,65 @@ class SearchEngineManager:
                 for name, eng in self._engines.items()
             }
         }
+
+    # 重点站点（技术文档常用来源）
+    SITE_TARGETS = [
+        ("zhihu.com", "知乎"),
+        ("juejin.cn", "掘金"),
+        ("bilibili.com", "哔哩哔哩"),
+        ("blog.csdn.net", "CSDN"),
+        ("cnblogs.com", "博客园"),
+        ("github.com", "GitHub"),
+        ("gitee.com", "Gitee"),
+        ("wikipedia.org", "维基百科"),
+        ("segmentfault.com", "SegmentFault"),
+    ]
+
+    def search_with_sites(self, query: str, max_results: int = 10,
+                          sites: list[str] = None,
+                          engines: list[str] = None) -> list[SearchItem]:
+        """搜索 + 重点站点搜索（合并去重）
+
+        先进行常规搜索，再对每个站点进行 site: 搜索。
+        结果合并去重，优先常规搜索的结果。
+        """
+        all_results = []
+        seen_urls = set()
+
+        # 常规搜索
+        for item in self.search(query, max_results=max_results, engines=engines):
+            if item.url and item.url not in seen_urls:
+                seen_urls.add(item.url)
+                all_results.append(item)
+
+        # 站点搜索（每个站点至少拿 2 条）
+        if sites is None:
+            sites = self.SITE_TARGETS
+        site_queries = []
+        for site_domain, site_name in sites:
+            site_query = f"site:{site_domain} {query}"
+            site_queries.append((site_query, site_name))
+
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(
+                    self.search, sq, max_results=3, engines=engines
+                ): (sq, site_name)
+                for sq, site_name in site_queries
+            }
+            for future in concurrent.futures.as_completed(futures):
+                sq, site_name = futures[future]
+                try:
+                    for item in future.result():
+                        if item.url and item.url not in seen_urls:
+                            seen_urls.add(item.url)
+                            item.source = f"{item.source}[{site_name}]"
+                            all_results.append(item)
+                except Exception as e:
+                    logger.debug(f"站点搜索失败 {site_name}: {e}")
+
+        return all_results[:max_results]
 
     @classmethod
     def from_env(cls, env_path: str = None) -> "SearchEngineManager":

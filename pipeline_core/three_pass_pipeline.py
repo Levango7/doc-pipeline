@@ -106,7 +106,7 @@ class ThreePassPipeline:
 
         search_results = []
         if self._search_mgr:
-            search_results = self._search_mgr.search(query, max_results=max_results)
+            search_results = self._search_mgr.search_with_sites(query, max_results=max_results)
             logger.info(f"[Phase 1] 搜索返回 {len(search_results)} 条结果")
 
         # 抓取网页内容
