@@ -23,6 +23,7 @@ LLM Router — 多供应商 LLM 路由器
 """
 import json
 import os
+import re
 import time
 import logging
 import threading
@@ -120,7 +121,15 @@ def _call_llm(provider: LLMProvider, messages: list[dict],
         body = body.get("result", body)
 
     content = body["choices"][0]["message"]["content"]
-    return content.strip() if content else ""
+
+
+    # 过滤 \u003cthink\u003e...\u003c/think\u003e 标签（Dahl/MiniMax 等推理模型）
+
+
+    content = re.sub(r'<\s*think\s*>.*?<\s*/\s*think\s*>', '', content, flags=re.DOTALL).strip()
+
+
+    return content if content else ""
 
 
 class LLMRouter:
