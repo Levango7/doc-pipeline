@@ -188,8 +188,8 @@ def _check_project_structure(report: StartupReport, project_root: Path):
 def _check_llm_router(report: StartupReport):
     """检查 LLM 路由器"""
     try:
-        from pipeline_core.llm_router import LLMRouter, get_router
-        router = LLMRouter.from_env()
+        from pipeline_core.llm_router import get_router
+        router = get_router()
         active = router.get_active_providers()
         if active:
             names = [p.name for p in active]
@@ -207,7 +207,7 @@ def _check_search_engines(report: StartupReport):
     try:
         from pipeline_core.search_engines import SearchEngineManager
         mgr = SearchEngineManager.from_env()
-        available = {name: eng.is_available() for name, eng in mgr._engines.items()}
+        available = {name: eng.is_available() for name, eng in mgr.status()["engines"].items()}
         active = [k for k, v in available.items() if v]
         if active:
             report.add(CheckResult("搜索引擎", "ok",

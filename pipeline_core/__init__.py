@@ -22,6 +22,10 @@ from .scheduler import Scheduler, ExecutionPlan, ExecutionNode, AgentConfig
 from .agent_loader import AgentLoader
 from .dag_executor import DAGExecutor
 from .checkpoint_manager import CheckpointManager
+from .llm_router import LLMRouter, get_router, reset_router
+from .search_engines import SearchEngineManager, SearchItem
+from .three_pass_pipeline import ThreePassPipeline, DocumentPlan, PassResult
+from .bootstrap import run_startup_check, quick_check, StartupReport
 
 __all__ = [
     "ConfigCenter",
@@ -32,6 +36,10 @@ __all__ = [
     "PipelineOrchestrator", "PipelineTask", "TaskStatus", "StepResult",
     "Scheduler", "ExecutionPlan", "ExecutionNode", "AgentConfig",
     "AgentLoader", "DAGExecutor", "CheckpointManager",
+    "LLMRouter", "get_router", "reset_router",
+    "SearchEngineManager", "SearchItem",
+    "ThreePassPipeline", "DocumentPlan", "PassResult",
+    "run_startup_check", "quick_check", "StartupReport",
 ]
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
