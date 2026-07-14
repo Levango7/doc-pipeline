@@ -131,7 +131,7 @@ class ThreePassPipeline:
         )
 
     def _fetch_url(self, url: str) -> str:
-        """抓取网页正文"""
+        """抓取网页正文（优先 trafilatura，回退到正则）"""
         try:
             import urllib.request
             req = urllib.request.Request(url, headers={
@@ -139,15 +139,31 @@ class ThreePassPipeline:
             })
             with urllib.request.urlopen(req, timeout=15) as resp:
                 html = resp.read().decode("utf-8", errors="ignore")
-            # 简单正文提取
-            text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
-            text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
-            text = re.sub(r"<[^>]+>", " ", text)
-            text = re.sub(r"\s+", " ", text).strip()
-            return text
         except Exception as e:
             logger.debug(f"抓取失败 {url}: {e}")
             return ""
+
+        # 优先使用 trafilatura 提取正文
+        try:
+            import trafilatura
+            text = trafilatura.extract(html, include_comments=False, include_tables=True)
+            if text and len(text) > 200:
+                return text.strip()
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"trafilatura 提取失败: {e}")
+
+        # 回退：正则提取
+        text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
+        text = re.sub(r"<nav[^>]*>.*?</nav>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<header[^>]*>.*?</header>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<footer[^>]*>.*?</footer>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"&nbsp;|&amp;|&lt;|&gt;|&quot;", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
 
     # ─── Phase 2: Structure & Draft ───────────────
 

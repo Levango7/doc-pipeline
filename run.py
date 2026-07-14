@@ -187,6 +187,14 @@ def main():
         else:
             print(f"错误: {result.get('error', '')}")
         print(f"{'='*60}")
+
+        # ─── ASCII 图转换 + 格式导出 ──────────────
+        if result["status"] == "ok" and output:
+            if args.fix_ascii:
+                _run_ascii_fix(output)
+            if args.export:
+                _run_export(output, args.export, args.export_output)
+
         return
 
     # 加载配置
