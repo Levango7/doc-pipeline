@@ -207,7 +207,7 @@ def _check_search_engines(report: StartupReport):
     try:
         from pipeline_core.search_engines import SearchEngineManager
         mgr = SearchEngineManager.from_env()
-        available = {name: eng.is_available() for name, eng in mgr.status()["engines"].items()}
+        available = {name: info["available"] for name, info in mgr.status()["engines"].items()}
         active = [k for k, v in available.items() if v]
         if active:
             report.add(CheckResult("搜索引擎", "ok",

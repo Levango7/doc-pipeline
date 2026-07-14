@@ -383,6 +383,10 @@ class SearchEngineManager:
         self._fail_counts: dict[str, int] = {}
         logger.info(f"SearchEngineManager 初始化: {list(self._engines.keys())}")
 
+    def is_available(self) -> bool:
+        """是否有可用引擎"""
+        return len(self._engines) > 0
+
     def add_engine(self, name: str, engine: SearchEngineBase):
         with self._lock:
             self._engines[name] = engine
