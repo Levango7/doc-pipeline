@@ -181,17 +181,22 @@ class MetricsRegistry:
 
 _logger: Optional[StructuredLogger] = None
 _metrics: Optional[MetricsRegistry] = None
+_singleton_lock = threading.Lock()
 
 
 def get_logger() -> StructuredLogger:
     global _logger
     if _logger is None:
-        _logger = StructuredLogger()
+        with _singleton_lock:
+            if _logger is None:
+                _logger = StructuredLogger()
     return _logger
 
 
 def get_metrics() -> MetricsRegistry:
     global _metrics
     if _metrics is None:
-        _metrics = MetricsRegistry()
+        with _singleton_lock:
+            if _metrics is None:
+                _metrics = MetricsRegistry()
     return _metrics

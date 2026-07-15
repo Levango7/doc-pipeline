@@ -433,8 +433,8 @@ class PipelineOrchestrator:
                     if inst:
                         try:
                             inst.on_pause()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            self._log("warning", f"agent {name} on_pause 失败", error=str(e))
                 return True
         return False
 
@@ -460,8 +460,8 @@ class PipelineOrchestrator:
                     if inst:
                         try:
                             inst.on_resume()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            self._log("warning", f"agent {name} on_resume 失败", error=str(e))
                 self._log("info", "Pipeline resumed", task_id=task_id)
                 return True
         return False
@@ -476,8 +476,8 @@ class PipelineOrchestrator:
             if inst:
                 try:
                     agent_snapshots[name] = inst.on_snapshot()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log("warning", f"agent {name} on_snapshot 失败", error=str(e))
         self._checkpoint.save(task, full_state, agent_snapshots)
 
     def _load_checkpoint(self, task_id: str) -> Optional[PipelineTask]:
@@ -489,8 +489,8 @@ class PipelineOrchestrator:
                 if inst:
                     try:
                         inst.on_restore(state)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log("warning", f"agent {name} on_restore 失败", error=str(e))
         return task
 
     def _remove_checkpoint(self, task_id: str):
@@ -899,8 +899,8 @@ class PipelineOrchestrator:
             if instance and hasattr(instance, "cleanup_stale_temp"):
                 try:
                     instance.cleanup_stale_temp(max_age_hours)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log("warning", f"清理 {agent_name} 过期临时文件失败", error=str(e))
 
     def start_admin_api(self, host: str = "127.0.0.1", port: int = 8910,
                          serve_static: bool = False,

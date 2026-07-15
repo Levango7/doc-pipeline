@@ -78,6 +78,8 @@ class TemplateManager:
 class WriterAgent(BaseAgent):
     """增强型内容整合 Agent"""
 
+    SECTION_TITLES = ["概念原理", "技术教程", "实践应用", "对比分析", "最佳实践", "其他"]
+
     def __init__(self, name, meta, config, message_bus, registry):
         super().__init__(name, meta, config, message_bus, registry)
         self.pending_results: dict = {}
@@ -899,7 +901,7 @@ class WriterAgent(BaseAgent):
 
         section_data = []
         all_refs = []
-        for sec_title in ["概念原理", "技术教程", "实践应用", "对比分析", "最佳实践", "其他"]:
+        for sec_title in self.SECTION_TITLES:
             sec_chunks = sections.get(sec_title, [])
             if not sec_chunks:
                 continue

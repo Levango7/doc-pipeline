@@ -19,6 +19,7 @@ Admin API v1 - 轻量级 REST API（零外部依赖）
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -90,19 +91,19 @@ class AdminHandler(BaseHTTPRequestHandler):
             return False
 
     def _check_auth(self) -> bool:
-        """校验 API key（未配置则不校验）"""
+        """校验 API key（未配置则不校验）。使用恒定时间比较防止时序攻击。"""
         if not self.api_key:
             return True
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             token = auth[len("Bearer "):].strip()
-            return token == self.api_key
+            return hmac.compare_digest(token, self.api_key)
         # 兼容 ?token=xxx
         if "?" in self.path:
             q = self.path.split("?", 1)[1]
             for kv in q.split("&"):
                 if kv.startswith("token="):
-                    return kv[6:] == self.api_key
+                    return hmac.compare_digest(kv[6:], self.api_key)
         return False
 
     def do_GET(self):
