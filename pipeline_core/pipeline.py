@@ -24,6 +24,7 @@ from typing import Optional, Any, Callable
 from enum import Enum
 
 from .observability import StructuredLogger, MetricsRegistry, get_logger, get_metrics
+from .executor_factory import create_executor, is_process_executor
 
 
 class TaskStatus(Enum):
@@ -299,9 +300,10 @@ class PipelineOrchestrator:
 
         cb_cfg = config.get("circuit_breaker", {}) if config else {}
 
-        # 使用单个线程池执行整个 DAG，避免重复创建/销毁
+        # 使用执行器工厂：支持 thread（默认）或 process（多进程水平扩展）
+        executor_type = (config or {}).get("executor_type", "thread")
         max_workers = max(len(l) for l in execution_order) if execution_order else 1
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with create_executor(max_workers=max_workers, executor_type=executor_type) as executor:
             for level_idx, level_names in enumerate(execution_order):
                 # 将 TaskNode 转换为 ExecutionNode 兼容的 SimpleNamespace
                 level_nodes = []
@@ -603,7 +605,9 @@ class PipelineOrchestrator:
                         default=1,
                     )
 
-                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # 执行器类型从 pipeline 配置读取（默认 thread，可选 process）
+                    executor_type = plan.raw.get("pipeline", {}).get("executor_type", "thread")
+                    with create_executor(max_workers=max_workers, executor_type=executor_type) as executor:
                         # 创建 dag_nodes 供 _execute_level 使用
                         for node in level:
                             dag_node = TaskNode(

@@ -82,8 +82,14 @@ class FetcherAgent(BaseAgent):
         # 下载量统计
         self._stats = {"attempted": 0, "success": 0, "failed": 0, "filtered": 0}
         self._stats_lock = threading.Lock()
+        try:
+            from selectolax.parser import HTMLParser  # noqa: F401
+            self._use_selectolax = True
+        except ImportError:
+            self._use_selectolax = False
         self.log_info(f"Fetcher v{AGENT_VERSION} 初始化完成，临时目录: {self._temp_dir}"
                       f" | Async I/O: {'启用' if USE_ASYNC else '未安装 aiohttp，使用同步模式'}"
+                      f" | HTML解析: {'selectolax' if self._use_selectolax else 'regex'}"
                       f" | UA池: {len(self._ua_pool)} | 重试: {self._retry}")
 
     def handle(self, msg: Message) -> dict | None:
@@ -308,10 +314,60 @@ class FetcherAgent(BaseAgent):
         return None
 
     def _extract_text(self, html: str) -> str:
-        """从 HTML 中提取可读正文（基于文本密度的启发式提取，无外部依赖）"""
+        """从 HTML 中提取可读正文（优先 selectolax C-bindings 解析，回退到正则启发式）"""
         if not html:
             return ""
 
+        # ── 优先：selectolax 解析（C-bindings，比正则快 5-10x）──
+        try:
+            from selectolax.parser import HTMLParser
+            tree = HTMLParser(html)
+
+            # 移除无正文节点
+            for tag in ("script", "style", "noscript", "svg", "head", "nav", "footer", "aside"):
+                for node in tree.css(tag):
+                    node.decompose()
+
+            # 优先 <article> / <main> 容器
+            container = tree.css_first("article") or tree.css_first("main") or tree
+
+            # 按块级标签提取段落，用文本密度筛选
+            scored = []
+            for node in container.css("p, div, section, li, td, blockquote, article, h1, h2, h3, h4, pre"):
+                blk = node.text(separator=" ", strip=True)
+                if not blk or len(blk) < 30:
+                    continue
+                # 文本密度：可见字符占比
+                text_ratio = len(re.sub(r'\s', '', blk)) / max(len(blk), 1)
+                if text_ratio < 0.4:
+                    continue
+                # 惩罚纯链接行
+                link_density = len(re.findall(r'https?://', blk)) / max(len(blk) // 50, 1)
+                if link_density > 0.5:
+                    continue
+                scored.append(blk)
+
+            text = '\n'.join(scored)
+
+            # 兜底：若密度法提取过少，退回到全文档纯文本
+            if len(text) < MIN_CONTENT_LENGTH:
+                fallback = tree.text(separator=" ", strip=True)
+                # 清理 Unicode 噪声字符
+                fallback = re.sub(r'[¶§†‡•·]', ' ', fallback)
+                fallback = re.sub(r'\s+', ' ', fallback).strip()
+                if len(fallback) > len(text):
+                    text = fallback
+
+            if text:
+                return text[:80000]  # 单页上限 80KB
+        except Exception:
+            pass  # selectolax 解析失败，回退到正则
+
+        # ── 回退：正则启发式提取（无外部依赖）──
+        return self._extract_text_regex(html)
+
+    def _extract_text_regex(self, html: str) -> str:
+        """正则启发式 HTML 正文提取（selectolax 不可用时的 fallback）"""
         # 1. 移除明显无正文区域
         html = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
         html = re.sub(r'<style[^>]*>.*?</style>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
@@ -351,8 +407,8 @@ class FetcherAgent(BaseAgent):
         if len(text) < MIN_CONTENT_LENGTH:
             fallback = re.sub(r'<[^>]+>', ' ', html)
             fallback = re.sub(r'&[a-zA-Z]+;', ' ', fallback)       # 命名实体（含大写）
-            fallback = re.sub(r'&#\d+;', ' ', fallback)             # 数字实体 ¶
-            fallback = re.sub(r'&#x[0-9a-fA-F]+;', ' ', fallback)  # 十六进制实体 ¶
+            fallback = re.sub(r'&#\d+;', ' ', fallback)             # 数字实体
+            fallback = re.sub(r'&#x[0-9a-fA-F]+;', ' ', fallback)  # 十六进制实体
             fallback = re.sub(r'[¶§†‡•·]', ' ', fallback)          # Unicode 噪声字符
             fallback = re.sub(r'\s+', ' ', fallback).strip()
             if len(fallback) > len(text):

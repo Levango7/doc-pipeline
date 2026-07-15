@@ -26,6 +26,7 @@ from .llm_router import LLMRouter, get_router, reset_router
 from .search_engines import SearchEngineManager, SearchItem
 from .cache_manager import CacheManager, get_cache, clear_all_caches, all_stats
 from .streaming import StreamEvent, StreamCallback
+from .executor_factory import create_executor, is_process_executor
 from .three_pass_pipeline import ThreePassPipeline, DocumentPlan, PassResult
 from .bootstrap import run_startup_check, quick_check, StartupReport
 
@@ -42,6 +43,7 @@ __all__ = [
     "SearchEngineManager", "SearchItem",
     "CacheManager", "get_cache", "clear_all_caches", "all_stats",
     "StreamEvent", "StreamCallback",
+    "create_executor", "is_process_executor",
     "ThreePassPipeline", "DocumentPlan", "PassResult",
     "run_startup_check", "quick_check", "StartupReport",
 ]

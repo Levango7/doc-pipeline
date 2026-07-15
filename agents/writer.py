@@ -182,6 +182,89 @@ class WriterAgent(BaseAgent):
             None, self._llm_chat, messages, max_tokens, temperature, timeout,
         )
 
+    def _llm_chat_stream(self, messages: list[dict], max_tokens: int = 4096,
+                         temperature: float = 0.3, timeout: int = 120):
+        """流式 LLM 调用 —— 逐 chunk yield，降低首字延迟。
+
+        使用 SSE (Server-Sent Events) streaming response：
+        - 请求中设置 stream=True
+        - 响应为 text/event-stream 格式，每行 data: {...}
+        - 逐行读取并 yield delta content
+
+        用法:
+            for chunk in writer._llm_chat_stream(messages):
+                print(chunk, end="", flush=True)  # 实时输出
+
+        若 LLM 端点不支持 streaming，自动回退到非流式 _llm_chat。
+        """
+        # 构建流式请求 payload
+        is_cf = "/ai/run" in self._llm_api_url
+        if is_cf:
+            payload = {"model": self._llm_model, "input": {"messages": messages},
+                       "max_tokens": max_tokens, "temperature": temperature,
+                       "stream": True}
+        else:
+            payload = {"model": self._llm_model, "messages": messages,
+                       "max_tokens": max_tokens, "temperature": temperature,
+                       "stream": True}
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            self._llm_api_url, data=data,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {self._llm_api_key}",
+                     "Accept": "text/event-stream"})
+
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout)
+        except Exception:
+            # 端点不支持 streaming，回退到非流式
+            result = self._llm_chat(messages, max_tokens, temperature, timeout)
+            yield result
+            return
+
+        # 逐行读取 SSE 流
+        buffer = ""
+        try:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    data_str = line[6:]
+                elif line.startswith("data:"):
+                    data_str = line[5:]
+                else:
+                    continue
+
+                if data_str == "[DONE]":
+                    break
+
+                try:
+                    chunk_json = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+
+                # 适配不同 API 格式
+                if is_cf:
+                    chunk_json = chunk_json.get("result", chunk_json)
+
+                # 提取 delta content
+                try:
+                    delta = chunk_json["choices"][0]["delta"].get("content", "")
+                except (KeyError, IndexError):
+                    delta = ""
+
+                if delta:
+                    buffer += delta
+                    yield delta
+        finally:
+            resp.close()
+
+        # 若流式返回为空，回退到非流式
+        if not buffer:
+            result = self._llm_chat(messages, max_tokens, temperature, timeout)
+            yield result
+
     def _polish_with_llm(self, content: str, query: str) -> str:
         """用 LLM 润色文档段落衔接（含缓存+质量门控+分段+规则兜底）"""
         if not self._llm_api_key or not content.strip():
@@ -541,9 +624,18 @@ class WriterAgent(BaseAgent):
                 f"素材文章参考（如有）:\n{context[:2000]}\n"
             )
             try:
-                text = self._llm_chat(
-                    [{"role": "user", "content": prompt}],
-                    max_tokens=max_tok, temperature=0.3, timeout=time_out).strip()
+                # 流式模式：逐 chunk 拼接，降低首字延迟
+                if stream_callback:
+                    chunks = []
+                    for delta in self._llm_chat_stream(
+                        [{"role": "user", "content": prompt}],
+                        max_tokens=max_tok, temperature=0.3, timeout=time_out):
+                        chunks.append(delta)
+                    text = "".join(chunks).strip()
+                else:
+                    text = self._llm_chat(
+                        [{"role": "user", "content": prompt}],
+                        max_tokens=max_tok, temperature=0.3, timeout=time_out).strip()
                 if text.startswith("#"):
                     return text
                 self.log_warning(f"LLM 返回非markdown: {text[:60]}")
