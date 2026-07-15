@@ -11,6 +11,7 @@ Admin API v1 - 轻量级 REST API（零外部依赖）
   GET  /agents              → 已注册 agent 列表
   GET  /dlq                 → 死信队列
   POST /dlq/<id>/replay     → 重放死信
+  GET  /stream?query=...    → SSE 流式推送文档生成进度
 
 鉴权：
   - 通过环境变量 ADMIN_API_KEY 启用（非空时开启）
@@ -147,9 +148,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._handle_dashboard()
             elif self.path == "/api/pipeline":
                 self._handle_pipeline()
+            elif self.path.startswith("/stream"):
+                self._handle_stream()
             elif self.path == "/":
                 self._text("Doc-Pipeline Admin API v1\n"
-                           "Endpoints: /health /metrics /tasks /agents /dlq /api/dashboard /api/pipeline")
+                           "Endpoints: /health /metrics /tasks /agents /dlq /api/dashboard /api/pipeline /stream")
             else:
                 self._json({"error": "not found"}, 404)
         except Exception as e:
@@ -361,6 +364,91 @@ class AdminHandler(BaseHTTPRequestHandler):
         if pipelines_dir.exists():
             pipeline_info["pipeline_files"] = [p.name for p in sorted(pipelines_dir.glob("*.yaml"))]
         self._json(pipeline_info)
+
+    def _handle_stream(self):
+        """SSE 流式端点 —— 实时推送文档生成进度。
+
+        用法: GET /stream?task_id=<id>&query=<topic>&title=<title>
+        返回: text/event-stream 格式，每个事件含 type/data/section/total 字段。
+        """
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        task_id = params.get("task_id", ["stream"])[0]
+        query = params.get("query", [""])[0]
+        title = params.get("title", ["自动生成文档"])[0]
+
+        if not query:
+            self._json({"error": "missing 'query' parameter"}, 400)
+            return
+
+        # SSE headers
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        def _send_sse(event_type: str, data: dict):
+            payload = json.dumps({"type": event_type, "data": data}, ensure_ascii=False)
+            try:
+                self.wfile.write(f"data: {payload}\n\n".encode())
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        _send_sse("connected", {"task_id": task_id, "query": query})
+
+        if not self.orch:
+            _send_sse("error", {"error": "orchestrator not set"})
+            return
+
+        try:
+            # 获取 writer agent 实例
+            writer_agent = None
+            for a in self.orch.registry._agents.values():
+                if hasattr(a, "handle_streaming"):
+                    writer_agent = a
+                    break
+
+            if not writer_agent:
+                _send_sse("error", {"error": "writer agent not found"})
+                return
+
+            from pipeline_core.streaming import StreamCallback
+            callback = StreamCallback()
+
+            # 构造消息
+            from pipeline_core.message_bus_v3 import Message
+            msg = Message(
+                topic="writer.input",
+                payload={
+                    "task_id": task_id,
+                    "query": query,
+                    "title": title,
+                    "articles": [],
+                    "results": [],
+                },
+            )
+
+            # 在后台线程执行生成
+            def _run():
+                writer_agent.handle_streaming(msg, callback)
+
+            worker = threading.Thread(target=_run, daemon=True)
+            worker.start()
+
+            # 流式推送事件
+            for event in callback:
+                _send_sse(event.event_type, event.to_dict().get("data", {}))
+                if event.event_type in ("complete", "error"):
+                    break
+
+            worker.join(timeout=5)
+
+        except Exception as e:
+            _send_sse("error", {"error": str(e)})
 
 
 class AdminAPI:

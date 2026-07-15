@@ -27,6 +27,7 @@ from collections import defaultdict
 
 from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
 from pipeline_core.cache_manager import CacheManager
+from pipeline_core.streaming import StreamCallback
 
 
 AGENT_NAME = "writer"
@@ -125,6 +126,7 @@ class WriterAgent(BaseAgent):
             ttl=config.get("restructure_cache_ttl", 7200),
         )
         self.log_info(f"Prompt profile: {self._prompt_profile}")
+        self._active_stream_callback = None  # 流式回调（handle_streaming 设置）
 
         # 规则过渡句模板（0 成本兜底）
         self._transition_templates = [
@@ -497,10 +499,14 @@ class WriterAgent(BaseAgent):
             return {}
 
     def _restructure_document(self, content: str, articles: list[dict],
-                               query: str, title: str) -> str | None:
+                               query: str, title: str,
+                               stream_callback: Optional[StreamCallback] = None) -> str | None:
         """多轮 LLM 生成：每轮一篇，逐步拼接成完整文档（prompt 从外部模板加载）"""
         if not self._llm_api_key:
             return None
+        # 自动拾取实例级回调
+        if stream_callback is None:
+            stream_callback = self._active_stream_callback
 
         cache_key_short = hashlib.sha256((query + title[:50]).encode()).hexdigest()
         cached = self._restructure_cache.get(cache_key_short)
@@ -624,6 +630,8 @@ class WriterAgent(BaseAgent):
             if part:
                 self.log_info(f"R{idx+1} [{sec_name}] 完成: {len(part)} 字符")
                 parts.append(part)
+                if stream_callback:
+                    stream_callback.on_section(idx, sec_name, part)
             else:
                 self.log_info(f"R{idx+1} [{sec_name}] 失败，跳过")
 
@@ -941,3 +949,40 @@ class WriterAgent(BaseAgent):
                         stale.append(tid)
             for tid in stale:
                 self.pending_results.pop(tid, None)
+
+    def handle_streaming(self, msg: Message, callback: StreamCallback) -> dict:
+        """流式处理 —— 逐章节通过 callback 推送内容，最终返回完整结果。
+
+        与 handle() 的区别：生成过程中通过 callback 实时推送每个章节，
+        而非等全部生成完才一次性返回。适用于 SSE / WebSocket 场景。
+        """
+        payload = msg.payload
+        task_id = payload.get("task_id", "")
+        query = payload.get("query", "")
+        if not query:
+            queries = payload.get("queries", [])
+            query = queries[0] if queries else ""
+        title = payload.get("title", "自动生成文档")
+
+        # 通知开始
+        template = self._load_prompt_template(self._prompt_profile)
+        sections = template.get("sections", [])
+        callback.on_start(len(sections), title)
+
+        # 存储回调供 _restructure_document 自动拾取
+        self._active_stream_callback = callback
+
+        try:
+            # 调用 handle 执行正常流程（_restructure_document 内部会触发 callback）
+            result = self.handle(msg)
+            content = result.get("content", "") if result else ""
+
+            # 通知完成
+            callback.on_complete(content, result.get("stats", {}) if result else {})
+            return result or {"status": "ok", "task_id": task_id, "content": content}
+
+        except Exception as e:
+            callback.on_error(str(e))
+            return {"status": "error", "task_id": task_id, "error": str(e)}
+        finally:
+            self._active_stream_callback = None
