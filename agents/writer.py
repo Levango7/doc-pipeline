@@ -668,6 +668,7 @@ class WriterAgent(BaseAgent):
                         [{"role": "user", "content": prompt}],
                         max_tokens=max_tok, temperature=0.3, timeout=time_out):
                         chunks.append(delta)
+                        stream_callback.on_chunk(delta)
                     text = "".join(chunks).strip()
                 else:
                     text = self._llm_chat(

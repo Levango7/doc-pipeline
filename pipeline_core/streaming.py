@@ -82,6 +82,14 @@ class StreamCallback:
             "char_count": len(content),
         }, section_index=section_index, total_sections=self._total_sections)
 
+    def on_chunk(self, chunk: str, section_index: int = -1):
+        """LLM token-level chunk —— 实时传播生成中的文本片段"""
+        if chunk:
+            self._emit("chunk", {
+                "text": chunk,
+                "char_count": len(chunk),
+            }, section_index=section_index, total_sections=self._total_sections)
+
     def on_progress(self, current: int, total: int, message: str = ""):
         """进度更新"""
         self._emit("progress", {

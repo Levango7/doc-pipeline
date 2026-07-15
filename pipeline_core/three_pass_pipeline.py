@@ -22,6 +22,7 @@ import re
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
@@ -109,18 +110,29 @@ class ThreePassPipeline:
             search_results = self._search_mgr.search_with_sites(query, max_results=max_results)
             logger.info(f"[Phase 1] 搜索返回 {len(search_results)} 条结果")
 
-        # 抓取网页内容
+        # 抓取网页内容（并行）
         articles = []
-        for item in search_results[:max_results]:
-            content = self._fetch_url(item.url)
-            if content and len(content) > 200:
-                articles.append({
-                    "title": item.title,
-                    "url": item.url,
-                    "snippet": item.snippet,
-                    "text": content[:10000],  # 限制长度
-                    "source": item.source,
-                })
+        urls_to_fetch = search_results[:max_results]
+        with ThreadPoolExecutor(min(8, len(urls_to_fetch))) as pool:
+            future_map = {
+                pool.submit(self._fetch_url, item.url): item
+                for item in urls_to_fetch
+            }
+            for future in as_completed(future_map):
+                item = future_map[future]
+                try:
+                    content = future.result()
+                except Exception as e:
+                    logger.debug(f"抓取异常 {item.url}: {e}")
+                    continue
+                if content and len(content) > 200:
+                    articles.append({
+                        "title": item.title,
+                        "url": item.url,
+                        "snippet": item.snippet,
+                        "text": content[:10000],
+                        "source": item.source,
+                    })
 
         duration = time.time() - start
         logger.info(f"[Phase 1] 完成: {len(articles)} 篇文章, {duration:.1f}s")
@@ -154,6 +166,21 @@ class ThreePassPipeline:
         except Exception as e:
             logger.debug(f"trafilatura 提取失败: {e}")
 
+        # 优先使用 selectolax 提取正文
+        try:
+            from selectolax.parser import HTMLParser
+            tree = HTMLParser(html)
+            for tag in ("nav", "footer", "aside", "header", "script", "style"):
+                for node in tree.css(tag):
+                    node.decompose()
+            text = tree.body.text(separator=" ", strip=True) if tree.body else ""
+            if text and len(text) > 200:
+                return text.strip()
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"selectolax 提取失败: {e}")
+
         # 回退：正则提取
         text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
         text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
@@ -175,10 +202,19 @@ class ThreePassPipeline:
         # 规划骨架
         plan = self._plan_skeleton(query)
 
-        # TF-IDF 填充
-        for section in plan.sections:
-            content = self._fill_section(section, articles, query)
-            section["content"] = content
+        # TF-IDF 填充（并行）
+        with ThreadPoolExecutor(min(len(plan.sections), 4)) as pool:
+            future_map = {
+                pool.submit(self._fill_section, sec, articles, query): sec
+                for sec in plan.sections
+            }
+            for future in as_completed(future_map):
+                sec = future_map[future]
+                try:
+                    sec["content"] = future.result()
+                except Exception as e:
+                    logger.warning(f"章节填充失败 {sec.get('title', '')}: {e}")
+                    sec["content"] = ""
 
         duration = time.time() - start
         logger.info(f"[Phase 2] 完成: {len(plan.sections)} 个章节, {duration:.1f}s")
@@ -289,14 +325,22 @@ class ThreePassPipeline:
             return PassResult(phase="refine", status="skip", duration=0.0,
                               data={"plan": plan}, error="LLM 路由器不可用")
 
-        for i, section in enumerate(plan.sections):
-            try:
-                refined = self._llm_refine_section(section, plan.query, plan.title)
-                if refined:
-                    section["content"] = refined
-                    logger.info(f"[Phase 3] 章节 {i+1}/{len(plan.sections)} 精修完成")
-            except Exception as e:
-                logger.warning(f"[Phase 3] 章节 {i+1} 精修失败: {e}")
+        # 并行 LLM 精修
+        sections_to_refine = list(enumerate(plan.sections))
+        with ThreadPoolExecutor(min(len(sections_to_refine), 4)) as pool:
+            future_map = {
+                pool.submit(self._llm_refine_section, sec, plan.query, plan.title): (i, sec)
+                for i, sec in sections_to_refine
+            }
+            for future in as_completed(future_map):
+                i, sec = future_map[future]
+                try:
+                    refined = future.result()
+                    if refined:
+                        sec["content"] = refined
+                        logger.info(f"[Phase 3] 章节 {i+1}/{len(plan.sections)} 精修完成")
+                except Exception as e:
+                    logger.warning(f"[Phase 3] 章节 {i+1} 精修失败: {e}")
 
         duration = time.time() - start
         logger.info(f"[Phase 3] 完成: {duration:.1f}s")
