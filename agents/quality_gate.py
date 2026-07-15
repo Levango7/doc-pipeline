@@ -207,27 +207,52 @@ class QualityGateAgent(BaseAgent):
     def _score_topic_relevance(self, content: str, queries: list[str]) -> float:
         """主题相关度：文档是否真的在讲 query 主题（而非跑题）
 
-        从 queries 提取核心关键词，检查是否出现在文档标题/章节/正文中。
+        - 英文专有名词（首字母大写、长度>=3）为 mandatory token，缺失则直接归零
+        - 中文按 2-gram 拆分，避免整句不匹配
         无 query 时返回中性分（不惩罚）。
         """
         if not queries:
             return 70.0  # 无 query 时中性，不阻断
-        import re
         # 提取所有 query 的核心词（去噪音）
         stop = {"的", "了", "是", "在", "我", "有", "和", "与", "及", "一个", "这份",
                 "介绍", "简单", "基本", "概念", "生成", "一份", "文档", "技术", "测试",
                 "这是", "用于", "验证", "流水线", "是否", "正常", "工作", "a", "the",
                 "of", "to", "and", "is", "for", "this", "that", "with", "in", "on"}
         tokens: set[str] = set()
+        mandatory: set[str] = set()  # 专有名词：缺失则归零
         for q in queries:
-            for w in re.findall(r"[一-鿿]{2,}|[a-zA-Z]{2,}", q.lower()):
+            # 英文专有名词：首字母大写、长度>=3（如 Kafka, Python, Docker, JavaScript）
+            for prop in re.findall(r"\b[A-Z][a-zA-Z]{2,}\b", q):
+                pl = prop.lower()
+                if pl not in stop:
+                    mandatory.add(pl)
+                    tokens.add(pl)
+            # 普通英文词
+            for w in re.findall(r"[a-zA-Z]{2,}", q.lower()):
                 if w not in stop:
                     tokens.add(w)
+            # 中文 2-gram 滑动窗口拆分（避免整句不匹配）
+            for zh in re.findall(r"[一-鿿]{2,}", q):
+                if len(zh) <= 3:
+                    if zh not in stop:
+                        tokens.add(zh)
+                else:
+                    for i in range(len(zh) - 1):
+                        gram = zh[i:i+2]
+                        if gram not in stop:
+                            tokens.add(gram)
         if not tokens:
             return 70.0
 
         text = content.lower()
         head = "\n".join(content.split("\n")[:30]).lower()  # 标题+目录+前两章
+
+        # mandatory token 检查：任一专有名词缺失 -> 直接归零
+        missing_mandatory = [t for t in mandatory if t not in text]
+        if missing_mandatory:
+            self.log_debug(f"topic_relevance 归零: 缺失专有名词 {missing_mandatory}")
+            return 0.0
+
         hit = sum(1 for t in tokens if t.lower() in text)
         hit_head = sum(1 for t in tokens if t.lower() in head)
         coverage = hit / len(tokens)

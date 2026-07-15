@@ -13,9 +13,15 @@ import os
 import json
 import uuid
 import time
+import signal
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
+
+# ─── 优雅退出：SIGTERM (Docker/systemd) → 触发 KeyboardInterrupt ───
+def _sigterm_handler(signum, frame):
+    raise KeyboardInterrupt
+signal.signal(signal.SIGTERM, _sigterm_handler)
 
 
 def _load_dotenv():
