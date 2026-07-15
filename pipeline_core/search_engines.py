@@ -430,6 +430,10 @@ class SearchEngineManager:
         """是否有可用引擎"""
         return len(self._engines) > 0
 
+    def get_engine_names(self) -> list[str]:
+        """返回已注册引擎名称列表（公开接口，替代外部直接访问 _engines）"""
+        return list(self._engines.keys())
+
     def add_engine(self, name: str, engine: SearchEngineBase):
         with self._lock:
             self._engines[name] = engine

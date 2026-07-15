@@ -280,8 +280,8 @@ class ResearcherAgent(BaseAgent):
             from pipeline_core.search_engines import SearchEngineManager
             manager = SearchEngineManager.from_env()
             if manager.is_available():
-                self.log_debug(f"SearchEngineManager 可用: {list(manager._engines.keys())}")
-                items = manager.search(query, max_results=10)
+                self.log_debug(f"SearchEngineManager 可用: {manager.get_engine_names()}")
+                items = manager.search_with_sites(query, max_results=10)
                 if items:
                     for item in items:
                         all_results.append(SearchResult(

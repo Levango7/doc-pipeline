@@ -104,12 +104,7 @@ class CheckerAgent(BaseAgent):
             return {"status": "error", "message": "内容为空"}
 
         try:
-            # 动态导入 markdown_checker
-            scripts_dir = Path(__file__).parent.parent / "scripts"
-            if str(scripts_dir) not in sys.path:
-                sys.path.insert(0, str(scripts_dir))
-
-            from markdown_checker import Checker
+            from scripts.markdown_checker import Checker
 
             filepath = target or "<content>"
             checker = Checker(content, filepath, fix=fix)

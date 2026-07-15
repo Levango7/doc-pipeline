@@ -41,10 +41,7 @@ class LayoutAgent(BaseAgent):
     def _optimize_content(self, content: str) -> dict:
         """直接优化 content 字符串（不依赖文件，DAG 流式传递模式）"""
         try:
-            scripts_dir = Path(__file__).parent.parent / "scripts"
-            if str(scripts_dir) not in sys.path:
-                sys.path.insert(0, str(scripts_dir))
-            from layout_optimizer import LayoutOptimizer
+            from scripts.layout_optimizer import LayoutOptimizer
             opt = LayoutOptimizer(content)
             opt.run()
             fixed = opt.get_result_stats().get("borders_fixed", 0) if hasattr(opt, "get_result_stats") else 0
@@ -69,10 +66,7 @@ class LayoutAgent(BaseAgent):
             except Exception as e:
                 return {"status": "error", "message": f"读取文件失败: {e}"}
         try:
-            scripts_dir = Path(__file__).parent.parent / "scripts"
-            if str(scripts_dir) not in sys.path:
-                sys.path.insert(0, str(scripts_dir))
-            from layout_optimizer import LayoutOptimizer
+            from scripts.layout_optimizer import LayoutOptimizer
             opt = LayoutOptimizer(content)
             opt.run()
             fixed = opt.get_result_stats().get("borders_fixed", 0) if hasattr(opt, "get_result_stats") else 0
