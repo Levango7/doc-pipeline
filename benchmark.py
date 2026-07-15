@@ -3,6 +3,13 @@
 运行方式:
     python benchmark.py              # 全部基准
     python benchmark.py --quick      # 快速模式（减少迭代次数）
+    python benchmark.py --ci         # CI 模式：对比 baseline，回归超阈值则 exit(1)
+    python benchmark.py --update-baseline  # 更新 baseline（当前结果写入 benchmark_results.json）
+
+CI 模式:
+    对比 benchmark_results.json 中的 baseline 值，若性能回归超过阈值则失败。
+    回归阈值默认 20%（可通过 --threshold 0.3 调整）。
+    仅对数值型指标检测回归，新增指标自动忽略。
 
 基准项:
     1. HTML 正文提取: selectolax vs 正则
@@ -23,9 +30,29 @@ from pathlib import Path
 # 确保 import 路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-QUICK = "--quick" in sys.argv
+QUICK = "--quick" in sys.argv or "--ci" in sys.argv
+CI_MODE = "--ci" in sys.argv
+UPDATE_BASELINE = "--update-baseline" in sys.argv
 ITERATIONS = 3 if QUICK else 10
 LARGE_HTML_SIZE = 500_000  # 模拟大页面
+
+# 回归阈值：性能下降超过此比例则 CI 失败
+_threshold_idx = sys.argv.index("--threshold") + 1 if "--threshold" in sys.argv else -1
+REGRESSION_THRESHOLD = float(sys.argv[_threshold_idx]) if _threshold_idx > 0 and _threshold_idx < len(sys.argv) else 0.20
+
+# 指标方向映射：True=越高越好（吞吐、加速比），False=越低越好（耗时、延迟）
+# 未列出的指标默认按值变化方向自动推断
+METRIC_HIGHER_BETTER = {
+    "speedup", "thread_speedup", "process_speedup",
+    "set_ops_per_sec", "get_hit_ops_per_sec", "get_miss_ops_per_sec",
+    "emit_ops_per_sec",
+}
+METRIC_LOWER_BETTER = {
+    "selectolax", "regex", "serial", "thread_pool", "process_pool",
+    "set_ms_per_op", "get_hit_ms_per_op",
+    "emit_ms_per_op", "consume_ms",
+    "elapsed_ms",
+}
 
 
 def _gen_mock_html(size: int = 100_000) -> str:
@@ -248,10 +275,57 @@ def bench_tfidf():
 
 # ═══════════════════════════════════════════════════════════
 
+def _check_regression(current: dict, baseline: dict, threshold: float) -> list[str]:
+    """对比当前结果与 baseline，返回回归告警列表。
+
+    回归定义:
+      - 越高越好的指标: current < baseline * (1 - threshold)
+      - 越低越好的指标: current > baseline * (1 + threshold)
+    """
+    regressions = []
+    for bench_name, cur_metrics in current.items():
+        base_metrics = baseline.get(bench_name)
+        if not base_metrics or not isinstance(cur_metrics, dict):
+            continue
+        for metric, cur_val in cur_metrics.items():
+            if not isinstance(cur_val, (int, float)) or cur_val == 0:
+                continue
+            base_val = base_metrics.get(metric)
+            if not isinstance(base_val, (int, float)) or base_val == 0:
+                continue
+
+            higher_better = metric in METRIC_HIGHER_BETTER
+            lower_better = metric in METRIC_LOWER_BETTER
+            if not higher_better and not lower_better:
+                # 未明确方向的指标，跳过
+                continue
+
+            if higher_better:
+                ratio = (base_val - cur_val) / base_val
+                if ratio > threshold:
+                    regressions.append(
+                        f"  REGRESSION: {bench_name}.{metric} "
+                        f"baseline={base_val:.4g} current={cur_val:.4g} "
+                        f"drop={ratio:.1%} > {threshold:.0%}"
+                    )
+            elif lower_better:
+                ratio = (cur_val - base_val) / base_val
+                if ratio > threshold:
+                    regressions.append(
+                        f"  REGRESSION: {bench_name}.{metric} "
+                        f"baseline={base_val:.4g} current={cur_val:.4g} "
+                        f"increase={ratio:.1%} > {threshold:.0%}"
+                    )
+    return regressions
+
+
 def main():
     print("=" * 70)
     print("doc-pipeline 性能基准测试")
-    print(f"模式: {'快速' if QUICK else '完整'} | 迭代: {ITERATIONS}x")
+    mode_label = "CI" if CI_MODE else ("快速" if QUICK else "完整")
+    print(f"模式: {mode_label} | 迭代: {ITERATIONS}x")
+    if CI_MODE:
+        print(f"回归阈值: {REGRESSION_THRESHOLD:.0%}")
     print("=" * 70)
 
     benchmarks = [
@@ -318,9 +392,38 @@ def main():
 
     # 导出 JSON
     output_path = Path(__file__).parent / "benchmark_results.json"
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(all_results, f, indent=2, default=str, ensure_ascii=False)
-    print(f"结果已导出: {output_path}")
+
+    if CI_MODE:
+        # CI 模式：对比 baseline，检测回归
+        baseline_path = Path(__file__).parent / "benchmark_results.json"
+        if baseline_path.exists():
+            with open(baseline_path, "r", encoding="utf-8") as f:
+                baseline = json.load(f)
+            print(f"\n{'=' * 70}")
+            print(f"CI 回归检测 (阈值: {REGRESSION_THRESHOLD:.0%})")
+            print(f"{'=' * 70}")
+            regressions = _check_regression(all_results, baseline, REGRESSION_THRESHOLD)
+            if regressions:
+                print(f"\nFAILED: 检测到 {len(regressions)} 项性能回归:")
+                for r in regressions:
+                    print(r)
+                sys.exit(1)
+            else:
+                print("PASSED: 无性能回归")
+        else:
+            print("WARNING: 无 baseline 文件，跳过回归检测")
+            # 首次运行，写入 baseline
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(all_results, f, indent=2, default=str, ensure_ascii=False)
+            print(f"已写入初始 baseline: {output_path}")
+    elif UPDATE_BASELINE:
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(all_results, f, indent=2, default=str, ensure_ascii=False)
+        print(f"Baseline 已更新: {output_path}")
+    else:
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(all_results, f, indent=2, default=str, ensure_ascii=False)
+        print(f"结果已导出: {output_path}")
 
 
 if __name__ == "__main__":
