@@ -96,33 +96,35 @@ class DocumentEnhancer:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. 读取文档
-        logger.info(f"[Enhancer] 读取文档: {input_path}")
+        print(f"[Enhancer] 读取文档: {input_path}")
         content = input_path.read_text(encoding="utf-8")
 
         # 2. 解析章节
         sections = self._parse_sections(content)
         self._stats["sections"] = len(sections)
-        logger.info(f"[Enhancer] 解析到 {len(sections)} 个章节")
+        print(f"[Enhancer] 解析到 {len(sections)} 个章节")
 
         # 3. 逐章节增强
         enhanced_sections = []
         for i, (title, body) in enumerate(sections):
-            logger.info(f"[Enhancer] 增强章节 {i + 1}/{len(sections)}: {title[:60]}")
+            print(f"[Enhancer] [{i+1}/{len(sections)}] 增强: {title[:60]}")
             enhanced_body = self._enhance_section(title, body, with_search, max_search_results)
             enhanced_sections.append((title, enhanced_body))
             self._stats["enhanced"] += 1
 
         # 4. 重组文档
+        print(f"[Enhancer] 重组文档...")
         enhanced_content = self._reassemble(enhanced_sections)
 
         # 5. 修复 ASCII 图
+        print(f"[Enhancer] 修复 ASCII 图...")
         enhanced_content = self._fix_ascii(enhanced_content)
 
         # 6. 写入输出
         stem = input_path.stem
         output_path = output_dir / f"{stem}_enhanced.md"
         output_path.write_text(enhanced_content, encoding="utf-8")
-        logger.info(f"[Enhancer] 增强文档已写入: {output_path}")
+        print(f"[Enhancer] 增强文档已写入: {output_path}")
 
         duration = time.time() - start
         return {
@@ -165,15 +167,19 @@ class DocumentEnhancer:
 
         return sections
 
+    MAX_CHUNK_SIZE = 3000  # 单次 LLM 调用最大内容长度
+
     def _enhance_section(
         self, title: str, body: str, with_search: bool, max_results: int
     ) -> str:
-        """增强单个章节"""
+        """增强单个章节（超长内容自动分块）"""
         if not body.strip():
+            print(f"  -> 跳过（空内容）")
             return body
 
         # 跳过过短章节
         if len(body.strip()) < 50:
+            print(f"  -> 跳过（内容过短: {len(body.strip())} 字符）")
             return body
 
         # 搜索补充资料
@@ -189,25 +195,63 @@ class DocumentEnhancer:
                     )
                     self._stats["searched"] += 1
             except Exception as e:
-                logger.warning(f"[Enhancer] 搜索失败: {e}")
+                print(f"  -> 搜索失败: {e}")
 
-        # 调用 LLM 增强
+        # 超长内容分块处理
+        if len(body) > self.MAX_CHUNK_SIZE:
+            print(f"  -> 超长内容 ({len(body)} 字符)，分块处理...")
+            return self._enhance_long_section(title, body, search_results)
+
+        print(f"  -> LLM 增强中 ({len(body)} 字符)...")
+        return self._call_llm_enhance(body, search_results)
+
+    def _enhance_long_section(self, title: str, body: str, search_results: str) -> str:
+        """对超长章节按 ### 子标题分块增强"""
+        # 尝试按 ### 子标题拆分
+        sub_pattern = re.compile(r"^(### .+)$", re.MULTILINE)
+        sub_splits = sub_pattern.split(body)
+
+        if len(sub_splits) <= 1:
+            # 无子标题，直接截断
+            body = body[: self.MAX_CHUNK_SIZE] + "\n\n> [内容过长，已截断]"
+            return self._call_llm_enhance(body, search_results)
+
+        # 逐子章节增强
+        enhanced_parts = []
+        current_subtitle = ""
+        for part in sub_splits:
+            if part.startswith("### "):
+                current_subtitle = part
+            elif current_subtitle:
+                chunk = part.strip()
+                if len(chunk) > self.MAX_CHUNK_SIZE:
+                    chunk = chunk[: self.MAX_CHUNK_SIZE] + "\n\n> [内容过长，已截断]"
+                print(f"    -> 子章节 LLM 增强 ({len(chunk)} 字符)...")
+                enhanced = self._call_llm_enhance(chunk, search_results)
+                enhanced_parts.append(f"{current_subtitle}\n\n{enhanced}")
+                current_subtitle = ""
+
+        return "\n\n".join(enhanced_parts)
+
+    def _call_llm_enhance(self, content: str, search_results: str) -> str:
+        """调用 LLM 增强单段内容"""
         try:
             if search_results:
                 prompt = ENHANCE_WITH_SEARCH_PROMPT.format(
-                    search_results=search_results, content=body
+                    search_results=search_results, content=content
                 )
             else:
-                prompt = ENHANCE_PROMPT.format(content=body)
+                prompt = ENHANCE_PROMPT.format(content=content)
 
+            messages = [{"role": "user", "content": prompt}]
             enhanced, provider = self._llm_router.chat(
-                prompt, max_tokens=4096, temperature=0.3
+                messages, max_tokens=4096, temperature=0.3, timeout=60
             )
-            logger.info(f"[Enhancer] LLM 增强完成 ({provider}): {len(body)} -> {len(enhanced)} 字符")
+            print(f"    -> LLM 增强完成 ({provider}): {len(content)} -> {len(enhanced)} 字符")
             return enhanced
         except Exception as e:
-            logger.error(f"[Enhancer] LLM 增强失败: {e}")
-            return body  # 失败时返回原文
+            print(f"    -> LLM 增强失败: {e}")
+            return content  # 失败时返回原文
 
     def _reassemble(self, sections: list[tuple[str, str]]) -> str:
         """重组增强后的文档"""
@@ -226,12 +270,12 @@ class DocumentEnhancer:
             fixed, count = convert_ascii_in_text(content)
             if count > 0:
                 self._stats["ascii_fixed"] = count
-                logger.info(f"[Enhancer] 修复了 {count} 个 ASCII 图")
+                print(f"[Enhancer] 修复了 {count} 个 ASCII 图")
                 return fixed
         except ImportError:
-            logger.warning("[Enhancer] convert_ascii 模块不可用，跳过 ASCII 修复")
+            print("[Enhancer] convert_ascii 模块不可用，跳过 ASCII 修复")
         except Exception as e:
-            logger.warning(f"[Enhancer] ASCII 修复失败: {e}")
+            print(f"[Enhancer] ASCII 修复失败: {e}")
         return content
 
     def get_stats(self) -> dict:
