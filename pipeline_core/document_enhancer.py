@@ -1,0 +1,239 @@
+"""
+DocumentEnhancer - 已有文档增强模块
+=====================================
+对已有 Markdown 文档进行逐章节 LLM 增强，支持：
+  - 逐章节内容深化（保持结构，丰富细节）
+  - 搜索引擎补充最新资料
+  - ASCII 图修复
+  - 格式转换导出（HTML/Word）
+
+用法：
+  from pipeline_core.document_enhancer import DocumentEnhancer
+  enhancer = DocumentEnhancer()
+  result = enhancer.enhance("input.md", output_dir="output/")
+"""
+
+import logging
+import re
+import time
+from pathlib import Path
+from typing import Optional
+
+from pipeline_core.llm_router import get_router
+from pipeline_core.search_engines import SearchEngineManager
+
+logger = logging.getLogger(__name__)
+
+# 增强 LLM 提示词模板
+ENHANCE_PROMPT = """你是一位资深技术文档审阅专家。请对以下 Markdown 章节内容进行增强优化。
+
+## 增强要求
+1. **保持结构**：保留原标题层级和代码块，不要改变章节标题
+2. **丰富细节**：补充技术细节、配置示例、最佳实践
+3. **修正错误**：修正已知的不准确或过时信息
+4. **提升可读性**：优化表达，使中文更流畅自然
+5. **保留格式**：保留代码块、表格、列表、Mermaid 图等格式
+
+## 原始内容
+{content}
+
+## 输出要求
+直接输出增强后的 Markdown 内容，不要添加任何解释性文字。
+"""
+
+# 搜索增强提示词（结合搜索结果）
+ENHANCE_WITH_SEARCH_PROMPT = """你是一位资深技术文档审阅专家。请参考以下搜索结果，对 Markdown 章节内容进行增强优化。
+
+## 增强要求
+1. **保持结构**：保留原标题层级和代码块，不要改变章节标题
+2. **结合搜索**：将搜索结果中的最新信息融入内容
+3. **丰富细节**：补充技术细节、配置示例、最佳实践
+4. **修正错误**：修正已知的不准确或过时信息
+5. **提升可读性**：优化表达，使中文更流畅自然
+6. **保留格式**：保留代码块、表格、列表、Mermaid 图等格式
+
+## 搜索结果（供参考）
+{search_results}
+
+## 原始内容
+{content}
+
+## 输出要求
+直接输出增强后的 Markdown 内容，不要添加任何解释性文字。
+"""
+
+
+class DocumentEnhancer:
+    """已有文档增强器"""
+
+    def __init__(self):
+        self._llm_router = get_router()
+        self._search_mgr = SearchEngineManager.from_env()
+        self._stats = {"sections": 0, "enhanced": 0, "searched": 0, "ascii_fixed": 0}
+
+    def enhance(
+        self,
+        input_path: str,
+        output_dir: str = "output",
+        with_search: bool = True,
+        max_search_results: int = 5,
+    ) -> dict:
+        """
+        增强已有 Markdown 文档
+
+        Args:
+            input_path: 输入文档路径
+            output_dir: 输出目录
+            with_search: 是否启用搜索补充
+            max_search_results: 搜索最大结果数
+
+        Returns:
+            {"status": "success", "output_path": str, "stats": dict, "duration": float}
+        """
+        start = time.time()
+        input_path = Path(input_path)
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. 读取文档
+        logger.info(f"[Enhancer] 读取文档: {input_path}")
+        content = input_path.read_text(encoding="utf-8")
+
+        # 2. 解析章节
+        sections = self._parse_sections(content)
+        self._stats["sections"] = len(sections)
+        logger.info(f"[Enhancer] 解析到 {len(sections)} 个章节")
+
+        # 3. 逐章节增强
+        enhanced_sections = []
+        for i, (title, body) in enumerate(sections):
+            logger.info(f"[Enhancer] 增强章节 {i + 1}/{len(sections)}: {title[:60]}")
+            enhanced_body = self._enhance_section(title, body, with_search, max_search_results)
+            enhanced_sections.append((title, enhanced_body))
+            self._stats["enhanced"] += 1
+
+        # 4. 重组文档
+        enhanced_content = self._reassemble(enhanced_sections)
+
+        # 5. 修复 ASCII 图
+        enhanced_content = self._fix_ascii(enhanced_content)
+
+        # 6. 写入输出
+        stem = input_path.stem
+        output_path = output_dir / f"{stem}_enhanced.md"
+        output_path.write_text(enhanced_content, encoding="utf-8")
+        logger.info(f"[Enhancer] 增强文档已写入: {output_path}")
+
+        duration = time.time() - start
+        return {
+            "status": "success",
+            "output_path": str(output_path),
+            "stats": dict(self._stats),
+            "duration": round(duration, 1),
+        }
+
+    def _parse_sections(self, content: str) -> list[tuple[str, str]]:
+        """按 ## 标题拆分章节，返回 [(title, body), ...]"""
+        # 提取文档标题（第一个 # 行）和后续内容
+        lines = content.splitlines()
+        title_line = ""
+        body_start = 0
+
+        for i, line in enumerate(lines):
+            if line.startswith("# ") and not line.startswith("## "):
+                title_line = line
+                body_start = i + 1
+                break
+
+        # 按 ## 拆分
+        body = "\n".join(lines[body_start:])
+        pattern = re.compile(r"^(## .+)$", re.MULTILINE)
+        splits = pattern.split(body)
+
+        sections = []
+        if title_line:
+            sections.append((title_line, ""))  # 文档标题作为第一个"章节"
+
+        # 处理拆分结果
+        current_title = ""
+        for part in splits:
+            if part.startswith("## "):
+                current_title = part
+            elif current_title:
+                sections.append((current_title, part.strip()))
+                current_title = ""
+
+        return sections
+
+    def _enhance_section(
+        self, title: str, body: str, with_search: bool, max_results: int
+    ) -> str:
+        """增强单个章节"""
+        if not body.strip():
+            return body
+
+        # 跳过过短章节
+        if len(body.strip()) < 50:
+            return body
+
+        # 搜索补充资料
+        search_results = ""
+        if with_search and self._search_mgr.is_available():
+            try:
+                query = f"{title} 技术详解 最佳实践"
+                results = self._search_mgr.search(query, max_results=max_results)
+                if results:
+                    search_results = "\n".join(
+                        f"- [{r.get('title', '')}]({r.get('url', '')}) : {r.get('snippet', '')[:200]}"
+                        for r in results[:max_results]
+                    )
+                    self._stats["searched"] += 1
+            except Exception as e:
+                logger.warning(f"[Enhancer] 搜索失败: {e}")
+
+        # 调用 LLM 增强
+        try:
+            if search_results:
+                prompt = ENHANCE_WITH_SEARCH_PROMPT.format(
+                    search_results=search_results, content=body
+                )
+            else:
+                prompt = ENHANCE_PROMPT.format(content=body)
+
+            enhanced, provider = self._llm_router.chat(
+                prompt, max_tokens=4096, temperature=0.3
+            )
+            logger.info(f"[Enhancer] LLM 增强完成 ({provider}): {len(body)} -> {len(enhanced)} 字符")
+            return enhanced
+        except Exception as e:
+            logger.error(f"[Enhancer] LLM 增强失败: {e}")
+            return body  # 失败时返回原文
+
+    def _reassemble(self, sections: list[tuple[str, str]]) -> str:
+        """重组增强后的文档"""
+        parts = []
+        for title, body in sections:
+            if body:
+                parts.append(f"{title}\n\n{body}")
+            else:
+                parts.append(title)
+        return "\n\n".join(parts)
+
+    def _fix_ascii(self, content: str) -> str:
+        """修复 ASCII 图（委托给 convert_ascii 模块）"""
+        try:
+            from scripts.convert_ascii import convert_ascii_in_text
+            fixed, count = convert_ascii_in_text(content)
+            if count > 0:
+                self._stats["ascii_fixed"] = count
+                logger.info(f"[Enhancer] 修复了 {count} 个 ASCII 图")
+                return fixed
+        except ImportError:
+            logger.warning("[Enhancer] convert_ascii 模块不可用，跳过 ASCII 修复")
+        except Exception as e:
+            logger.warning(f"[Enhancer] ASCII 修复失败: {e}")
+        return content
+
+    def get_stats(self) -> dict:
+        """获取增强统计"""
+        return dict(self._stats)

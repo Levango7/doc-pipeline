@@ -150,6 +150,9 @@ def main():
     parser.add_argument("--export", choices=["html", "word", "png"], help="导出格式（html/word/png）")
     parser.add_argument("--export-output", default=None, help="导出文件路径")
     parser.add_argument("--fix-ascii", action="store_true", help="将文档中的 ASCII 图转换为 Mermaid 图")
+    parser.add_argument("--enhance", action="store_true", help="增强已有文档（逐章节 LLM 深化 + 搜索补充）")
+    parser.add_argument("--enhance-output", default=None, help="增强输出目录")
+    parser.add_argument("--no-search", action="store_true", help="禁用搜索补充（仅 LLM 增强）")
 
     args = parser.parse_args()
 
@@ -205,6 +208,35 @@ def main():
             if args.export:
                 _run_export(output, args.export, args.export_output)
 
+        return
+
+    # ─── 文档增强模式 ──────────────────────────
+    if args.enhance:
+        from pipeline_core.document_enhancer import DocumentEnhancer
+        input_path = args.input
+        output_dir = args.enhance_output or "output"
+        with_search = not args.no_search
+        print(f"\n[enhance] 开始增强文档: {input_path}")
+        print(f"[enhance] 搜索补充: {'启用' if with_search else '禁用'}")
+        enhancer = DocumentEnhancer()
+        result = enhancer.enhance(
+            input_path,
+            output_dir=output_dir,
+            with_search=with_search,
+        )
+        print(f"\n{'='*60}")
+        print(f"文档增强完成 | 状态: {result['status']}")
+        print(f"耗时: {result['duration']:.1f}s")
+        stats = result.get("stats", {})
+        print(f"章节: {stats.get('sections', 0)} | 增强: {stats.get('enhanced', 0)} | 搜索: {stats.get('searched', 0)} | ASCII修复: {stats.get('ascii_fixed', 0)}")
+        print(f"输出: {result.get('output_path', '')}")
+        print(f"{'='*60}")
+        # ─── ASCII 修复 + 格式导出 ──────────────
+        output = result.get("output_path", "")
+        if output and args.fix_ascii:
+            _run_ascii_fix(output)
+        if output and args.export:
+            _run_export(output, args.export, args.export_output)
         return
 
     # 加载配置
