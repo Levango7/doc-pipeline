@@ -13,6 +13,7 @@ Writer Agent v2 - 增强型内容整合插件
 import json
 import os
 import time
+import asyncio
 from collections import OrderedDict
 import re
 import hashlib
@@ -170,6 +171,14 @@ class WriterAgent(BaseAgent):
         if is_cf:
             body = body.get("result", body)
         return body["choices"][0]["message"]["content"]
+
+    async def _llm_chat_async(self, messages: list[dict], max_tokens: int = 4096,
+                              temperature: float = 0.3, timeout: int = 120) -> str:
+        """异步 LLM 调用 —— 通过 run_in_executor 包装同步 _llm_chat。"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._llm_chat, messages, max_tokens, temperature, timeout,
+        )
 
     def _polish_with_llm(self, content: str, query: str) -> str:
         """用 LLM 润色文档段落衔接（含缓存+质量门控+分段+规则兜底）"""
@@ -587,20 +596,36 @@ class WriterAgent(BaseAgent):
             text = re.sub(r"\n## 参考资料\s*\n(?=## )", "\n", text)
             return text.strip()
 
-        # 多轮生成：从模板 sections 循环
-        parts = []
+        # 并行生成：asyncio + ThreadPoolExecutor 并发所有 sections
+        sec_specs = []
         for i, sec in enumerate(sections):
             sec_name = sec.get("name", f"Section {i+1}")
             sec_prompt = sec.get("prompt", "")
-            # 替换占位符
             sec_prompt = sec_prompt.replace("{title}", title).replace("{query}", query)
+            sec_specs.append((i, sec_name, sec_prompt))
 
+        def _gen_one(idx: int, sec_name: str, sec_prompt: str) -> tuple[int, str, str]:
             part = _llm_generate(sec_prompt, max_tok=4096, time_out=180)
+            return (idx, sec_name, part)
+
+        loop = asyncio.new_event_loop()
+        try:
+            async def _run_parallel():
+                return await asyncio.gather(*[
+                    loop.run_in_executor(None, _gen_one, i, sn, sp)
+                    for i, sn, sp in sec_specs
+                ])
+            results_parallel = loop.run_until_complete(_run_parallel())
+        finally:
+            loop.close()
+
+        parts = []
+        for idx, sec_name, part in sorted(results_parallel, key=lambda x: x[0]):
             if part:
-                self.log_info(f"R{i+1} [{sec_name}] 完成: {len(part)} 字符")
+                self.log_info(f"R{idx+1} [{sec_name}] 完成: {len(part)} 字符")
                 parts.append(part)
             else:
-                self.log_info(f"R{i+1} [{sec_name}] 失败，跳过")
+                self.log_info(f"R{idx+1} [{sec_name}] 失败，跳过")
 
         if not parts:
             return None

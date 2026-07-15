@@ -14,6 +14,7 @@ import time
 import hashlib
 import re
 import threading
+import asyncio
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
@@ -743,6 +744,29 @@ class ResearcherAgent(BaseAgent):
         """清空缓存"""
         self._cache.clear()
         self.log_info("缓存已清空")
+
+    async def search_async(self, query: str, engines: list[str] = None,
+                           task_id: str = "") -> list[SearchResult]:
+        """异步搜索 —— 在 async 上下文中使用，避免阻塞事件循环。
+        内部通过 run_in_executor 调用同步 _search 方法。"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._search, query, task_id, engines or self._search_engines,
+        )
+
+    async def parallel_search_async(self, queries: list[str], task_id: str,
+                                     engines: list[str] = None) -> list[SearchResult]:
+        """异步并行多 query 搜索 —— 用 asyncio.gather 替代 ThreadPoolExecutor。
+        比 _parallel_search 更高效：无线程开销，纯 I/O 并发。"""
+        tasks = [self.search_async(q, engines, task_id) for q in queries]
+        results_nested = await asyncio.gather(*tasks, return_exceptions=True)
+        all_results = []
+        for r in results_nested:
+            if isinstance(r, list):
+                all_results.extend(r)
+            else:
+                self.log_warning(f"异步搜索异常: {r}")
+        return all_results
 
     def is_healthy(self) -> bool:
         """健康检查"""
