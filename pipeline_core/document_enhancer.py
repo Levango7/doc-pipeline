@@ -28,11 +28,16 @@ logger = logging.getLogger(__name__)
 ENHANCE_PROMPT = """你是一位资深技术文档审阅专家。请对以下 Markdown 章节内容进行增强优化。
 
 ## 增强要求
-1. **保持结构**：保留原标题层级和代码块，不要改变章节标题
+1. **保持结构**：不要改变原标题层级，不要添加新的 `##` 或 `###` 标题
 2. **丰富细节**：补充技术细节、配置示例、最佳实践
 3. **修正错误**：修正已知的不准确或过时信息
 4. **提升可读性**：优化表达，使中文更流畅自然
 5. **保留格式**：保留代码块、表格、列表、Mermaid 图等格式
+
+## 严格禁止
+- 禁止生成任何 `## ` 或 `### ` 开头的标题行
+- 禁止添加"增强后"、"优化后"等元描述文字
+- 禁止重复输出原标题
 
 ## 原始内容
 {content}
@@ -45,12 +50,17 @@ ENHANCE_PROMPT = """你是一位资深技术文档审阅专家。请对以下 Ma
 ENHANCE_WITH_SEARCH_PROMPT = """你是一位资深技术文档审阅专家。请参考以下搜索结果，对 Markdown 章节内容进行增强优化。
 
 ## 增强要求
-1. **保持结构**：保留原标题层级和代码块，不要改变章节标题
+1. **保持结构**：不要改变原标题层级，不要添加新的 `##` 或 `###` 标题
 2. **结合搜索**：将搜索结果中的最新信息融入内容
 3. **丰富细节**：补充技术细节、配置示例、最佳实践
 4. **修正错误**：修正已知的不准确或过时信息
 5. **提升可读性**：优化表达，使中文更流畅自然
 6. **保留格式**：保留代码块、表格、列表、Mermaid 图等格式
+
+## 严格禁止
+- 禁止生成任何 `## ` 或 `### ` 开头的标题行
+- 禁止添加"增强后"、"优化后"等元描述文字
+- 禁止重复输出原标题
 
 ## 搜索结果（供参考）
 {search_results}
@@ -69,7 +79,8 @@ class DocumentEnhancer:
     def __init__(self):
         self._llm_router = get_router()
         self._search_mgr = SearchEngineManager.from_env()
-        self._stats = {"sections": 0, "enhanced": 0, "searched": 0, "ascii_fixed": 0}
+        self._stats = {"sections": 0, "enhanced": 0, "searched": 0, "ascii_fixed": 0,
+                       "fake_headings_removed": 0}
 
     def enhance(
         self,
@@ -104,7 +115,10 @@ class DocumentEnhancer:
         self._stats["sections"] = len(sections)
         print(f"[Enhancer] 解析到 {len(sections)} 个章节")
 
-        # 3. 逐章节增强
+        # 3. 收集原始文档的 ## 标题（用于后续全局清理的精确匹配）
+        original_titles = set(title for title, _ in sections if title.startswith("## "))
+
+        # 4. 逐章节增强
         enhanced_sections = []
         for i, (title, body) in enumerate(sections):
             print(f"[Enhancer] [{i+1}/{len(sections)}] 增强: {title[:60]}")
@@ -112,15 +126,21 @@ class DocumentEnhancer:
             enhanced_sections.append((title, enhanced_body))
             self._stats["enhanced"] += 1
 
-        # 4. 重组文档
+        # 5. 重组文档
         print(f"[Enhancer] 重组文档...")
         enhanced_content = self._reassemble(enhanced_sections)
 
-        # 5. 修复 ASCII 图
+        # 6. 全局清理虚假标题（使用原始标题集合精确匹配）
+        enhanced_content, removed = self._clean_fake_headings(enhanced_content, original_titles)
+        self._stats["fake_headings_removed"] = removed
+        if removed > 0:
+            print(f"[Enhancer] 清理了 {removed} 个虚假标题")
+
+        # 7. 修复 ASCII 图
         print(f"[Enhancer] 修复 ASCII 图...")
         enhanced_content = self._fix_ascii(enhanced_content)
 
-        # 6. 写入输出
+        # 8. 写入输出
         stem = input_path.stem
         output_path = output_dir / f"{stem}_enhanced.md"
         output_path.write_text(enhanced_content, encoding="utf-8")
@@ -203,7 +223,8 @@ class DocumentEnhancer:
             return self._enhance_long_section(title, body, search_results)
 
         print(f"  -> LLM 增强中 ({len(body)} 字符)...")
-        return self._call_llm_enhance(body, search_results)
+        enhanced = self._call_llm_enhance(body, search_results)
+        return self._clean_llm_output(enhanced)
 
     def _enhance_long_section(self, title: str, body: str, search_results: str) -> str:
         """对超长章节按 ### 子标题分块增强"""
@@ -214,7 +235,8 @@ class DocumentEnhancer:
         if len(sub_splits) <= 1:
             # 无子标题，直接截断
             body = body[: self.MAX_CHUNK_SIZE] + "\n\n> [内容过长，已截断]"
-            return self._call_llm_enhance(body, search_results)
+            enhanced = self._call_llm_enhance(body, search_results)
+            return self._clean_llm_output(enhanced)
 
         # 逐子章节增强
         enhanced_parts = []
@@ -228,6 +250,7 @@ class DocumentEnhancer:
                     chunk = chunk[: self.MAX_CHUNK_SIZE] + "\n\n> [内容过长，已截断]"
                 print(f"    -> 子章节 LLM 增强 ({len(chunk)} 字符)...")
                 enhanced = self._call_llm_enhance(chunk, search_results)
+                enhanced = self._clean_llm_output(enhanced)
                 enhanced_parts.append(f"{current_subtitle}\n\n{enhanced}")
                 current_subtitle = ""
 
@@ -252,6 +275,48 @@ class DocumentEnhancer:
         except Exception as e:
             print(f"    -> LLM 增强失败: {e}")
             return content  # 失败时返回原文
+
+    def _clean_llm_output(self, content: str) -> str:
+        """清理 LLM 输出中的虚假标题和元描述"""
+        lines = content.splitlines()
+        cleaned = []
+        for line in lines:
+            stripped = line.strip()
+            # 跳过 LLM 生成的 ## 或 ### 标题行
+            if stripped.startswith("## ") or stripped.startswith("### "):
+                continue
+            # 跳过 LLM 元描述 artifacts
+            if stripped in ("增强后的 Markdown 内容", "增强后的内容", "优化后的内容",
+                           "增强后内容", "以下是增强后的内容", "以下是优化后的内容"):
+                continue
+            cleaned.append(line)
+        return "\n".join(cleaned)
+
+    def _clean_fake_headings(self, content: str, original_titles: set[str]) -> tuple[str, int]:
+        """全局清理：移除增强后文档中不属于原始结构的 ## 标题
+
+        Args:
+            content: 增强后的文档内容
+            original_titles: 原始文档中所有 ## 标题的集合（用于精确匹配）
+        """
+        removed = 0
+        lines = content.splitlines()
+        result = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("## "):
+                if stripped in original_titles:
+                    result.append(line)
+                else:
+                    # 虚假标题，转为加粗文本
+                    fake_title = stripped[3:]  # 去掉 "## "
+                    result.append(f"**{fake_title}**")
+                    removed += 1
+                    print(f"  [clean] 移除虚假标题: {stripped[:60]}")
+            else:
+                result.append(line)
+
+        return "\n".join(result), removed
 
     def _reassemble(self, sections: list[tuple[str, str]]) -> str:
         """重组增强后的文档"""
