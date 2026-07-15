@@ -86,7 +86,7 @@ AGENT_SCHEMAS = {
         "download_workers": (int, 5),
     },
     "writer": {
-        "template": (str, "default"),
+        "prompt_profile": (str, "generic-tech"),
         "pending_expire_secs": (int, 300),
         "polish_cache_ttl": (int, 3600),
     },
@@ -101,7 +101,7 @@ AGENT_SCHEMAS = {
     "layout": {
         "style": (str, "markdown"),
     },
-    "safewriter": {
+    "safe_writer": {
         "backup_dir": (str, "backups"),
         "atomic": (bool, True),
     },
@@ -375,7 +375,6 @@ class Scheduler:
             candidates = [
                 agents_path / f"{agent_name}.py",
                 agents_path / f"{agent_name}_agent.py",
-                agents_path / f"safe_writer_agent.py" if agent_name == "safewriter" else None,
             ]
             agent_file = None
             for c in candidates:

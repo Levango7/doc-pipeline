@@ -55,7 +55,10 @@ class ConfigCenter:
                     import yaml
                     file_data = yaml.safe_load(f) or {}
                 except ImportError:
-                    file_data = json.load(f) or {}
+                    raise ImportError(
+                        f"PyYAML is required to load {path} but is not installed. "
+                        "Install with: pip install pyyaml"
+                    )
             else:
                 file_data = json.load(f) or {}
         self._deep_merge(self._data, file_data)

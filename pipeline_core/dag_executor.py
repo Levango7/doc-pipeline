@@ -462,6 +462,10 @@ class DAGExecutor:
                 self._metrics.counter(
                     "step_total", labels={"agent": node.agent_name},
                 )
+                if step_result.status != "success":
+                    self._metrics.counter(
+                        "step_failures", labels={"agent": node.agent_name, "status": step_result.status},
+                    )
                 self._metrics.gauge(
                     "pipeline_progress", task.progress,
                     labels={"pipeline": getattr(plan, "pipeline_name", "")},
