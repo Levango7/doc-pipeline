@@ -183,7 +183,8 @@ class WriterAgent(BaseAgent):
         )
 
     def _llm_chat_stream(self, messages: list[dict], max_tokens: int = 4096,
-                         temperature: float = 0.3, timeout: int = 120):
+                         temperature: float = 0.3, timeout: int = 120,
+                         read_timeout: int = 30, max_retries: int = 2):
         """流式 LLM 调用 —— 逐 chunk yield，降低首字延迟。
 
         使用 SSE (Server-Sent Events) streaming response：
@@ -191,12 +192,20 @@ class WriterAgent(BaseAgent):
         - 响应为 text/event-stream 格式，每行 data: {...}
         - 逐行读取并 yield delta content
 
+        增强特性：
+        - read_timeout: socket 级读取超时，防止服务端 hang 住不发送数据
+        - max_retries: 连接建立失败时的最大重试次数
+        - 连接中断时保留已 yield 的部分结果（不产生重复内容）
+        - 无任何数据时自动回退到非流式 _llm_chat
+
         用法:
             for chunk in writer._llm_chat_stream(messages):
                 print(chunk, end="", flush=True)  # 实时输出
 
         若 LLM 端点不支持 streaming，自动回退到非流式 _llm_chat。
         """
+        import socket
+
         # 构建流式请求 payload
         is_cf = "/ai/run" in self._llm_api_url
         if is_cf:
@@ -214,17 +223,31 @@ class WriterAgent(BaseAgent):
                      "Authorization": f"Bearer {self._llm_api_key}",
                      "Accept": "text/event-stream"})
 
-        try:
-            resp = urllib.request.urlopen(req, timeout=timeout)
-        except Exception:
-            # 端点不支持 streaming，回退到非流式
-            result = self._llm_chat(messages, max_tokens, temperature, timeout)
-            yield result
-            return
+        # 连接建立重试
+        resp = None
+        for attempt in range(max_retries + 1):
+            try:
+                resp = urllib.request.urlopen(req, timeout=timeout)
+                break
+            except Exception as e:
+                if attempt < max_retries:
+                    self.log_warning(f"SSE 连接失败 (attempt {attempt+1}/{max_retries+1}): {e}")
+                    continue
+                # 所有重试失败，回退到非流式
+                result = self._llm_chat(messages, max_tokens, temperature, timeout)
+                yield result
+                return
 
         # 逐行读取 SSE 流
         buffer = ""
         try:
+            # 设置 socket 级读取超时，防止服务端 hang
+            try:
+                sock = resp.fp.raw._sock
+                sock.settimeout(read_timeout)
+            except (AttributeError, OSError):
+                pass  # 无法设置 socket 超时，继续用默认行为
+
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line:
@@ -257,13 +280,27 @@ class WriterAgent(BaseAgent):
                 if delta:
                     buffer += delta
                     yield delta
-        finally:
-            resp.close()
 
-        # 若流式返回为空，回退到非流式
+        except (socket.timeout, TimeoutError) as e:
+            # 读取超时：已 yield 的部分结果保留给调用方，不重试（避免重复内容）
+            self.log_warning(f"SSE 读取超时，已收到 {len(buffer)} 字符: {e}")
+        except (ConnectionError, OSError) as e:
+            # 连接中断：已 yield 的部分结果保留给调用方
+            self.log_warning(f"SSE 连接中断，已收到 {len(buffer)} 字符: {e}")
+        finally:
+            if resp:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+
+        # 若流式返回为空（未收到任何 chunk），回退到非流式
         if not buffer:
-            result = self._llm_chat(messages, max_tokens, temperature, timeout)
-            yield result
+            try:
+                result = self._llm_chat(messages, max_tokens, temperature, timeout)
+                yield result
+            except Exception:
+                pass
 
     def _polish_with_llm(self, content: str, query: str) -> str:
         """用 LLM 润色文档段落衔接（含缓存+质量门控+分段+规则兜底）"""

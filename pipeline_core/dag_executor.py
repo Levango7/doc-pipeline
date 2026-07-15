@@ -11,6 +11,26 @@ from .circuit_breaker import backoff_with_jitter
 from .cache_manager import CacheManager
 
 
+# ─── 模块级函数：支持 ProcessPoolExecutor pickle ──────────────────
+
+def _execute_node_worker(dag_executor, task, node, input_file, plan):
+    """模块级节点执行函数 —— 支持 ProcessPoolExecutor pickle。
+
+    当使用 ProcessPoolExecutor 时，dag_executor 会被 pickle 传输到子进程。
+    非可序列化属性（registry, bus 等）会被置为 None（通过 __getstate__），
+    子进程需通过 DAGExecutor.from_config() 重建上下文。
+
+    若 registry/bus 为 None，说明子进程未重建上下文，抛出明确错误。
+    """
+    if dag_executor.registry is None or dag_executor.bus is None:
+        raise RuntimeError(
+            "ProcessPoolExecutor 模式下 registry/bus 不可用。"
+            "子进程需通过 DAGExecutor.from_config() 重建上下文，"
+            "或使用 ThreadPoolExecutor（默认）模式。"
+        )
+    return dag_executor.execute_node_from_scheduler(task, node, input_file, plan)
+
+
 class DAGExecutor:
     """DAG 构建和执行"""
 
@@ -29,6 +49,40 @@ class DAGExecutor:
         self._audit_log = audit_log_fn
         self._execution_stats: list[dict] = []
         self._query_cache = CacheManager(name="dag_queries", max_size=100, ttl=0)
+
+    # ─── pickle 支持（ProcessPoolExecutor 兼容） ─────────────
+
+    # 非可序列化属性列表：pickle 时置 None，子进程需通过 from_config() 重建
+    _NON_PICKLABLE_ATTRS = (
+        "registry", "bus", "_logger", "_stop_event",
+        "_checkpoint_save", "_audit_log",
+    )
+
+    def __getstate__(self):
+        """pickle 时剥离非可序列化属性，其余正常序列化。"""
+        state = self.__dict__.copy()
+        for attr in self._NON_PICKLABLE_ATTRS:
+            state[attr] = None
+        return state
+
+    def __setstate__(self, state):
+        """从 pickle 恢复，非可序列化属性为 None（子进程需自行重建）。"""
+        self.__dict__.update(state)
+
+    @classmethod
+    def from_config(cls, config: dict, registry, bus, cb_registry, rate_limiters, metrics,
+                    logger=None, stop_event=None, checkpoint_save_fn=None, audit_log_fn=None):
+        """从配置重建 DAGExecutor —— 供 ProcessPoolExecutor 子进程使用。
+
+        在子进程中，通过此方法用从父进程 pickle 传来的 config 重建完整上下文：
+            executor = DAGExecutor.from_config(config, registry, bus, ...)
+        """
+        return cls(
+            registry=registry, bus=bus, cb_registry=cb_registry,
+            rate_limiters=rate_limiters, metrics=metrics,
+            logger=logger, stop_event=stop_event,
+            checkpoint_save_fn=checkpoint_save_fn, audit_log_fn=audit_log_fn,
+        )
 
     def _log(self, level: str, msg: str, **kw):
         """结构化日志记录"""
@@ -332,10 +386,19 @@ class DAGExecutor:
                 started_at=time.time(),
             )
 
-            future = executor.submit(
-                self.execute_node_from_scheduler,
-                task=task, node=node, input_file=input_file, plan=plan,
-            )
+            from .executor_factory import is_process_executor
+
+            if is_process_executor(executor):
+                # ProcessPoolExecutor 模式：使用模块级函数（可 pickle）
+                future = executor.submit(
+                    _execute_node_worker, self, task, node, input_file, plan,
+                )
+            else:
+                # ThreadPoolExecutor 模式：直接提交 bound method（零开销）
+                future = executor.submit(
+                    self.execute_node_from_scheduler,
+                    task=task, node=node, input_file=input_file, plan=plan,
+                )
             futures[future] = (node, dag_node, step_result)
 
         for future in as_completed(futures):
