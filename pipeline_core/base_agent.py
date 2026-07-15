@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 from .registry import AgentMeta, AgentStatus
 from .message_bus_v3 import Message
+from .cache_manager import CacheManager
 
 
 # ─── AgentResult ──────────────────────────────
@@ -164,9 +165,14 @@ class BaseAgent(ABC):
         self.reg = registry
         self.status = AgentStatus.LOADED
 
-        # 缓存目录
+        # 统一缓存管理器（文件后端，跨进程共享）
         self._cache_dir = Path(config.get("cache_dir", "cache")) / name
         self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._cache = CacheManager(
+            name=name, backend="file",
+            cache_dir=str(self._cache_dir.parent),
+            ttl=self.meta.cache_ttl or 0,
+        )
 
         # 日志
         self._logger = AgentLogger(name, config.get("log_dir", "logs"), quiet=config.get("quiet", False))
@@ -317,46 +323,15 @@ class BaseAgent(ABC):
 
     def cache_get(self, key: str) -> Any | None:
         """从缓存读取"""
-        if self.meta.cache_ttl <= 0:
-            return None
-
-        fpath = self._cache_dir / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
-        if not fpath.exists():
-            return None
-
-        try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                entry = json.load(f)
-
-            if time.time() - entry.get("ts", 0) > self.meta.cache_ttl:
-                os.remove(fpath)
-                return None
-
-            return entry.get("data")
-        except Exception as e:
-            self._logger.error(f"缓存读取失败: {e}")
-            return None
+        return self._cache.get(key)
 
     def cache_set(self, key: str, data: Any):
         """写入缓存"""
-        if self.meta.cache_ttl <= 0:
-            return
-
-        fpath = self._cache_dir / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
-        try:
-            with open(fpath, "w", encoding="utf-8") as f:
-                json.dump({"key": key, "ts": time.time(), "data": data},
-                          f, ensure_ascii=False)
-        except Exception as e:
-            self._logger.error(f"缓存写入失败: {e}")
+        self._cache.set(key, data)
 
     def cache_clear(self):
         """清空缓存"""
-        for f in self._cache_dir.glob("*.json"):
-            try:
-                os.remove(f)
-            except Exception as e:
-                self._logger.error(f"缓存清理失败: {e}")
+        self._cache.clear()
 
     # ─── 状态 ───────────────────────────────────
 

@@ -25,6 +25,7 @@ from typing import Optional
 from collections import defaultdict
 
 from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
+from pipeline_core.cache_manager import CacheManager
 
 
 AGENT_NAME = "writer"
@@ -106,18 +107,22 @@ class WriterAgent(BaseAgent):
         if self._llm_api_key:
             self.log_info("LLM 润色已启用")
 
-        self._polish_cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
-        self._polish_cache_ttl = config.get("polish_cache_ttl", 3600)
-        self._polish_cache_max = config.get("polish_cache_max", 200)
-        self._cache_lock = threading.Lock()
+        self._polish_cache = CacheManager(
+            name="writer_polish", max_size=config.get("polish_cache_max", 200),
+            ttl=config.get("polish_cache_ttl", 3600),
+        )
+        self._cache_lock = threading.Lock()  # 保留用于 pending_results
 
         # Prompt 模板配置
         self._prompt_profile = config.get("prompt_profile", "default")
         self._prompts_dir = Path(__file__).parent.parent / "pipelines" / "prompts"
-        self._prompt_template_cache: dict[str, dict] = {}
-        self._restructure_cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
-        self._restructure_cache_ttl = config.get("restructure_cache_ttl", 7200)
-        self._restructure_cache_max = config.get("restructure_cache_max", self._polish_cache_max)
+        self._prompt_template_cache = CacheManager(
+            name="writer_prompt", max_size=50, ttl=0,
+        )
+        self._restructure_cache = CacheManager(
+            name="writer_restructure", max_size=config.get("restructure_cache_max", 200),
+            ttl=config.get("restructure_cache_ttl", 7200),
+        )
         self.log_info(f"Prompt profile: {self._prompt_profile}")
 
         # 规则过渡句模板（0 成本兜底）
@@ -173,13 +178,10 @@ class WriterAgent(BaseAgent):
 
         cache_key = hashlib.sha256((content[:200] + query).encode()).hexdigest()
         now = time.time()
-        with self._cache_lock:
-            cached_entry = self._polish_cache.get(cache_key)
-            if cached_entry:
-                expire_ts, cached = cached_entry
-                if now < expire_ts:
-                    self.log_info("LLM 润色缓存命中，跳过")
-                    return cached
+        cached = self._polish_cache.get(cache_key)
+        if cached is not None:
+            self.log_info("LLM 润色缓存命中，跳过")
+            return cached
 
         # ── Layer 1: 质量门控 ──
         # 如果文档已完整（3+ 章节、有引用、500+ 字），跳过 LLM
@@ -237,11 +239,7 @@ class WriterAgent(BaseAgent):
         result = "\n\n".join(polished_segments)
         elapsed = time.time() - now
 
-        with self._cache_lock:
-            while len(self._polish_cache) >= self._polish_cache_max:
-                self._polish_cache.popitem(last=False)
-            self._polish_cache[cache_key] = (now + self._polish_cache_ttl, result)
-            self._polish_cache.move_to_end(cache_key)
+        self._polish_cache.set(cache_key, result)
         self.log_info(f"LLM 润色完成 ({len(segments)}段, {elapsed:.1f}s, {len(content)}→{len(result)} 字)")
         return result
 
@@ -468,8 +466,9 @@ class WriterAgent(BaseAgent):
 
     def _load_prompt_template(self, profile_name: str) -> dict:
         """从 pipelines/prompts/ 加载 YAML prompt 模板"""
-        if profile_name in self._prompt_template_cache:
-            return self._prompt_template_cache[profile_name]
+        cached = self._prompt_template_cache.get(profile_name)
+        if cached is not None:
+            return cached
 
         yaml_path = self._prompts_dir / f"{profile_name}.yaml"
         if not yaml_path.exists():
@@ -480,7 +479,7 @@ class WriterAgent(BaseAgent):
             import yaml
             with open(yaml_path, "r", encoding="utf-8") as f:
                 template = yaml.safe_load(f)
-            self._prompt_template_cache[profile_name] = template
+            self._prompt_template_cache.set(profile_name, template)
             n_sections = len(template.get("sections", []))
             self.log_info(f"加载 prompt 模板: {profile_name} ({n_sections} sections)")
             return template
@@ -495,16 +494,10 @@ class WriterAgent(BaseAgent):
             return None
 
         cache_key_short = hashlib.sha256((query + title[:50]).encode()).hexdigest()
-        now_ts = time.time()
-        with self._cache_lock:
-            cached_entry = self._restructure_cache.get(cache_key_short)
-            if cached_entry:
-                exp_ts, cached_val = cached_entry
-                if now_ts < exp_ts:
-                    self.log_info("LLM 重构缓存命中，跳过")
-                    return cached_val
-                else:
-                    del self._restructure_cache[cache_key_short]
+        cached = self._restructure_cache.get(cache_key_short)
+        if cached is not None:
+            self.log_info("LLM 重构缓存命中，跳过")
+            return cached
 
         # 加载 prompt 模板
         template = self._load_prompt_template(self._prompt_profile)
@@ -650,10 +643,7 @@ class WriterAgent(BaseAgent):
             final = f"# {title}\n\n" + final
 
         self.log_info(f"多轮拼接完成: {len(final)} 字符")
-        with self._cache_lock:
-            while len(self._restructure_cache) >= self._restructure_cache_max:
-                self._restructure_cache.popitem(last=False)
-            self._restructure_cache[cache_key_short] = (time.time() + self._restructure_cache_ttl, final)
+        self._restructure_cache.set(cache_key_short, final)
         return final
 
     def _plan_skeleton(self, query: str, title: str,

@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Callable
 
 from .circuit_breaker import backoff_with_jitter
+from .cache_manager import CacheManager
 
 
 class DAGExecutor:
@@ -27,7 +28,7 @@ class DAGExecutor:
         self._checkpoint_save = checkpoint_save_fn
         self._audit_log = audit_log_fn
         self._execution_stats: list[dict] = []
-        self._query_cache: dict[str, list[str]] = {}  # input_file -> queries 缓存
+        self._query_cache = CacheManager(name="dag_queries", max_size=100, ttl=0)
 
     def _log(self, level: str, msg: str, **kw):
         """结构化日志记录"""
@@ -481,8 +482,9 @@ class DAGExecutor:
         """从输入文件提取查询词（按行，过滤注释/空行/噪音行）。
         使用 per-file 缓存避免同一 level 内多个节点重复读取文件。"""
         cache_key = input_file
-        if cache_key in self._query_cache:
-            return self._query_cache[cache_key]
+        cached = self._query_cache.get(cache_key)
+        if cached is not None:
+            return cached
         with open(input_file, "r", encoding="utf-8") as f:
             content = f.read()
         noise = [r"^这是一个测试", r"^用于验证", r"验证流水线", r"是否正常工作",
@@ -499,7 +501,7 @@ class DAGExecutor:
             queries.append(q)
         if not queries:
             queries = [node.agent_config.config.get("default_query", "Python 异步编程")]
-        self._query_cache[cache_key] = queries
+        self._query_cache.set(cache_key, queries)
         return queries
 
     # ─── 任务输出读写 ─────────────────────────────

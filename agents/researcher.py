@@ -20,6 +20,7 @@ from typing import Optional
 from dataclasses import dataclass, field
 
 from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
+from pipeline_core.cache_manager import CacheManager
 
 
 AGENT_NAME = "researcher"
@@ -61,41 +62,6 @@ class SearchResult:
         }
 
 
-class LRUCache:
-    """LRU 缓存（带 TTL）—— 基于 OrderedDict，O(1) 淘汰"""
-
-    def __init__(self, max_size: int = 1000, ttl: int = 86400):
-        self.max_size = max_size
-        self.ttl = ttl
-        from collections import OrderedDict
-        self._cache: OrderedDict = OrderedDict()
-        self._lock = threading.Lock()
-
-    def get(self, key: str) -> Optional[list]:
-        with self._lock:
-            entry = self._cache.get(key)
-            if not entry:
-                return None
-            if time.time() - entry["ts"] > self.ttl:
-                self._cache.pop(key, None)
-                return None
-            self._cache.move_to_end(key)
-            return entry["data"]
-
-    def set(self, key: str, data: list):
-        with self._lock:
-            while len(self._cache) >= self.max_size:
-                self._cache.popitem(last=False)
-            self._cache[key] = {"data": data, "ts": time.time()}
-
-    def _remove(self, key: str):
-        self._cache.pop(key, None)
-
-    def clear(self):
-        with self._lock:
-            self._cache.clear()
-
-
 class ResearcherAgent(BaseAgent):
     """增强型内容检索 Agent"""
 
@@ -118,7 +84,10 @@ class ResearcherAgent(BaseAgent):
         super().__init__(name, meta, config, message_bus, registry)
         
         cache_size = config.get("cache_size", 1000)
-        self._cache = LRUCache(max_size=cache_size, ttl=self.meta.cache_ttl or CACHE_TTL)
+        self._cache = CacheManager(
+            name="researcher", max_size=cache_size,
+            ttl=self.meta.cache_ttl or CACHE_TTL,
+        )
         
         self.dedup_set: set = set()
         self._dedup_lock = threading.Lock()
