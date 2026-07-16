@@ -149,7 +149,7 @@ class LLMRouter:
     """
 
     # 健康检查冷却时间（秒），避免每次调用都重试不健康的供应商
-    HEALTH_CHECK_COOLDOWN = 300  # 5 分钟
+    HEALTH_CHECK_COOLDOWN = 60  # 1 分钟（429 限流通常 1 分钟内恢复）
 
     def __init__(self, providers: list[LLMProvider] = None):
         self._providers: list[LLMProvider] = providers or []
