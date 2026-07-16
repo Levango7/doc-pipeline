@@ -72,8 +72,17 @@ class LLMProvider:
         self._last_error = ""
         self._last_check = time.time()
 
-    def check_health(self) -> bool:
-        """主动健康检查（发送简单请求）"""
+    def check_health(self, cooldown: float = 60.0) -> bool:
+        """主动健康检查（发送简单请求）
+
+        Args:
+            cooldown: 健康检查冷却时间（秒），跳过最近检查过的不健康供应商
+        """
+        # 冷却期内跳过已不健康的供应商，避免每次调用都重试
+        if not self._healthy and self._last_check > 0:
+            elapsed = time.time() - self._last_check
+            if elapsed < cooldown:
+                return False
         try:
             messages = [{"role": "user", "content": "1+1=?"}]
             result = _call_llm(self, messages, max_tokens=10, timeout=15)
@@ -122,12 +131,8 @@ def _call_llm(provider: LLMProvider, messages: list[dict],
 
     content = body["choices"][0]["message"]["content"]
 
-
-    # 过滤 \u003cthink\u003e...\u003c/think\u003e 标签（Dahl/MiniMax 等推理模型）
-
-
+    # 过滤 <think>...</think> 标签（Dahl/MiniMax 等推理模型）
     content = re.sub(r'<\s*think\s*>.*?<\s*/\s*think\s*>', '', content, flags=re.DOTALL).strip()
-
 
     return content if content else ""
 
@@ -140,6 +145,9 @@ class LLMRouter:
         reply = router.chat([{"role": "user", "content": "你好"}])
         # 自动选择健康供应商，失败自动 fallback
     """
+
+    # 健康检查冷却时间（秒），避免每次调用都重试不健康的供应商
+    HEALTH_CHECK_COOLDOWN = 300  # 5 分钟
 
     def __init__(self, providers: list[LLMProvider] = None):
         self._providers: list[LLMProvider] = providers or []
@@ -187,14 +195,18 @@ class LLMRouter:
         # 过滤可用供应商
         usable = [p for p in candidates if p.enabled and p.healthy]
         if not usable:
-            # 尝试重新激活不健康的供应商（可能已恢复）
+            # 尝试重新激活不健康的供应商（有冷却时间）
             logger.info("所有供应商不健康，尝试重新检查...")
             usable = [p for p in candidates if p.enabled]
             for p in usable:
-                if p.check_health():
+                if p.check_health(cooldown=self.HEALTH_CHECK_COOLDOWN):
                     logger.info(f"供应商 {p.name} 已恢复")
                 else:
-                    logger.warning(f"供应商 {p.name} 仍不健康: {p._last_error}")
+                    # 只在冷却期外才打印警告，避免日志洪水
+                    if not p._healthy and p._last_check > 0:
+                        elapsed = time.time() - p._last_check
+                        if elapsed >= self.HEALTH_CHECK_COOLDOWN:
+                            logger.warning(f"供应商 {p.name} 仍不健康: {p._last_error}")
             usable = [p for p in usable if p.healthy]
 
         if not usable:
@@ -222,7 +234,7 @@ class LLMRouter:
             if not p.enabled:
                 results[p.name] = {"status": "disabled", "healthy": False}
                 continue
-            healthy = p.check_health()
+            healthy = p.check_health(cooldown=0)  # 强制检查，不冷却
             results[p.name] = {
                 "status": "healthy" if healthy else "unhealthy",
                 "healthy": healthy,

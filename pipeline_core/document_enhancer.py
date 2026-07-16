@@ -240,8 +240,12 @@ class DocumentEnhancer:
 
         if len(sub_splits) <= 1:
             # 无子标题，直接截断
+            original_body = body
             body = body[: self.MAX_CHUNK_SIZE] + "\n\n> [内容过长，已截断]"
             enhanced = self._call_llm_enhance(body, search_results)
+            # LLM 失败时返回原始完整内容，而非截断版本
+            if enhanced is body:
+                return original_body
             return self._clean_llm_output(enhanced)
 
         # 逐子章节增强
@@ -251,12 +255,17 @@ class DocumentEnhancer:
             if part.startswith("### "):
                 current_subtitle = part
             elif current_subtitle:
-                chunk = part.strip()
+                original_chunk = part.strip()
+                chunk = original_chunk
                 if len(chunk) > self.MAX_CHUNK_SIZE:
                     chunk = chunk[: self.MAX_CHUNK_SIZE] + "\n\n> [内容过长，已截断]"
                 print(f"    -> 子章节 LLM 增强 ({len(chunk)} 字符)...")
                 enhanced = self._call_llm_enhance(chunk, search_results)
-                enhanced = self._clean_llm_output(enhanced)
+                # LLM 失败时返回原始完整内容，而非截断版本
+                if enhanced is chunk:
+                    enhanced = original_chunk
+                else:
+                    enhanced = self._clean_llm_output(enhanced)
                 enhanced_parts.append(f"{current_subtitle}\n\n{enhanced}")
                 current_subtitle = ""
 
