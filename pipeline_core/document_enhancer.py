@@ -267,11 +267,26 @@ class DocumentEnhancer:
                 else:
                     enhanced = self._clean_llm_output(enhanced)
                     enhanced = self._restore_missing_h4(original_chunk, enhanced)
+                    enhanced = self._restore_code_fences(original_chunk, enhanced)
                 enhanced_parts.append(f"{current_subtitle}\n\n{enhanced}")
                 current_subtitle = ""
 
         return "\n\n".join(enhanced_parts)
 
+
+    def _restore_code_fences(self, original: str, enhanced: str) -> str:
+        """检查 LLM 增强后是否丢失代码块 fence，若丢失则回退到原始内容"""
+        orig_fences = original.count('
+```')
+        enh_fences = enhanced.count('
+```')
+        if orig_fences != enh_fences:
+            logger.warning(
+                "LLM 增强丢失代码块 fence (原%d个, 现%d个)，回退到原始内容",
+                orig_fences, enh_fences
+            )
+            return original
+        return enhanced
 
     def _restore_missing_h4(self, original: str, enhanced: str) -> str:
         """检查 LLM 增强后是否丢失 H4 标题，若丢失则回退到原始内容"""
