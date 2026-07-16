@@ -287,6 +287,7 @@ class LLMRouter:
             ("glm",         "GLM_API_URL",     "GLM_MODEL",     "GLM_API_KEY",     45, False),
             ("agnes",       "AGNES_API_URL", "AGNES_MODEL", "AGNES_API_KEY", 50, False),
             ("nvidia",      "NVIDIA_API_URL","NVIDIA_MODEL","NVIDIA_API_KEY", 60, False),
+            ("bailian",     "BAILIAN_API_URL","BAILIAN_MODEL","BAILIAN_API_KEY", 65, False),
             ("qianfan",     "QIANFAN_API_URL","QIANFAN_MODEL","QIANFAN_API_KEY", 70, False),
             ("dahl",        "DAHL_API_URL",  "DAHL_MODEL",  "DAHL_API_KEY",  80, False),
             ("siliconflow", "SILICONFLOW_API_URL","SILICONFLOW_MODEL","SILICONFLOW_API_KEY", 90, False),
