@@ -129,12 +129,14 @@ def _call_llm(provider: LLMProvider, messages: list[dict],
     if is_cf:
         body = body.get("result", body)
 
-    content = body["choices"][0]["message"]["content"]
+    content = body["choices"][0]["message"].get("content", "") or ""
 
     # 过滤 <think>...</think> 标签（Dahl/MiniMax 等推理模型）
     content = re.sub(r'<\s*think\s*>.*?<\s*/\s*think\s*>', '', content, flags=re.DOTALL).strip()
 
-    return content if content else ""
+    if not content:
+        raise ValueError(f"供应商 {provider.name} 返回空内容（可能因 reasoning 模型 max_tokens 不足）")
+    return content
 
 
 class LLMRouter:
