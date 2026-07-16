@@ -266,10 +266,23 @@ class DocumentEnhancer:
                     enhanced = original_chunk
                 else:
                     enhanced = self._clean_llm_output(enhanced)
+                    enhanced = self._restore_missing_h4(original_chunk, enhanced)
                 enhanced_parts.append(f"{current_subtitle}\n\n{enhanced}")
                 current_subtitle = ""
 
         return "\n\n".join(enhanced_parts)
+
+
+    def _restore_missing_h4(self, original: str, enhanced: str) -> str:
+        """检查 LLM 增强后是否丢失 H4 标题，若丢失则回退到原始内容"""
+        import re
+        orig_h4 = set(re.findall(r'^#### .+', original, re.MULTILINE))
+        enh_h4 = set(re.findall(r'^#### .+', enhanced, re.MULTILINE))
+        missing = orig_h4 - enh_h4
+        if missing:
+            logger.warning(f"LLM 增强丢失 {len(missing)} 个 H4 标题，回退到原始内容: {missing}")
+            return original
+        return enhanced
 
     def _call_llm_enhance(self, content: str, search_results: str) -> str:
         """调用 LLM 增强单段内容"""
