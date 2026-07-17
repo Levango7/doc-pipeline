@@ -422,7 +422,20 @@ class Registry:
                 _logger.error(f"[Registry] 加载失败: {e}")
 
     def shutdown(self):
-        """关闭注册中心"""
+        """关闭注册中心：先调用各 agent 的 on_stop() 生命周期钩子，再停止健康检查线程。
+
+        on_stop() 钩子用于释放 agent 持有的资源（如 aiohttp 持久化连接池、
+        文件句柄、定时器等），避免资源泄漏。
+        """
+        # 调用所有已注册 agent 实例的 on_stop() 生命周期钩子
+        for name in self.list_agent_names():
+            inst = self.get_instance(name)
+            if inst:
+                try:
+                    inst.on_stop()
+                except Exception as e:
+                    _logger.warning(f"[Registry] agent {name} on_stop() 失败: {e}")
+
         self._running = False
         self._shutdown_event.set()
         if self._health_check_thread and self._health_check_thread.is_alive():

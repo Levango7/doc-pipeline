@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -708,6 +709,160 @@ class PipelineOrchestrator:
             execute()
         else:
             threading.Thread(target=execute, daemon=True).start()
+
+        return task
+
+    async def run_plan_async(self, plan: ExecutionPlan, input_file: str = "",
+                             task_id: Optional[str] = None) -> PipelineTask:
+        """async 版 run_plan：在已有事件循环中直接 await，消除 asyncio.run 嵌套开销。
+
+        与 run_plan(wait=True) 的区别：
+        - 用 asyncio.gather + asyncio.to_thread 替代 ThreadPoolExecutor
+        - 可在 async 上下文（如 SSE handler）中直接 await，无需 asyncio.run()
+        - 逐层执行逻辑、池化合并、断点续传、报告生成均与 run_plan 一致
+        """
+        self.last_plan = plan
+        self.last_input = input_file
+
+        from .scheduler import ExecutionPlan as EP
+        if not isinstance(plan, EP):
+            raise TypeError("run_plan_async 需要 ExecutionPlan 实例")
+
+        task_id = task_id or str(uuid.uuid4())[:8]
+        task = PipelineTask(
+            id=task_id,
+            pipeline_name=plan.pipeline_name,
+            input_file=input_file,
+            config=plan.raw.get("pipeline", {}),
+            status=TaskStatus.RUNNING,
+        )
+        task.checkpoint_file = str(self.checkpoint_dir / f"{task_id}.json")
+
+        with self._lock:
+            self._running_tasks[task.id] = task
+
+        task.started_at = time.time()
+        total_nodes = plan.node_count
+
+        self._log("info", "Pipeline started (async)",
+                  task_id=task.id, pipeline=plan.pipeline_name,
+                  input_file=input_file, plan_id=plan.plan_id,
+                  total_nodes=total_nodes)
+
+        self.bus.publish("pipeline.started", "orchestrator", {
+            "task_id": task.id,
+            "pipeline": plan.pipeline_name,
+            "input_file": input_file,
+            "plan_id": plan.plan_id,
+        })
+
+        try:
+            completed = 0
+            for level_idx, level in enumerate(plan.levels):
+                if task.stop_event.is_set() or self._stop_event.is_set():
+                    task.status = TaskStatus.CANCELLED
+                    break
+
+                while task.status == TaskStatus.PAUSED:
+                    if task.stop_event.is_set() or self._stop_event.is_set():
+                        task.status = TaskStatus.CANCELLED
+                        break
+                    await asyncio.sleep(0.5)
+                if task.status == TaskStatus.CANCELLED:
+                    break
+
+                level_snapshot = self._snapshot_state(task)
+
+                for node in level:
+                    dag_node = TaskNode(
+                        name=node.agent_name,
+                        agent_name=node.agent_name,
+                        dependencies=node.dependencies,
+                        timeout=node.timeout,
+                        max_retries=node.max_retries,
+                    )
+                    dag_node.attempts = 0
+                    task.dag_nodes[node.agent_name] = dag_node
+
+                if not await self._executor.execute_level_async(task, level, input_file, plan):
+                    break
+
+                completed += len(level)
+                task.current_step = completed
+                task.progress = int((completed / total_nodes) * 100)
+
+                # 池化节点结果合并（与 run_plan 相同）
+                merged = set()
+                for key in list(task.result.keys()):
+                    if "_pool_" in key:
+                        base = key.split("_pool_")[0]
+                        if base not in merged:
+                            merged.add(base)
+                            pooled_results = [
+                                self._get_task_output(task, k) for k in task.result
+                                if k.startswith(f"{base}_pool_") and self._get_task_output(task, k)
+                            ]
+                            if pooled_results:
+                                meta = self.registry.get_meta(base)
+                                if getattr(meta, "results_merge", "") == "extend":
+                                    combined = {"status": "ok", "task_id": task.id,
+                                                 "total": 0, "results": [],
+                                                 "query_count": 0, "engines_used": []}
+                                    for pr in pooled_results:
+                                        if isinstance(pr, dict):
+                                            combined["results"].extend(pr.get("results", []))
+                                            combined["total"] = len(combined["results"])
+                                            combined["query_count"] += pr.get("query_count", 0)
+                                            eng = pr.get("engines_used", [])
+                                            combined["engines_used"] = list(
+                                                set(combined["engines_used"]) | set(eng)
+                                            )
+                                    self._set_task_output(task, base, combined)
+                                else:
+                                    for pr in pooled_results:
+                                        if pr:
+                                            self._set_task_output(task, base, pr)
+                                            break
+
+                self._save_checkpoint(task, full_state=True)
+
+                if task.status == TaskStatus.FAILED:
+                    break
+
+            if task.status != TaskStatus.FAILED and task.status != TaskStatus.CANCELLED:
+                task.status = TaskStatus.DONE
+
+        except Exception as e:
+            task.status = TaskStatus.FAILED
+            task.error = str(e)
+
+        finally:
+            task.progress = 100 if task.status == TaskStatus.DONE else task.progress
+            task.finished_at = time.time()
+            self._log("info", f"Pipeline {task.status.value} (async)",
+                      task_id=task.id, pipeline=plan.pipeline_name,
+                      status=task.status.value, duration_sec=round(task.finished_at - task.started_at, 2),
+                      error=task.error or "",
+                      steps=len(task.steps))
+            self._generate_report(task)
+            self._notify_callbacks(task)
+
+            self.bus.publish("pipeline.finished", "orchestrator", {
+                "task_id": task.id,
+                "status": task.status.value,
+                "result": task.result,
+                "error": task.error,
+                "duration": task.finished_at - task.started_at,
+                "plan_id": plan.plan_id,
+            })
+
+            self._cleanup_task_temp(task)
+
+            if task.status == TaskStatus.DONE and not plan.checkpoint.get("keep_on_success", False):
+                self._remove_checkpoint(task.id)
+
+            with self._lock:
+                self._trim_task_history()
 
         return task
 

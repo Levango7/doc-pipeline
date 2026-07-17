@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import copy
 import time
+import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Callable
@@ -501,6 +502,176 @@ class DAGExecutor:
                         task.status = TaskStatus.FAILED
                         for f in futures:
                             f.cancel()
+                        break
+
+            finally:
+                step_result.finished_at = time.time()
+                duration_ms = (step_result.finished_at - step_result.started_at) * 1000
+                task.steps.append(step_result)
+                if self._checkpoint_save:
+                    self._checkpoint_save(task)
+                if self._audit_log:
+                    self._audit_log(
+                        task_id=task.id,
+                        agent_name=node.agent_name,
+                        input_summary=getattr(getattr(node, "agent_config", None), "config", {}),
+                        output_summary=step_result.result or {},
+                        duration_ms=duration_ms,
+                        status=step_result.status,
+                        error=step_result.error,
+                    )
+                self._metrics.observe(
+                    "step_duration_ms", duration_ms,
+                    labels={"agent": node.agent_name, "status": step_result.status},
+                )
+                self._metrics.counter(
+                    "step_total", labels={"agent": node.agent_name},
+                )
+                if step_result.status != "success":
+                    self._metrics.counter(
+                        "step_failures", labels={"agent": node.agent_name, "status": step_result.status},
+                    )
+                self._metrics.gauge(
+                    "pipeline_progress", task.progress,
+                    labels={"pipeline": getattr(plan, "pipeline_name", "")},
+                )
+
+        if task.status == TaskStatus.FAILED:
+            return False
+        return True
+
+    async def execute_level_async(self, task, level: list, input_file: str,
+                                  plan) -> bool:
+        """async 版 execute_level：用 asyncio.gather + asyncio.to_thread 并发执行节点。
+
+        与 execute_level 的区别：
+        - 不需要 ThreadPoolExecutor，直接用 asyncio 事件循环调度
+        - 每个节点的同步 execute_node_from_scheduler 通过 asyncio.to_thread 桥接
+        - 消除 asyncio.run 嵌套开销，适合在已有事件循环中调用
+        返回 True 表示层级成功完成，False 表示需要中断（fail_fast）。
+        """
+        from .pipeline import StepResult, TaskStatus
+
+        if task.stop_event.is_set() or (self._stop_event and self._stop_event.is_set()):
+            task.status = TaskStatus.CANCELLED
+            return False
+
+        # 准备节点元数据
+        node_meta = []
+        for node in level:
+            dag_node = task.dag_nodes.get(node.agent_name)
+            if dag_node is None:
+                continue
+            dag_node.status = "running"
+            dag_node.started_at = time.time()
+            dag_node.attempts += 1
+            step_result = StepResult(
+                step_name=node.agent_name,
+                agent_name=node.agent_name,
+                status="running",
+                started_at=time.time(),
+            )
+            node_meta.append((node, dag_node, step_result))
+
+        # 并发执行所有节点（asyncio.to_thread 桥接同步调用）
+        coros = [
+            asyncio.to_thread(self.execute_node_from_scheduler,
+                              task, node, input_file, plan)
+            for node, _, _ in node_meta
+        ]
+        results = await asyncio.gather(*coros, return_exceptions=True)
+
+        # 处理结果（与 execute_level 相同的逻辑）
+        for (node, dag_node, step_result), result in zip(node_meta, results):
+            last_error = ""
+            try:
+                if isinstance(result, Exception):
+                    raise result
+
+                is_business_fail = False
+                if isinstance(result, dict):
+                    sem_status = result.get("status")
+                    if sem_status in ("blocked", "fail"):
+                        is_business_fail = True
+                        last_error = result.get("message", result.get("error", f"Agent returned {sem_status}"))
+
+                if is_business_fail:
+                    raise Exception(last_error or "Agent returned failure status")
+
+                dag_node.result = result
+                dag_node.status = "success"
+                dag_node.finished_at = time.time()
+                step_result.status = "success"
+                step_result.result = result
+                self._set_task_output(task, node.agent_name, result)
+                self._circuit_breaker_success(node)
+
+            except Exception as e:
+                dag_node.error = str(e)
+                last_error = str(e)
+
+                while dag_node.attempts < node.max_retries:
+                    delay = backoff_with_jitter(
+                        base_delay=getattr(node, "initial_delay", 1.0),
+                        attempt=dag_node.attempts,
+                        strategy=getattr(node, "backoff", "exponential"),
+                    )
+                    self._log("warning", f"Node {node.agent_name} 失败，{delay:.1f}s 后重试 (尝试 {dag_node.attempts + 1}/{node.max_retries})",
+                              task_id=task.id, error=str(e)[:100])
+                    if task.stop_event.wait(delay):
+                        break
+                    dag_node.attempts += 1
+                    dag_node.status = "pending"
+                    try:
+                        retry_result = await asyncio.to_thread(
+                            self.execute_node_from_scheduler, task, node, input_file, plan
+                        )
+                        retry_ok = True
+                        retry_err = ""
+                        if not retry_result or "error" in retry_result:
+                            retry_ok = False
+                            retry_err = retry_result.get("error", "retry failed") if retry_result else "retry failed"
+                        elif isinstance(retry_result, dict):
+                            sem_status = retry_result.get("status")
+                            if sem_status in ("blocked", "fail"):
+                                retry_ok = False
+                                retry_err = retry_result.get("message", retry_result.get("error", f"Agent returned {sem_status}"))
+
+                        if retry_ok:
+                            result = retry_result
+                            dag_node.result = retry_result
+                            dag_node.status = "success"
+                            dag_node.finished_at = time.time()
+                            dag_node.error = ""
+                            step_result.status = "success"
+                            step_result.result = retry_result
+                            step_result.error = ""
+                            self._set_task_output(task, node.agent_name, retry_result)
+                            self._circuit_breaker_success(node)
+                            break
+                        else:
+                            last_error = retry_err
+                            dag_node.error = retry_err
+                            step_result.error = retry_err
+                    except Exception as retry_e:
+                        last_error = str(retry_e)
+                        dag_node.error = str(retry_e)
+                        step_result.error = str(retry_e)
+
+                if dag_node.status != "success":
+                    dag_node.status = "failed"
+                    dag_node.finished_at = time.time()
+                    step_result.status = "failed"
+                    step_result.error = last_error
+                    task.error = last_error
+
+                    if self._circuit_breaker(node, task):
+                        task.status = TaskStatus.FAILED
+                        break
+
+                    fail_fast = getattr(plan, "fail_fast", True)
+                    if fail_fast:
+                        task.status = TaskStatus.FAILED
                         break
 
             finally:

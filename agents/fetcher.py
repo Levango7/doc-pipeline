@@ -587,3 +587,20 @@ class FetcherAgent(BaseAgent):
         if count:
             self.log_info(f"清理过期临时文件: {count} 个（>{max_age_hours}h）")
         return count
+
+    def on_stop(self):
+        """Agent 停止时关闭 aiohttp 持久化连接池，释放 TCP 连接和 DNS 缓存。
+
+        覆盖 BaseAgent.on_stop()，确保持久化 ClientSession 被正确关闭，
+        避免 TCP 连接泄漏和事件循环资源未释放。
+        """
+        super().on_stop()
+        if self._aio_session is not None and not self._aio_session.closed:
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self._close_aio_session())
+                loop.close()
+                self.log_info("aiohttp 持久化连接池已关闭")
+            except Exception as e:
+                self.log_info(f"关闭 aiohttp session 异常（将由 GC 回收）: {e}")
+                self._aio_session = None
