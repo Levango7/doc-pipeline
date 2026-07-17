@@ -33,6 +33,7 @@ from .executor_factory import create_executor, is_process_executor, SmartExecuto
 from .three_pass_pipeline import ThreePassPipeline, DocumentPlan, PassResult
 from .document_enhancer import DocumentEnhancer
 from .bootstrap import run_startup_check, quick_check, StartupReport
+from .event_hook import EventHookManager, get_hook_manager, emit_event
 
 __all__ = [
     "ConfigCenter",
@@ -52,6 +53,7 @@ __all__ = [
     "ThreePassPipeline", "DocumentPlan", "PassResult",
     "DocumentEnhancer",
     "run_startup_check", "quick_check", "StartupReport",
+    "EventHookManager", "get_hook_manager", "emit_event",
 ]
 
 __version__ = "3.2.0"
