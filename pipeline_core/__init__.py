@@ -25,7 +25,10 @@ from .checkpoint_manager import CheckpointManager
 from .llm_router import LLMRouter, get_router, reset_router
 from .search_engines import SearchEngineManager, SearchItem
 from .cache_manager import CacheManager, get_cache, clear_all_caches, all_stats
-from .streaming import StreamEvent, StreamCallback
+from .streaming import (
+    StreamEvent, StreamCallback, StreamMetrics,
+    register_callback, get_callback, unregister_callback,
+)
 from .executor_factory import create_executor, is_process_executor, SmartExecutor
 from .three_pass_pipeline import ThreePassPipeline, DocumentPlan, PassResult
 from .document_enhancer import DocumentEnhancer
@@ -43,7 +46,8 @@ __all__ = [
     "LLMRouter", "get_router", "reset_router",
     "SearchEngineManager", "SearchItem",
     "CacheManager", "get_cache", "clear_all_caches", "all_stats",
-    "StreamEvent", "StreamCallback",
+    "StreamEvent", "StreamCallback", "StreamMetrics",
+    "register_callback", "get_callback", "unregister_callback",
     "create_executor", "is_process_executor", "SmartExecutor",
     "ThreePassPipeline", "DocumentPlan", "PassResult",
     "DocumentEnhancer",

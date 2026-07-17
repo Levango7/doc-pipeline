@@ -82,6 +82,9 @@ class FetcherAgent(BaseAgent):
         # 下载量统计
         self._stats = {"attempted": 0, "success": 0, "failed": 0, "filtered": 0}
         self._stats_lock = threading.Lock()
+        # 持久化 aiohttp 连接池（复用 TCP 连接，减少握手开销）
+        self._aio_session: "aiohttp.ClientSession | None" = None
+        self._aio_session_lock = threading.Lock()
         try:
             from selectolax.parser import HTMLParser  # noqa: F401
             self._use_selectolax = True
@@ -149,6 +152,58 @@ class FetcherAgent(BaseAgent):
         # 临时文件由 orchestrator 在流水线完成后统一清理（cleanup_stale_temp）。
         return result
 
+    async def handle_async(self, msg: Message) -> dict | None:
+        """异步处理入口 —— 供异步调用方直接 await，避免 asyncio.run 嵌套。
+
+        与 handle() 逻辑相同，但在已有事件循环中使用。
+        """
+        self.report(AgentStatus.RUNNING, "开始获取文章内容...")
+        payload = msg.payload
+        task_id = payload.get("task_id", "")
+        query = payload.get("query", payload.get("queries", [""])[0] if payload.get("queries") else "")
+        results = payload.get("results", [])
+        max_downloads = payload.get("max_downloads", MAX_DOWNLOADS)
+
+        if not results:
+            self.log_info(f"任务 {task_id}: 无搜索结果")
+            self.cleanup_task_temp(task_id)
+            return {"status": "ok", "task_id": task_id, "articles": [], "query": query}
+
+        results = results[:max_downloads]
+        self.log_info(f"任务 {task_id}: 开始下载 {len(results)} 个页面")
+
+        task_dir = self._temp_dir / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+
+        with self._stats_lock:
+            self._stats = {"attempted": 0, "success": 0, "failed": 0, "filtered": 0}
+
+        if USE_ASYNC:
+            articles = await self._fetch_all_async(results, query, task_id, task_dir)
+        else:
+            articles = await asyncio.to_thread(
+                self._fetch_all_sync, results, query, task_id, task_dir
+            )
+
+        with self._stats_lock:
+            stats_snapshot = dict(self._stats)
+
+        self.log_info(f"任务 {task_id}: 下载完成 ({stats_snapshot['success']}成功/{stats_snapshot['failed']}失败/{stats_snapshot['filtered']}过滤)")
+
+        return {
+            "status": "ok",
+            "task_id": task_id,
+            "query": query,
+            "articles": articles,
+            "stats": {
+                "total": len(results),
+                "attempted": stats_snapshot["attempted"],
+                "success": stats_snapshot["success"],
+                "failed": stats_snapshot["failed"],
+                "filtered": stats_snapshot["filtered"],
+            },
+        }
+
     def _fetch_all_sync(self, results: list, query: str, task_id: str, task_dir: Path) -> list:
         """同步模式：线程池并发下载"""
         from concurrent.futures import ThreadPoolExecutor
@@ -169,20 +224,53 @@ class FetcherAgent(BaseAgent):
         return articles
 
     async def _fetch_all_async(self, results: list, query: str, task_id: str, task_dir: Path) -> list:
-        """异步模式：aiohttp 并发下载"""
+        """异步模式：aiohttp 并发下载（复用持久化连接池）"""
         workers = self.config.get("download_workers", 5)
         semaphore = asyncio.Semaphore(workers)
         timeout = aiohttp.ClientTimeout(total=PAGE_TIMEOUT)
 
-        async with aiohttp.ClientSession(
-            headers=self._base_headers, timeout=timeout
-        ) as session:
+        # 复用持久化 ClientSession（减少 TCP 握手开销）
+        session = await self._get_or_create_session(timeout)
+        own_session = False
+        if session is None:
+            session = aiohttp.ClientSession(
+                headers=self._base_headers, timeout=timeout
+            )
+            own_session = True
+
+        try:
             tasks = [
                 self._fetch_article_async(session, semaphore, r, query, task_id, task_dir, idx)
                 for idx, r in enumerate(results)
             ]
             articles = await asyncio.gather(*tasks)
+        finally:
+            if own_session:
+                await session.close()
         return [a for a in articles if a]
+
+    async def _get_or_create_session(self, timeout) -> "aiohttp.ClientSession | None":
+        """获取或创建持久化 aiohttp ClientSession（线程安全）"""
+        if not USE_ASYNC:
+            return None
+        if self._aio_session is not None and not self._aio_session.closed:
+            return self._aio_session
+        # 创建新 session（在事件循环中调用）
+        self._aio_session = aiohttp.ClientSession(
+            headers=self._base_headers, timeout=timeout,
+            connector=aiohttp.TCPConnector(
+                limit=20,           # 最大并发连接
+                limit_per_host=5,   # 单主机最大连接
+                ttl_dns_cache=300,  # DNS 缓存 5 分钟
+            ),
+        )
+        return self._aio_session
+
+    async def _close_aio_session(self):
+        """关闭持久化连接池"""
+        if self._aio_session is not None and not self._aio_session.closed:
+            await self._aio_session.close()
+        self._aio_session = None
 
     async def _fetch_article_async(self, session, semaphore, result, query, task_id, task_dir, idx=0):
         """异步下载单页（带 UA 轮换 + 重试）"""
@@ -219,12 +307,17 @@ class FetcherAgent(BaseAgent):
 
                 safe_name = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fff-]', '_', title)[:60] or hashlib.sha256(url.encode()).hexdigest()[:12]
                 file_path = task_dir / f"{safe_name}.txt"
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(f"标题: {title}\n")
-                    f.write(f"来源: {url}\n")
-                    f.write(f"下载时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write(f"{'='*60}\n\n")
-                    f.write(plain_text)
+                # 异步文件写入（避免阻塞事件循环）
+                file_content = (
+                    f"标题: {title}\n"
+                    f"来源: {url}\n"
+                    f"下载时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"{'='*60}\n\n"
+                    f"{plain_text}"
+                )
+                await asyncio.to_thread(
+                    lambda: file_path.write_text(file_content, encoding="utf-8")
+                )
 
                 with self._stats_lock:
                     self._stats["success"] += 1

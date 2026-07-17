@@ -418,8 +418,34 @@ class AdminHandler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+        from pipeline_core.streaming import (
+            StreamCallback, register_callback, get_callback, unregister_callback,
+        )
+
+        # SSE 重连: 查找已注册的 callback（同一 task_id 的活跃流）
+        existing_callback = get_callback(task_id) if last_event_id > 0 else None
+
+        if existing_callback:
+            # 重连模式：replay 历史事件后继续监听
+            _send_sse("connected", {"task_id": task_id, "query": query,
+                                    "resumed_from": last_event_id, "reconnect": True})
+            missed_events = existing_callback.get_events_since(last_event_id)
+            for event in missed_events:
+                _send_sse(event.event_type, event.to_dict().get("data", {}),
+                         event.event_id)
+            _send_sse("resumed", {"replayed": len(missed_events)})
+
+            # 继续监听新事件
+            for event in existing_callback:
+                _send_sse(event.event_type, event.to_dict().get("data", {}),
+                         event.event_id)
+                if event.event_type in ("complete", "error"):
+                    break
+            return
+
+        # 首次连接
         _send_sse("connected", {"task_id": task_id, "query": query,
-                                "resumed_from": last_event_id})
+                                "resumed_from": 0, "reconnect": False})
 
         if not self.orch:
             _send_sse("error", {"error": "orchestrator not set"})
@@ -437,16 +463,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 _send_sse("error", {"error": "writer agent not found"})
                 return
 
-            from pipeline_core.streaming import StreamCallback
             callback = StreamCallback()
-
-            # 如果是重连，先发送历史事件
-            if last_event_id > 0:
-                missed_events = callback.get_events_since(last_event_id)
-                for event in missed_events:
-                    _send_sse(event.event_type, event.to_dict().get("data", {}),
-                             event.event_id)
-                _send_sse("resumed", {"replayed": len(missed_events)})
+            register_callback(task_id, callback)
 
             # 构造消息
             from pipeline_core.message_bus_v3 import Message
@@ -476,9 +494,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                     break
 
             worker.join(timeout=5)
+            unregister_callback(task_id)
 
         except Exception as e:
             _send_sse("error", {"error": str(e)})
+            unregister_callback(task_id)
 
 
 class AdminAPI:

@@ -272,3 +272,27 @@ class StreamCallback:
     def get_metrics(self) -> dict:
         """获取流式指标快照"""
         return self.metrics.snapshot()
+
+
+# ── 全局 StreamCallback 注册表（支持 SSE 重连） ──────────
+
+_callback_registry: dict[str, StreamCallback] = {}
+_registry_lock = threading.Lock()
+
+
+def register_callback(task_id: str, callback: StreamCallback):
+    """注册 StreamCallback 到全局注册表（供 SSE 重连查找）"""
+    with _registry_lock:
+        _callback_registry[task_id] = callback
+
+
+def get_callback(task_id: str) -> Optional[StreamCallback]:
+    """获取已注册的 StreamCallback（重连时使用）"""
+    with _registry_lock:
+        return _callback_registry.get(task_id)
+
+
+def unregister_callback(task_id: str):
+    """注销已完成的 StreamCallback"""
+    with _registry_lock:
+        _callback_registry.pop(task_id, None)
