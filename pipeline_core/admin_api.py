@@ -466,22 +466,53 @@ class AdminHandler(BaseHTTPRequestHandler):
             callback = StreamCallback()
             register_callback(task_id, callback)
 
-            # 构造消息
-            from pipeline_core.message_bus_v3 import Message
-            msg = Message(
-                topic="writer.input",
-                payload={
-                    "task_id": task_id,
-                    "query": query,
-                    "title": title,
-                    "articles": [],
-                    "results": [],
-                },
-            )
+            # 加载 prompt 模板获取章节数，用于 on_start 通知
+            try:
+                template = writer_agent._load_prompt_template(
+                    writer_agent._prompt_profile)
+                sections = template.get("sections", [])
+            except Exception:
+                sections = []
+            callback.on_start(len(sections), title)
 
-            # 在后台线程执行生成
+            # 创建临时输入文件（供全流水线 fetcher→researcher→writer 使用）
+            import tempfile
+            input_file = Path(tempfile.gettempdir()) / f"stream_{task_id}.md"
+            input_file.write_text(
+                f"# {title}\n\n## 查询\n\n{query}\n", encoding="utf-8")
+
+            # 在后台线程用 run_plan_async 执行全流水线（端到端真异步）
+            # 替代旧的 writer_agent.handle_streaming(msg, callback) 方式，
+            # 使 fetcher/researcher/writer 三阶段均在 async 路径下执行
             def _run():
-                writer_agent.handle_streaming(msg, callback)
+                import asyncio as _aio
+                from pipeline_core.scheduler import Scheduler
+                try:
+                    sched = Scheduler()
+                    plan = sched.parse("docgen")
+                    # 设置回调，writer 的 _restructure_document 会自动拾取
+                    writer_agent._active_stream_callback = callback
+                    task = _aio.run(self.orch.run_plan_async(
+                        plan, input_file=str(input_file), task_id=task_id
+                    ))
+                    # 流水线完成后发送 complete 事件
+                    content = ""
+                    if task and task.result:
+                        writer_result = task.result.get("writer", {})
+                        if isinstance(writer_result, dict):
+                            content = writer_result.get("content", "")
+                    callback.on_complete(content, {
+                        "status": task.status.value if task else "unknown",
+                        "task_id": task_id,
+                    })
+                except Exception as e:
+                    callback.on_error(str(e))
+                finally:
+                    writer_agent._active_stream_callback = None
+                    try:
+                        input_file.unlink()
+                    except OSError:
+                        pass
 
             worker = threading.Thread(target=_run, daemon=True)
             worker.start()
