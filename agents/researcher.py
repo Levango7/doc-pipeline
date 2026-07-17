@@ -631,8 +631,8 @@ class ResearcherAgent(BaseAgent):
                     if lq in domain:
                         struct -= 0.2
                         break
-            except Exception:
-                pass
+            except Exception as e:
+                self.log_warning(f"域名质量检查失败: {e}")
 
             # 2. query 相关性分
             rel = self._relevance_score(r, r.query)
@@ -747,12 +747,62 @@ class ResearcherAgent(BaseAgent):
 
     async def search_async(self, query: str, engines: list[str] = None,
                            task_id: str = "") -> list[SearchResult]:
-        """异步搜索 —— 在 async 上下文中使用，避免阻塞事件循环。
-        内部通过 run_in_executor 调用同步 _search 方法。"""
+        """异步搜索 —— 优先用 aiohttp 真异步 HTTP，回退到 run_in_executor 包装同步。
+
+        当搜索引擎支持 HTTP API 时，直接用 aiohttp 发起异步请求，
+        避免线程池开销；不支持时回退到同步 _search + run_in_executor。
+        """
+        # 尝试 aiohttp 真异步路径（仅对 HTTP 搜索引擎生效）
+        try:
+            results = await self._search_http_async(query, engines or self._search_engines)
+            if results is not None:
+                return results
+        except Exception:
+            pass
+
+        # 回退：同步搜索 + run_in_executor
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None, self._search, query, task_id, engines or self._search_engines,
         )
+
+    async def _search_http_async(self, query: str, engines: list[str]) -> list[SearchResult] | None:
+        """使用 aiohttp 发起真异步 HTTP 搜索请求。
+
+        仅处理有 HTTP API 的搜索引擎，不支持的引擎返回 None 以触发回退。
+        """
+        try:
+            import aiohttp
+        except ImportError:
+            return None
+
+        # 查找有 API URL 的搜索引擎
+        http_engines = []
+        if hasattr(self, '_search_mgr') and hasattr(self._search_mgr, '_engines'):
+            for eng_name in engines:
+                eng = self._search_mgr._engines.get(eng_name)
+                if eng and hasattr(eng, 'api_url') and eng.api_url:
+                    http_engines.append((eng_name, eng))
+
+        if not http_engines:
+            return None  # 无 HTTP 引擎，触发回退
+
+        all_results = []
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for eng_name, eng in http_engines:
+                try:
+                    url = eng.api_url
+                    params = eng.build_params(query) if hasattr(eng, 'build_params') else {"q": query}
+                    headers = getattr(eng, 'headers', {})
+                    async with session.get(url, params=params, headers=headers) as resp:
+                        data = await resp.json()
+                        parsed = eng.parse_response(data, query) if hasattr(eng, 'parse_response') else []
+                        all_results.extend(parsed)
+                except Exception as e:
+                    self.log_warning(f"异步搜索 {eng_name} 失败: {e}")
+
+        return all_results
 
     async def parallel_search_async(self, queries: list[str], task_id: str,
                                      engines: list[str] = None) -> list[SearchResult]:

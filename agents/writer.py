@@ -176,11 +176,94 @@ class WriterAgent(BaseAgent):
 
     async def _llm_chat_async(self, messages: list[dict], max_tokens: int = 4096,
                               temperature: float = 0.3, timeout: int = 120) -> str:
-        """异步 LLM 调用 —— 通过 run_in_executor 包装同步 _llm_chat。"""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, self._llm_chat, messages, max_tokens, temperature, timeout,
-        )
+        """异步 LLM 调用 —— 使用 aiohttp 真异步 HTTP，不阻塞事件循环。
+
+        优先使用 aiohttp（零线程开销），失败时回退到 run_in_executor 包装同步方法。
+        """
+        if not self._llm_api_key:
+            return ""
+        try:
+            import aiohttp
+        except ImportError:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None, self._llm_chat, messages, max_tokens, temperature, timeout,
+            )
+
+        is_cf = "/ai/run" in self._llm_api_url
+        if is_cf:
+            payload = {"model": self._llm_model, "input": {"messages": messages},
+                       "max_tokens": max_tokens, "temperature": temperature}
+        else:
+            payload = {"model": self._llm_model, "messages": messages,
+                       "max_tokens": max_tokens, "temperature": temperature}
+        headers = {"Content-Type": "application/json",
+                   "Authorization": f"Bearer {self._llm_api_key}"}
+
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+                async with session.post(self._llm_api_url, json=payload, headers=headers) as resp:
+                    body = await resp.json()
+                    if is_cf:
+                        body = body.get("result", body)
+                    return body["choices"][0]["message"]["content"]
+        except Exception as e:
+            self.log_warning(f"aiohttp LLM 调用失败，回退同步: {e}")
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None, self._llm_chat, messages, max_tokens, temperature, timeout,
+            )
+
+    async def _llm_chat_stream_async(self, messages: list[dict], max_tokens: int = 4096,
+                                     temperature: float = 0.3, timeout: int = 120):
+        """异步流式 LLM 调用 —— 使用 aiohttp 逐 chunk yield。
+
+        比同步 _llm_chat_stream 更高效：不阻塞事件循环，可与其他 async 任务并发。
+        """
+        if not self._llm_api_key:
+            return
+        try:
+            import aiohttp
+        except ImportError:
+            for chunk in self._llm_chat_stream(messages, max_tokens, temperature, timeout):
+                yield chunk
+            return
+
+        is_cf = "/ai/run" in self._llm_api_url
+        if is_cf:
+            payload = {"model": self._llm_model, "input": {"messages": messages},
+                       "max_tokens": max_tokens, "temperature": temperature, "stream": True}
+        else:
+            payload = {"model": self._llm_model, "messages": messages,
+                       "max_tokens": max_tokens, "temperature": temperature, "stream": True}
+        headers = {"Content-Type": "application/json",
+                   "Authorization": f"Bearer {self._llm_api_key}",
+                   "Accept": "text/event-stream"}
+
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+                async with session.post(self._llm_api_url, json=payload, headers=headers) as resp:
+                    async for line in resp.content:
+                        line_str = line.decode("utf-8").strip()
+                        if not line_str or not line_str.startswith("data:"):
+                            continue
+                        data_str = line_str[5:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk_data = json.loads(data_str)
+                            if is_cf:
+                                chunk_data = chunk_data.get("result", chunk_data)
+                            delta = chunk_data.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                yield content
+                        except json.JSONDecodeError:
+                            continue
+        except Exception as e:
+            self.log_warning(f"aiohttp 流式 LLM 失败，回退同步: {e}")
+            for chunk in self._llm_chat_stream(messages, max_tokens, temperature, timeout):
+                yield chunk
 
     def _llm_chat_stream(self, messages: list[dict], max_tokens: int = 4096,
                          temperature: float = 0.3, timeout: int = 120,
@@ -299,8 +382,8 @@ class WriterAgent(BaseAgent):
             try:
                 result = self._llm_chat(messages, max_tokens, temperature, timeout)
                 yield result
-            except Exception:
-                pass
+            except Exception as e:
+                self.log_warning(f"SSE 流式回退非流式失败: {e}")
 
     def _polish_with_llm(self, content: str, query: str) -> str:
         """用 LLM 润色文档段落衔接（含缓存+质量门控+分段+规则兜底）"""
@@ -411,8 +494,8 @@ class WriterAgent(BaseAgent):
                             if line and not line.startswith("#"):
                                 query = line[:80]
                                 break
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.log_warning(f"读取输入文件失败: {e}")
 
         self._expire_stale_pending()
 
@@ -514,7 +597,8 @@ class WriterAgent(BaseAgent):
                     })
                     if art_url:
                         seen_urls.add(art_url)
-                except Exception:
+                except Exception as e:
+                    self.log_warning(f"读取文章失败 {local_path}: {e}")
                     continue
 
         self.log_info(f"  成功读取 {len(article_contents)}/{len(articles)} 篇文章")
@@ -684,7 +768,6 @@ class WriterAgent(BaseAgent):
 
         def _clean_mermaid(text: str) -> str:
             """修复常见的 Mermaid 语法问题 + 删除孤立的 end"""
-            import re
             def fix_mermaid_block(m):
                 block = m.group(0)
                 lines = block.split("\n")
@@ -727,7 +810,6 @@ class WriterAgent(BaseAgent):
 
         def _fix_references(text: str) -> str:
             """删除空的参考资料段落"""
-            import re
             text = re.sub(r"\n## 参考资料\n\s*$", "", text)
             text = re.sub(r"\n## 参考资料\s*\n(?=## )", "\n", text)
             return text.strip()

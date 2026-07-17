@@ -100,8 +100,8 @@ class CheckpointManager:
         try:
             if checkpoint_file.exists():
                 checkpoint_file.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            self._log("warning", "移除断点文件失败", error=str(e))
 
     def cleanup_old(self, max_age_days: int = 7):
         """清理过期的 checkpoint 和报告文件"""
@@ -110,5 +110,5 @@ class CheckpointManager:
             if f.is_file() and f.stat().st_mtime < cutoff:
                 try:
                     f.unlink()
-                except OSError:
-                    pass
+                except OSError as e:
+                    self._log("warning", "清理过期 checkpoint 失败", file=str(f), error=str(e))

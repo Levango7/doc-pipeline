@@ -369,14 +369,33 @@ class AdminHandler(BaseHTTPRequestHandler):
         """SSE 流式端点 —— 实时推送文档生成进度。
 
         用法: GET /stream?task_id=<id>&query=<topic>&title=<title>
-        返回: text/event-stream 格式，每个事件含 type/data/section/total 字段。
+        重连: 客户端断线后携带 Last-Event-ID header 重连，从断点继续推送。
+        指标: GET /stream/metrics 获取流式指标快照。
+        返回: text/event-stream 格式，每个事件含 id/type/data/section/total 字段。
         """
         from urllib.parse import urlparse, parse_qs
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
+
+        # 指标查询端点
+        if parsed.path == "/stream/metrics":
+            from pipeline_core.streaming import StreamMetrics
+            metrics = StreamMetrics()
+            self._json(metrics.snapshot())
+            return
+
         task_id = params.get("task_id", ["stream"])[0]
         query = params.get("query", [""])[0]
         title = params.get("title", ["自动生成文档"])[0]
+
+        # SSE 重连: 检查 Last-Event-ID header
+        last_event_id = 0
+        last_event_id_header = self.headers.get("Last-Event-ID")
+        if last_event_id_header:
+            try:
+                last_event_id = int(last_event_id_header)
+            except ValueError:
+                pass
 
         if not query:
             self._json({"error": "missing 'query' parameter"}, 400)
@@ -390,15 +409,17 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
-        def _send_sse(event_type: str, data: dict):
+        def _send_sse(event_type: str, data: dict, event_id: int = 0):
             payload = json.dumps({"type": event_type, "data": data}, ensure_ascii=False)
+            id_line = f"id: {event_id}\n" if event_id else ""
             try:
-                self.wfile.write(f"data: {payload}\n\n".encode())
+                self.wfile.write(f"{id_line}data: {payload}\n\n".encode())
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-        _send_sse("connected", {"task_id": task_id, "query": query})
+        _send_sse("connected", {"task_id": task_id, "query": query,
+                                "resumed_from": last_event_id})
 
         if not self.orch:
             _send_sse("error", {"error": "orchestrator not set"})
@@ -418,6 +439,14 @@ class AdminHandler(BaseHTTPRequestHandler):
 
             from pipeline_core.streaming import StreamCallback
             callback = StreamCallback()
+
+            # 如果是重连，先发送历史事件
+            if last_event_id > 0:
+                missed_events = callback.get_events_since(last_event_id)
+                for event in missed_events:
+                    _send_sse(event.event_type, event.to_dict().get("data", {}),
+                             event.event_id)
+                _send_sse("resumed", {"replayed": len(missed_events)})
 
             # 构造消息
             from pipeline_core.message_bus_v3 import Message
@@ -439,9 +468,10 @@ class AdminHandler(BaseHTTPRequestHandler):
             worker = threading.Thread(target=_run, daemon=True)
             worker.start()
 
-            # 流式推送事件
+            # 流式推送事件（带 event_id）
             for event in callback:
-                _send_sse(event.event_type, event.to_dict().get("data", {}))
+                _send_sse(event.event_type, event.to_dict().get("data", {}),
+                         event.event_id)
                 if event.event_type in ("complete", "error"):
                     break
 

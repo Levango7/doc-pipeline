@@ -113,13 +113,13 @@ class DocumentEnhancer:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. 读取文档
-        print(f"[Enhancer] 读取文档: {input_path}")
+        logger.info("读取文档: %s", input_path)
         content = input_path.read_text(encoding="utf-8")
 
         # 2. 解析章节
         sections = self._parse_sections(content)
         self._stats["sections"] = len(sections)
-        print(f"[Enhancer] 解析到 {len(sections)} 个章节")
+        logger.info("解析到 %d 个章节", len(sections))
 
         # 3. 收集原始文档的 ## 标题（用于后续全局清理的精确匹配）
         original_titles = set(title for title, _ in sections if title.startswith("## "))
@@ -127,30 +127,30 @@ class DocumentEnhancer:
         # 4. 逐章节增强
         enhanced_sections = []
         for i, (title, body) in enumerate(sections):
-            print(f"[Enhancer] [{i+1}/{len(sections)}] 增强: {title[:60]}")
+            logger.info("[%d/%d] 增强: %s", i+1, len(sections), title[:60])
             enhanced_body = self._enhance_section(title, body, with_search, max_search_results)
             enhanced_sections.append((title, enhanced_body))
             self._stats["enhanced"] += 1
 
         # 5. 重组文档
-        print(f"[Enhancer] 重组文档...")
+        logger.info("重组文档...")
         enhanced_content = self._reassemble(enhanced_sections)
 
         # 6. 全局清理虚假标题（使用原始标题集合精确匹配）
         enhanced_content, removed = self._clean_fake_headings(enhanced_content, original_titles)
         self._stats["fake_headings_removed"] = removed
         if removed > 0:
-            print(f"[Enhancer] 清理了 {removed} 个虚假标题")
+            logger.info("清理了 %d 个虚假标题", removed)
 
         # 7. 修复 ASCII 图
-        print(f"[Enhancer] 修复 ASCII 图...")
+        logger.info("修复 ASCII 图...")
         enhanced_content = self._fix_ascii(enhanced_content)
 
         # 8. 写入输出
         stem = input_path.stem
         output_path = output_dir / f"{stem}_enhanced.md"
         output_path.write_text(enhanced_content, encoding="utf-8")
-        print(f"[Enhancer] 增强文档已写入: {output_path}")
+        logger.info("增强文档已写入: %s", output_path)
 
         duration = time.time() - start
         return {
@@ -200,12 +200,12 @@ class DocumentEnhancer:
     ) -> str:
         """增强单个章节（超长内容自动分块）"""
         if not body.strip():
-            print(f"  -> 跳过（空内容）")
+            logger.info("跳过（空内容）")
             return body
 
         # 跳过过短章节
         if len(body.strip()) < 50:
-            print(f"  -> 跳过（内容过短: {len(body.strip())} 字符）")
+            logger.info("跳过（内容过短: %d 字符）", len(body.strip()))
             return body
 
         # 搜索补充资料
@@ -221,14 +221,14 @@ class DocumentEnhancer:
                     )
                     self._stats["searched"] += 1
             except Exception as e:
-                print(f"  -> 搜索失败: {e}")
+                logger.warning("搜索失败: %s", e)
 
         # 超长内容分块处理
         if len(body) > self.MAX_CHUNK_SIZE:
-            print(f"  -> 超长内容 ({len(body)} 字符)，分块处理...")
+            logger.info("超长内容 (%d 字符)，分块处理...", len(body))
             return self._enhance_long_section(title, body, search_results)
 
-        print(f"  -> LLM 增强中 ({len(body)} 字符)...")
+        logger.info("LLM 增强中 (%d 字符)...", len(body))
         enhanced = self._call_llm_enhance(body, search_results)
         return self._clean_llm_output(enhanced)
 
@@ -259,7 +259,7 @@ class DocumentEnhancer:
                 chunk = original_chunk
                 if len(chunk) > self.MAX_CHUNK_SIZE:
                     chunk = chunk[: self.MAX_CHUNK_SIZE] + "\n\n> [内容过长，已截断]"
-                print(f"    -> 子章节 LLM 增强 ({len(chunk)} 字符)...")
+                logger.info("子章节 LLM 增强 (%d 字符)...", len(chunk))
                 enhanced = self._call_llm_enhance(chunk, search_results)
                 # LLM 失败时返回原始完整内容，而非截断版本
                 if enhanced is chunk:
@@ -276,10 +276,8 @@ class DocumentEnhancer:
 
     def _restore_code_fences(self, original: str, enhanced: str) -> str:
         """检查 LLM 增强后是否丢失代码块 fence，若丢失则回退到原始内容"""
-        orig_fences = original.count('
-```')
-        enh_fences = enhanced.count('
-```')
+        orig_fences = original.count('\n```')
+        enh_fences = enhanced.count('\n```')
         if orig_fences != enh_fences:
             logger.warning(
                 "LLM 增强丢失代码块 fence (原%d个, 现%d个)，回退到原始内容",
@@ -290,7 +288,6 @@ class DocumentEnhancer:
 
     def _restore_missing_h4(self, original: str, enhanced: str) -> str:
         """检查 LLM 增强后是否丢失 H4 标题，若丢失则回退到原始内容"""
-        import re
         orig_h4 = set(re.findall(r'^#### .+', original, re.MULTILINE))
         enh_h4 = set(re.findall(r'^#### .+', enhanced, re.MULTILINE))
         missing = orig_h4 - enh_h4
@@ -313,10 +310,10 @@ class DocumentEnhancer:
             enhanced, provider = self._llm_router.chat(
                 messages, max_tokens=4096, temperature=0.3, timeout=60
             )
-            print(f"    -> LLM 增强完成 ({provider}): {len(content)} -> {len(enhanced)} 字符")
+            logger.info("LLM 增强完成 (%s): %d -> %d 字符", provider, len(content), len(enhanced))
             return enhanced
         except Exception as e:
-            print(f"    -> LLM 增强失败: {e}")
+            logger.warning("LLM 增强失败: %s", e)
             return content  # 失败时返回原文
 
     def _clean_llm_output(self, content: str) -> str:
@@ -359,7 +356,7 @@ class DocumentEnhancer:
                     fake_title = stripped[3:]  # 去掉 "## "
                     result.append(f"**{fake_title}**")
                     removed += 1
-                    print(f"  [clean] 移除虚假标题: {stripped[:60]}")
+                    logger.info("移除虚假标题: %s", stripped[:60])
             else:
                 result.append(line)
 
@@ -382,12 +379,12 @@ class DocumentEnhancer:
             fixed, count = convert_ascii_in_text(content)
             if count > 0:
                 self._stats["ascii_fixed"] = count
-                print(f"[Enhancer] 修复了 {count} 个 ASCII 图")
+                logger.info("修复了 %d 个 ASCII 图", count)
                 return fixed
         except ImportError:
-            print("[Enhancer] convert_ascii 模块不可用，跳过 ASCII 修复")
+            logger.warning("convert_ascii 模块不可用，跳过 ASCII 修复")
         except Exception as e:
-            print(f"[Enhancer] ASCII 修复失败: {e}")
+            logger.warning("ASCII 修复失败: %s", e)
         return content
 
     def get_stats(self) -> dict:
