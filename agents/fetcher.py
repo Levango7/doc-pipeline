@@ -90,9 +90,15 @@ class FetcherAgent(BaseAgent):
             self._use_selectolax = True
         except ImportError:
             self._use_selectolax = False
+        # Firecrawl 网页提取增强（可选，优先于 HTML 下载 + 正则提取）
+        from pipeline_core.search_engines import FirecrawlExtractor
+        self._firecrawl = FirecrawlExtractor(
+            api_key=config.get("firecrawl_api_key", "")
+        )
         self.log_info(f"Fetcher v{AGENT_VERSION} 初始化完成，临时目录: {self._temp_dir}"
                       f" | Async I/O: {'启用' if USE_ASYNC else '未安装 aiohttp，使用同步模式'}"
                       f" | HTML解析: {'selectolax' if self._use_selectolax else 'regex'}"
+                      f" | Firecrawl: {'启用' if self._firecrawl.is_available() else '未配置'}"
                       f" | UA池: {len(self._ua_pool)} | 重试: {self._retry}")
 
     def handle(self, msg: Message) -> dict | None:
@@ -273,7 +279,12 @@ class FetcherAgent(BaseAgent):
         self._aio_session = None
 
     async def _fetch_article_async(self, session, semaphore, result, query, task_id, task_dir, idx=0):
-        """异步下载单页（带 UA 轮换 + 重试）"""
+        """异步下载单页（带 UA 轮换 + 重试）
+
+        提取策略（优先级从高到低）：
+          1. Firecrawl API（若已配置）— URL → Markdown，JS 渲染，质量最好
+          2. aiohttp 下载 HTML → selectolax/正则 提取正文
+        """
         url = result.get("url", "") if isinstance(result, dict) else getattr(result, "url", "")
         title = result.get("title", "") if isinstance(result, dict) else getattr(result, "title", "")
         if not url:
@@ -281,6 +292,34 @@ class FetcherAgent(BaseAgent):
 
         with self._stats_lock:
             self._stats["attempted"] += 1
+
+        # ── 优先：Firecrawl 提取 ──
+        if self._firecrawl.is_available():
+            try:
+                fc_result = await asyncio.to_thread(self._firecrawl.scrape, url, 30)
+                if fc_result["success"]:
+                    plain_text = fc_result["markdown"]
+                    if fc_result["title"] and not title:
+                        title = fc_result["title"]
+                    if self._is_content_usable(plain_text, url, query):
+                        article = self._save_article(
+                            title, url, plain_text, query, task_dir
+                        )
+                        if article:
+                            with self._stats_lock:
+                                self._stats["success"] += 1
+                            return article
+                    else:
+                        with self._stats_lock:
+                            self._stats["filtered"] += 1
+                        self.log_debug(f"  Firecrawl 内容不可用: {url[:60]}")
+                        # 继续尝试 HTML 下载
+                else:
+                    self.log_debug(f"  Firecrawl 失败({fc_result['error'][:40]}): {url[:60]}")
+            except Exception as e:
+                self.log_debug(f"  Firecrawl 异常: {e}")
+
+        # ── 回退：aiohttp HTML 下载 + 正文提取 ──
         last_err = None
         for attempt in range(self._retry + 1):
             ua = self._ua_pool[(idx + attempt) % len(self._ua_pool)]
@@ -305,30 +344,11 @@ class FetcherAgent(BaseAgent):
                     self.log_debug(f"  过滤不可用内容: {url[:60]}")
                     return None
 
-                safe_name = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fff-]', '_', title)[:60] or hashlib.sha256(url.encode()).hexdigest()[:12]
-                file_path = task_dir / f"{safe_name}.txt"
-                # 异步文件写入（避免阻塞事件循环）
-                file_content = (
-                    f"标题: {title}\n"
-                    f"来源: {url}\n"
-                    f"下载时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"{'='*60}\n\n"
-                    f"{plain_text}"
-                )
-                await asyncio.to_thread(
-                    lambda: file_path.write_text(file_content, encoding="utf-8")
-                )
-
-                with self._stats_lock:
-                    self._stats["success"] += 1
-                return {
-                    "title": title,
-                    "url": url,
-                    "local_path": str(file_path),
-                    "content_length": len(plain_text),
-                    "source": urlparse(url).netloc,
-                    "relevance": round(self._content_relevance(plain_text, query), 3),
-                }
+                article = self._save_article(title, url, plain_text, query, task_dir)
+                if article:
+                    with self._stats_lock:
+                        self._stats["success"] += 1
+                    return article
             except asyncio.TimeoutError:
                 last_err = "超时"
                 continue
@@ -341,7 +361,10 @@ class FetcherAgent(BaseAgent):
         return None
 
     def _fetch_article(self, result, query: str, task_id: str, task_dir: Path, idx=0) -> dict | None:
-        """下载单个页面（同步），提取正文，保存到本地（带 UA 轮换 + 重试）"""
+        """下载单个页面（同步），提取正文，保存到本地（带 UA 轮换 + 重试）
+
+        提取策略：Firecrawl 优先 → HTML 下载回退
+        """
         import requests
 
         url = result.get("url", "") if isinstance(result, dict) else getattr(result, "url", "")
@@ -351,6 +374,33 @@ class FetcherAgent(BaseAgent):
 
         with self._stats_lock:
             self._stats["attempted"] += 1
+
+        # ── 优先：Firecrawl 提取 ──
+        if self._firecrawl.is_available():
+            try:
+                fc_result = self._firecrawl.scrape(url, 30)
+                if fc_result["success"]:
+                    plain_text = fc_result["markdown"]
+                    if fc_result["title"] and not title:
+                        title = fc_result["title"]
+                    if self._is_content_usable(plain_text, url, query):
+                        article = self._save_article(
+                            title, url, plain_text, query, task_dir
+                        )
+                        if article:
+                            with self._stats_lock:
+                                self._stats["success"] += 1
+                            return article
+                    else:
+                        with self._stats_lock:
+                            self._stats["filtered"] += 1
+                        self.log_debug(f"  Firecrawl 内容不可用: {url[:60]}")
+                else:
+                    self.log_debug(f"  Firecrawl 失败({fc_result['error'][:40]}): {url[:60]}")
+            except Exception as e:
+                self.log_debug(f"  Firecrawl 异常: {e}")
+
+        # ── 回退：HTML 下载 + 正文提取 ──
         last_err = None
         for attempt in range(self._retry + 1):
             ua = self._ua_pool[(idx + attempt) % len(self._ua_pool)]
@@ -376,25 +426,11 @@ class FetcherAgent(BaseAgent):
                     self.log_debug(f"  过滤不可用内容: {url[:60]}")
                     return None
 
-                safe_name = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fff-]', '_', title)[:60] or hashlib.sha256(url.encode()).hexdigest()[:12]
-                file_path = task_dir / f"{safe_name}.txt"
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(f"标题: {title}\n")
-                    f.write(f"来源: {url}\n")
-                    f.write(f"下载时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write(f"{'='*60}\n\n")
-                    f.write(plain_text)
-
-                with self._stats_lock:
-                    self._stats["success"] += 1
-                return {
-                    "title": title,
-                    "url": url,
-                    "local_path": str(file_path),
-                    "content_length": len(plain_text),
-                    "source": urlparse(url).netloc,
-                    "relevance": round(self._content_relevance(plain_text, query), 3),
-                }
+                article = self._save_article(title, url, plain_text, query, task_dir)
+                if article:
+                    with self._stats_lock:
+                        self._stats["success"] += 1
+                    return article
             except requests.Timeout:
                 last_err = "超时"
                 continue
@@ -405,6 +441,28 @@ class FetcherAgent(BaseAgent):
             self._stats["failed"] += 1
         self.log_debug(f"  下载失败(重试{self._retry}次): {url[:60]} - {last_err}")
         return None
+
+    def _save_article(self, title: str, url: str, plain_text: str,
+                      query: str, task_dir: Path) -> dict | None:
+        """将提取的正文保存到本地文件，返回文章元数据（同步写入，供 async 用 to_thread 包装）"""
+        safe_name = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fff-]', '_', title)[:60] or hashlib.sha256(url.encode()).hexdigest()[:12]
+        file_path = task_dir / f"{safe_name}.txt"
+        file_content = (
+            f"标题: {title}\n"
+            f"来源: {url}\n"
+            f"下载时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"{'='*60}\n\n"
+            f"{plain_text}"
+        )
+        file_path.write_text(file_content, encoding="utf-8")
+        return {
+            "title": title,
+            "url": url,
+            "local_path": str(file_path),
+            "content_length": len(plain_text),
+            "source": urlparse(url).netloc,
+            "relevance": round(self._content_relevance(plain_text, query), 3),
+        }
 
     def _extract_text(self, html: str) -> str:
         """从 HTML 中提取可读正文（优先 selectolax C-bindings 解析，回退到正则启发式）"""

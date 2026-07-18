@@ -19,6 +19,8 @@ import threading
 import queue
 from typing import Optional, Callable, Generator, Any
 
+from .fast_json import dumps as _fast_dumps
+
 
 class StreamEvent:
     """流式事件"""
@@ -52,7 +54,7 @@ class StreamEvent:
             "section": self.section_index,
             "total": self.total_sections,
         }
-        return f"id: {self.event_id}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        return f"id: {self.event_id}\ndata: {_fast_dumps(payload)}\n\n"
 
     def to_dict(self) -> dict:
         return {

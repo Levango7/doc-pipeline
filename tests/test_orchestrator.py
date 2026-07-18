@@ -12,13 +12,13 @@ class TestOrchestratorRegistration:
     def test_registers_six_agents(self, orch):
         agents = orch.registry.list()
         agent_names = [a["name"] if isinstance(a, dict) else str(a) for a in agents]
-        assert len([n for n in agent_names if n in ("researcher", "writer", "checker",
-                   "quality_gate", "layout", "safe_writer")]) >= 6, \
+        assert len([n for n in agent_names if n in ("researcher", "writer", "safe_writer",
+                   "checker", "quality_gate", "layout", "fetcher")]) >= 6, \
             f"expected 6+ agents, got {agent_names}"
 
     def test_get_instance(self, orch):
-        inst = orch.registry.get_instance("writer")
-        assert inst is not None, "writer agent should be instantiated"
+        inst = orch.registry.get_instance("safe_writer")
+        assert inst is not None, "safe_writer agent should be instantiated"
 
     def test_get_status(self, orch):
         status = orch.registry.get_status("researcher")

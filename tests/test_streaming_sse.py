@@ -29,8 +29,12 @@ class TestStreamEvent:
     def test_to_sse_json_payload(self):
         e = StreamEvent("chunk", {"text": "abc"})
         sse = e.to_sse()
-        assert '"type": "chunk"' in sse
-        assert '"text": "abc"' in sse
+        # orjson 产出紧凑 JSON（无空格），标准 json 带空格，两种均合法
+        import json as _json
+        data_line = [l for l in sse.strip().split("\n") if l.startswith("data: ")][0]
+        payload = _json.loads(data_line[6:])
+        assert payload["type"] == "chunk"
+        assert payload["data"]["text"] == "abc"
 
     def test_to_dict_roundtrip(self):
         e = StreamEvent("progress", {"current": 3, "total": 10}, section_index=3, total_sections=10)

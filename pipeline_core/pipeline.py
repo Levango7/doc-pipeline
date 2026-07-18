@@ -26,6 +26,7 @@ from enum import Enum
 
 from .observability import StructuredLogger, MetricsRegistry, get_logger, get_metrics
 from .executor_factory import create_executor, is_process_executor
+from .event_hook import emit_event
 
 
 class TaskStatus(Enum):
@@ -371,6 +372,9 @@ class PipelineOrchestrator:
         task.status = TaskStatus.RUNNING
         task.started_at = time.time()
 
+        emit_event("task.created", {"task_id": task.id, "pipeline": pipeline_name, "input_file": input_file})
+        emit_event("task.started", {"task_id": task.id, "pipeline": pipeline_name, "started_at": task.started_at})
+
         self.bus.publish("pipeline.started", "orchestrator", {
             "task_id": task.id,
             "pipeline": pipeline_name,
@@ -388,6 +392,14 @@ class PipelineOrchestrator:
                     task.status = TaskStatus.DONE
                 task.progress = 100
                 task.finished_at = time.time()
+
+                # ── 事件钩子 ──
+                if task.status == TaskStatus.DONE:
+                    emit_event("task.completed", {"task_id": task.id, "pipeline": pipeline_name,
+                                 "duration": task.finished_at - task.started_at, "result_keys": list(task.result.keys())})
+                elif task.status == TaskStatus.FAILED:
+                    emit_event("task.failed", {"task_id": task.id, "pipeline": pipeline_name,
+                               "error": task.error, "duration": task.finished_at - task.started_at})
 
                 # 生成报告
                 self._generate_report(task)
@@ -412,6 +424,8 @@ class PipelineOrchestrator:
                 task.error = str(e)
                 task.finished_at = time.time()
                 self._logger.log("error", "任务执行异常", error=str(e))
+                emit_event("task.failed", {"task_id": task.id, "pipeline": pipeline_name,
+                           "error": str(e), "duration": task.finished_at - task.started_at})
             finally:
                 with self._lock:
                     self._trim_task_history()
@@ -448,6 +462,7 @@ class PipelineOrchestrator:
             if task and task.status in [TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.PAUSED]:
                 task.status = TaskStatus.CANCELLED
                 task.stop_event.set()  # per-task 取消信号
+                emit_event("task.cancelled", {"task_id": task_id, "pipeline": task.pipeline_name})
                 return True
         return False
 
@@ -567,6 +582,10 @@ class PipelineOrchestrator:
         task.started_at = time.time()
         total_nodes = plan.node_count
 
+        emit_event("task.created", {"task_id": task.id, "pipeline": plan.pipeline_name,
+                     "input_file": input_file, "plan_id": plan.plan_id, "total_nodes": total_nodes})
+        emit_event("task.started", {"task_id": task.id, "pipeline": plan.pipeline_name, "started_at": task.started_at})
+
         self._log("info", "Pipeline started",
                   task_id=task.id, pipeline=plan.pipeline_name,
                   input_file=input_file, plan_id=plan.plan_id,
@@ -680,6 +699,17 @@ class PipelineOrchestrator:
             finally:
                 task.progress = 100 if task.status == TaskStatus.DONE else task.progress
                 task.finished_at = time.time()
+
+                # ── 事件钩子 ──
+                if task.status == TaskStatus.DONE:
+                    emit_event("task.completed", {"task_id": task.id, "pipeline": plan.pipeline_name,
+                                 "duration": task.finished_at - task.started_at, "plan_id": plan.plan_id})
+                elif task.status == TaskStatus.FAILED:
+                    emit_event("task.failed", {"task_id": task.id, "pipeline": plan.pipeline_name,
+                               "error": task.error, "duration": task.finished_at - task.started_at, "plan_id": plan.plan_id})
+                elif task.status == TaskStatus.CANCELLED:
+                    emit_event("task.cancelled", {"task_id": task.id, "pipeline": plan.pipeline_name, "plan_id": plan.plan_id})
+
                 self._log("info", f"Pipeline {task.status.value}",
                           task_id=task.id, pipeline=plan.pipeline_name,
                           status=task.status.value, duration_sec=round(task.finished_at - task.started_at, 2),

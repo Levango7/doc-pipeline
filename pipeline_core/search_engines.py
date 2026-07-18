@@ -2,22 +2,25 @@
 Search Engines — 统一搜索引擎接口
 ==================================
 核心特性：
-  - 7 个搜索引擎统一接口
+  - 10 个搜索引擎统一接口
   - 自动 fallback：引擎失败自动切换下一个
   - 结果标准化：不同引擎返回统一格式
-  - Metaso API 集成（结构化搜索）
-  - DuckDuckGo 集成（无需 API Key）
-  - HTML 抓取引擎（Bing/Sogou/360）
+  - API 引擎：Bocha / Tavily / Serper / Metaso（结构化，稳定不怕改版）
+  - HTML 引擎：Bing / Baidu / Sogou / 360（兜底）
+  - Firecrawl 网页提取增强（URL → Markdown）
   - 线程安全 + 限流
 
-支持引擎：
-  1. metaso     — 秘塔搜索 API（结构化，需 API Key）
-  2. duckduckgo — DuckDuckGo（无需 Key，国际覆盖好）
-  3. bing       — 必应 HTML 抓取
-  4. sogou      — 搜狗 HTML 抓取
-  5. 360        — 360 搜索 HTML 抓取
-  6. prosearch  — 元宝搜索（本地 Node.js 脚本）
-  7. google     — Google HTML 抓取（可选，需翻墙）
+支持引擎（按优先级）：
+  1. bocha      — 博查万象 API（国内直连，免费，语义重排序）
+  2. tavily     — Tavily AI Search（英文技术文档质量好，免费 1000 次/月）
+  3. serper     — Google Serper（Google 搜索代理，免费 2500 次）
+  4. metaso     — 秘塔搜索 API（结构化，需 API Key）
+  5. duckduckgo — DuckDuckGo（无需 Key，国际覆盖好）
+  6. bing       — 必应 HTML 抓取
+  7. baidu      — 百度 HTML 抓取
+  8. sogou      — 搜狗 HTML 抓取
+  9. 360        — 360 搜索 HTML 抓取
+  10. prosearch — 元宝搜索（本地 Node.js 脚本）
 """
 import json
 import os
@@ -25,11 +28,14 @@ import time
 import re
 import logging
 import threading
+import asyncio
 import urllib.request
 import urllib.parse
 import urllib.error
 from dataclasses import dataclass, field
 from typing import Optional
+
+from .fast_json import dumps as _fast_dumps, loads as _fast_loads
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +69,14 @@ class SearchEngineBase:
     def search(self, query: str, max_results: int = 10) -> list[SearchItem]:
         raise NotImplementedError
 
+    async def search_async(self, query: str, max_results: int = 10) -> list[SearchItem]:
+        """异步搜索 — 默认实现用 run_in_executor 包装同步方法。
+
+        API 类引擎可覆盖此方法用 aiohttp 实现真异步。
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.search, query, max_results)
+
     def is_available(self) -> bool:
         return True
 
@@ -85,7 +99,7 @@ class MetasoEngine(SearchEngineBase):
         if not self._api_key:
             return []
         try:
-            payload = json.dumps({
+            payload = _fast_dumps({
                 "q": query, "size": max_results, "type": "web",
             }).encode()
             req = urllib.request.Request(
@@ -96,7 +110,7 @@ class MetasoEngine(SearchEngineBase):
                 },
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
-                body = json.loads(resp.read().decode())
+                body = _fast_loads(resp.read().decode())
 
             results = []
             items = body.get("data", {}).get("webpages", [])
@@ -112,6 +126,38 @@ class MetasoEngine(SearchEngineBase):
             return results
         except Exception as e:
             logger.debug(f"Metaso 搜索失败: {e}")
+            return []
+
+    async def search_async(self, query: str, max_results: int = 10) -> list[SearchItem]:
+        """异步搜索 — 使用 aiohttp 真异步 HTTP"""
+        if not self._api_key:
+            return []
+        try:
+            import aiohttp
+        except ImportError:
+            return await super().search_async(query, max_results)
+
+        try:
+            payload = {"q": query, "size": max_results, "type": "web"}
+            headers = {"Content-Type": "application/json",
+                       "Authorization": f"Bearer {self._api_key}"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+                async with session.post(self._api_url, json=payload, headers=headers) as resp:
+                    body = await resp.json()
+            results = []
+            items = body.get("data", {}).get("webpages", [])
+            if isinstance(items, dict):
+                items = items.get("list", [])
+            for item in items[:max_results]:
+                results.append(SearchItem(
+                    title=item.get("title", ""),
+                    url=item.get("url", item.get("link", "")),
+                    snippet=item.get("snippet", item.get("summary", "")),
+                    source=self.name, query=query,
+                ))
+            return results
+        except Exception as e:
+            logger.debug(f"Metaso 异步搜索失败: {e}")
             return []
 
 
@@ -334,6 +380,371 @@ class BaiduEngine(HtmlSearchEngine):
             return []
 
 
+# ─── Bocha（博查万象）API ────────────────────────
+
+class BochaEngine(SearchEngineBase):
+    """博查万象搜索 API（国内直连，免费，自带语义重排序）
+
+    API 文档: https://open.bochaai.com
+    - 端点: POST https://api.bochaai.com/v1/web-search
+    - 认证: Bearer Token
+    - 特点: 0.15s 延迟，近百万亿网页，自带 Semantic Reranker
+    - 免费额度充足，数据不出海合规
+    """
+
+    name = "bocha"
+
+    def __init__(self, api_key: str = "", api_url: str = ""):
+        self._api_key = api_key or os.environ.get("BOCHA_API_KEY", "")
+        self._api_url = api_url or os.environ.get(
+            "BOCHA_API_URL", "https://api.bochaai.com/v1/web-search"
+        )
+
+    def is_available(self) -> bool:
+        return bool(self._api_key)
+
+    def search(self, query: str, max_results: int = 10) -> list[SearchItem]:
+        if not self._api_key:
+            return []
+        try:
+            payload = _fast_dumps({
+                "query": query,
+                "count": min(max_results, 20),
+                "summary": True,
+                "freshness": "noLimit",
+            }).encode()
+            req = urllib.request.Request(
+                self._api_url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._api_key}",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = _fast_loads(resp.read().decode())
+
+            results = []
+            # 博查返回格式: {"data": {"webPages": {"value": [...]}}}
+            data = body.get("data", body)
+            web_pages = data.get("webPages", data)
+            items = web_pages.get("value", web_pages.get("list", []))
+            if isinstance(items, dict):
+                items = items.get("value", [])
+            for item in items[:max_results]:
+                results.append(SearchItem(
+                    title=item.get("name", item.get("title", "")),
+                    url=item.get("url", item.get("link", "")),
+                    snippet=item.get("summary", item.get("snippet", item.get("description", ""))),
+                    source=self.name,
+                    query=query,
+                    score=float(item.get("score", 0.0)),
+                ))
+            return results
+        except Exception as e:
+            logger.debug(f"Bocha 搜索失败: {e}")
+            return []
+
+    async def search_async(self, query: str, max_results: int = 10) -> list[SearchItem]:
+        """异步搜索 — 使用 aiohttp 真异步 HTTP"""
+        if not self._api_key:
+            return []
+        try:
+            import aiohttp
+        except ImportError:
+            return await super().search_async(query, max_results)
+        try:
+            payload = {"query": query, "count": min(max_results, 20),
+                       "summary": True, "freshness": "noLimit"}
+            headers = {"Content-Type": "application/json",
+                       "Authorization": f"Bearer {self._api_key}"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+                async with session.post(self._api_url, json=payload, headers=headers) as resp:
+                    body = await resp.json()
+            results = []
+            data = body.get("data", body)
+            web_pages = data.get("webPages", data)
+            items = web_pages.get("value", web_pages.get("list", []))
+            if isinstance(items, dict):
+                items = items.get("value", [])
+            for item in items[:max_results]:
+                results.append(SearchItem(
+                    title=item.get("name", item.get("title", "")),
+                    url=item.get("url", item.get("link", "")),
+                    snippet=item.get("summary", item.get("snippet", item.get("description", ""))),
+                    source=self.name, query=query,
+                    score=float(item.get("score", 0.0)),
+                ))
+            return results
+        except Exception as e:
+            logger.debug(f"Bocha 异步搜索失败: {e}")
+            return []
+
+
+# ─── Tavily AI Search API ────────────────────────
+
+class TavilyEngine(SearchEngineBase):
+    """Tavily AI 搜索 API（专为 AI Agent 设计，自带摘要）
+
+    API 文档: https://docs.tavily.com
+    - 端点: POST https://api.tavily.com/search
+    - 认证: Bearer Token
+    - 特点: 免费 1000 次/月，英文技术文档搜索质量好
+    - 返回自带 AI 摘要 (answer 字段)
+    """
+
+    name = "tavily"
+
+    def __init__(self, api_key: str = "", api_url: str = ""):
+        self._api_key = api_key or os.environ.get("TAVILY_API_KEY", "")
+        self._api_url = api_url or os.environ.get(
+            "TAVILY_API_URL", "https://api.tavily.com/search"
+        )
+
+    def is_available(self) -> bool:
+        return bool(self._api_key)
+
+    def search(self, query: str, max_results: int = 10) -> list[SearchItem]:
+        if not self._api_key:
+            return []
+        try:
+            payload = _fast_dumps({
+                "query": query,
+                "max_results": min(max_results, 20),
+                "search_depth": "advanced",
+                "include_answer": True,
+                "include_raw_content": False,
+            }).encode()
+            req = urllib.request.Request(
+                self._api_url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._api_key}",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                body = _fast_loads(resp.read().decode())
+
+            results = []
+            items = body.get("results", [])
+            for item in items[:max_results]:
+                results.append(SearchItem(
+                    title=item.get("title", ""),
+                    url=item.get("url", ""),
+                    snippet=item.get("content", item.get("snippet", "")),
+                    source=self.name,
+                    query=query,
+                    score=float(item.get("score", 0.0)),
+                ))
+            return results
+        except Exception as e:
+            logger.debug(f"Tavily 搜索失败: {e}")
+            return []
+
+    async def search_async(self, query: str, max_results: int = 10) -> list[SearchItem]:
+        """异步搜索 — 使用 aiohttp 真异步 HTTP"""
+        if not self._api_key:
+            return []
+        try:
+            import aiohttp
+        except ImportError:
+            return await super().search_async(query, max_results)
+        try:
+            payload = {"query": query, "max_results": min(max_results, 20),
+                       "search_depth": "advanced", "include_answer": True,
+                       "include_raw_content": False}
+            headers = {"Content-Type": "application/json",
+                       "Authorization": f"Bearer {self._api_key}"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+                async with session.post(self._api_url, json=payload, headers=headers) as resp:
+                    body = await resp.json()
+            results = []
+            for item in body.get("results", [])[:max_results]:
+                results.append(SearchItem(
+                    title=item.get("title", ""),
+                    url=item.get("url", ""),
+                    snippet=item.get("content", item.get("snippet", "")),
+                    source=self.name, query=query,
+                    score=float(item.get("score", 0.0)),
+                ))
+            return results
+        except Exception as e:
+            logger.debug(f"Tavily 异步搜索失败: {e}")
+            return []
+
+
+# ─── Serper Google Search API ────────────────────
+
+class SerperEngine(SearchEngineBase):
+    """Serper Google 搜索 API（最便宜的 Google 搜索代理）
+
+    API 文档: https://serper.dev
+    - 端点: POST https://google.serper.dev/search
+    - 认证: X-API-KEY header
+    - 特点: 免费 2500 次，之后 $2/1000 次，支持 Google Scholar
+    - 返回 Google 原始搜索结果
+    """
+
+    name = "serper"
+
+    def __init__(self, api_key: str = "", api_url: str = ""):
+        self._api_key = api_key or os.environ.get("SERPER_API_KEY", "")
+        self._api_url = api_url or os.environ.get(
+            "SERPER_API_URL", "https://google.serper.dev/search"
+        )
+
+    def is_available(self) -> bool:
+        return bool(self._api_key)
+
+    def search(self, query: str, max_results: int = 10) -> list[SearchItem]:
+        if not self._api_key:
+            return []
+        try:
+            payload = _fast_dumps({
+                "q": query,
+                "num": min(max_results, 20),
+            }).encode()
+            req = urllib.request.Request(
+                self._api_url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-KEY": self._api_key,
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = _fast_loads(resp.read().decode())
+
+            results = []
+            # Serper 返回 organic 数组
+            items = body.get("organic", [])
+            for item in items[:max_results]:
+                results.append(SearchItem(
+                    title=item.get("title", ""),
+                    url=item.get("link", item.get("url", "")),
+                    snippet=item.get("snippet", ""),
+                    source=self.name,
+                    query=query,
+                    score=float(item.get("score", 0.0)),
+                ))
+            # 知识卡片（如有）
+            kg = body.get("knowledgeGraph", {})
+            if kg and kg.get("title"):
+                results.insert(0, SearchItem(
+                    title=kg.get("title", ""),
+                    url=kg.get("website", ""),
+                    snippet=kg.get("description", ""),
+                    source=f"{self.name}[kg]",
+                    query=query,
+                    score=1.0,
+                ))
+            return results
+        except Exception as e:
+            logger.debug(f"Serper 搜索失败: {e}")
+            return []
+
+    async def search_async(self, query: str, max_results: int = 10) -> list[SearchItem]:
+        """异步搜索 — 使用 aiohttp 真异步 HTTP"""
+        if not self._api_key:
+            return []
+        try:
+            import aiohttp
+        except ImportError:
+            return await super().search_async(query, max_results)
+        try:
+            payload = {"q": query, "num": min(max_results, 20)}
+            headers = {"Content-Type": "application/json",
+                       "X-API-KEY": self._api_key}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+                async with session.post(self._api_url, json=payload, headers=headers) as resp:
+                    body = await resp.json()
+            results = []
+            for item in body.get("organic", [])[:max_results]:
+                results.append(SearchItem(
+                    title=item.get("title", ""),
+                    url=item.get("link", item.get("url", "")),
+                    snippet=item.get("snippet", ""),
+                    source=self.name, query=query,
+                    score=float(item.get("score", 0.0)),
+                ))
+            kg = body.get("knowledgeGraph", {})
+            if kg and kg.get("title"):
+                results.insert(0, SearchItem(
+                    title=kg.get("title", ""), url=kg.get("website", ""),
+                    snippet=kg.get("description", ""),
+                    source=f"{self.name}[kg]", query=query, score=1.0,
+                ))
+            return results
+        except Exception as e:
+            logger.debug(f"Serper 异步搜索失败: {e}")
+            return []
+
+
+# ─── Firecrawl 网页提取 API ──────────────────────
+
+class FirecrawlExtractor:
+    """Firecrawl 网页内容提取器（URL → Markdown）
+
+    API 文档: https://docs.firecrawl.dev
+    - 端点: POST https://api.firecrawl.dev/v1/scrape
+    - 认证: Bearer Token
+    - 特点: 将任意网页转为干净 Markdown，支持 JS 渲染
+    - 用途: 集成到 fetcher，提升正文提取质量
+
+    不是搜索引擎，而是内容提取增强工具。
+    """
+
+    name = "firecrawl"
+
+    def __init__(self, api_key: str = "", api_url: str = ""):
+        self._api_key = api_key or os.environ.get("FIRECRAWL_API_KEY", "")
+        self._api_url = api_url or os.environ.get(
+            "FIRECRAWL_API_URL", "https://api.firecrawl.dev/v1/scrape"
+        )
+
+    def is_available(self) -> bool:
+        return bool(self._api_key)
+
+    def scrape(self, url: str, timeout: int = 30) -> dict:
+        """提取网页内容，返回 Markdown 格式正文
+
+        Returns:
+            {"success": bool, "markdown": str, "title": str, "error": str}
+        """
+        if not self._api_key:
+            return {"success": False, "markdown": "", "title": "", "error": "no API key"}
+
+        try:
+            payload = _fast_dumps({
+                "url": url,
+                "formats": ["markdown"],
+                "onlyMainContent": True,
+            }).encode()
+            req = urllib.request.Request(
+                self._api_url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._api_key}",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = _fast_loads(resp.read().decode())
+
+            data = body.get("data", body)
+            markdown = data.get("markdown", "")
+            title = data.get("metadata", {}).get("title", data.get("title", ""))
+
+            if not markdown:
+                return {"success": False, "markdown": "", "title": title,
+                        "error": "empty content"}
+
+            return {"success": True, "markdown": markdown, "title": title, "error": ""}
+        except Exception as e:
+            return {"success": False, "markdown": "", "title": "", "error": str(e)}
+
+
 class ProSearchEngine(SearchEngineBase):
     """元宝搜索（本地 Node.js 脚本）"""
 
@@ -364,12 +775,12 @@ class ProSearchEngine(SearchEngineBase):
         try:
             import subprocess
             result = subprocess.run(
-                ["node", self._script, json.dumps({"keyword": query})],
+                ["node", self._script, _fast_dumps({"keyword": query})],
                 capture_output=True, text=True, timeout=30,
             )
             if result.returncode != 0:
                 return []
-            data = json.loads(result.stdout)
+            data = _fast_loads(result.stdout)
             items = data if isinstance(data, list) else data.get("results", [])
             return [
                 SearchItem(
@@ -388,6 +799,9 @@ class ProSearchEngine(SearchEngineBase):
 # ─── 搜索引擎注册表 ──────────────────────────────
 
 _ENGINE_REGISTRY = {
+    "bocha": BochaEngine,
+    "tavily": TavilyEngine,
+    "serper": SerperEngine,
     "metaso": MetasoEngine,
     "duckduckgo": DuckDuckGoEngine,
     "bing": BingEngine,
@@ -475,6 +889,84 @@ class SearchEngineManager:
 
         return all_results[:max_results]
 
+    async def search_async(self, query: str, max_results: int = 10,
+                           engines: list[str] = None) -> list[SearchItem]:
+        """异步并行搜索 — 多引擎并发执行，不阻塞事件循环。
+
+        与同步 search() 的区别：所有引擎并行发起请求，而非串行 fallback。
+        结果合并去重，按完成顺序取前 max_results 条。
+        """
+        if engines is None:
+            engines = list(self._engines.keys())
+
+        async def _try_engine(name: str) -> list[SearchItem]:
+            engine = self._engines.get(name)
+            if engine is None or not engine.is_available():
+                return []
+            try:
+                return await engine.search_async(query, max_results)
+            except Exception as e:
+                self._fail_counts[name] = self._fail_counts.get(name, 0) + 1
+                logger.warning(f"引擎 {name} 异步搜索失败: {e}")
+                return []
+
+        # 并行发起所有引擎搜索
+        tasks = {asyncio.create_task(_try_engine(name)): name for name in engines}
+        all_results = []
+        seen_urls = set()
+
+        for coro in asyncio.as_completed(tasks.keys()):
+            try:
+                results = await coro
+                for r in results:
+                    if r.url and r.url not in seen_urls:
+                        seen_urls.add(r.url)
+                        all_results.append(r)
+            except Exception:
+                pass
+            # 已有足够结果时可取消剩余任务
+            if len(all_results) >= max_results:
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+                break
+
+        return all_results[:max_results]
+
+    async def search_with_sites_async(self, query: str, max_results: int = 10,
+                                      sites: list[str] = None,
+                                      engines: list[str] = None) -> list[SearchItem]:
+        """异步版 search_with_sites — 常规搜索 + 站点搜索全部并行"""
+        all_results = []
+        seen_urls = set()
+
+        # 常规搜索
+        for item in await self.search_async(query, max_results=max_results, engines=engines):
+            if item.url and item.url not in seen_urls:
+                seen_urls.add(item.url)
+                all_results.append(item)
+
+        # 站点搜索并行
+        if sites is None:
+            sites = self.SITE_TARGETS
+        site_queries = [(f"site:{domain} {query}", name) for domain, name in sites]
+
+        tasks = [
+            self.search_async(sq, max_results=3, engines=engines)
+            for sq, _ in site_queries
+        ]
+        for coro in asyncio.as_completed(tasks):
+            try:
+                results = await coro
+                for item in results:
+                    if item.url and item.url not in seen_urls:
+                        seen_urls.add(item.url)
+                        all_results.append(item)
+            except Exception:
+                pass
+
+        return all_results[:max_results]
+
     def status(self) -> dict:
         return {
             "engines": {
@@ -547,11 +1039,46 @@ class SearchEngineManager:
 
     @classmethod
     def from_env(cls, env_path: str = None) -> "SearchEngineManager":
-        """从环境变量加载所有可用引擎"""
+        """从环境变量加载所有可用引擎
+
+        引擎优先级（从高到低）：
+          1. bocha     — 博查万象 API（国内直连，免费，语义重排序）
+          2. tavily    — Tavily AI Search（英文技术文档质量好）
+          3. serper    — Google Serper（Google 搜索结果代理）
+          4. metaso    — 秘塔搜索 API（结构化搜索）
+          5. prosearch — 元宝搜索（本地脚本）
+          6. bing/baidu/sogou/360 — HTML 抓取兜底
+          7. duckduckgo — 国际覆盖（国内可能不可用）
+        """
         from pipeline_core.llm_router import _load_env
         env = _load_env(env_path)
 
         engines = {}
+
+        # API 搜索引擎（优先级最高，按顺序注册）
+        # Bocha（博查万象 — 国内首选）
+        bocha_key = env.get("BOCHA_API_KEY", "")
+        if bocha_key:
+            eng = create_engine("bocha", api_key=bocha_key,
+                                api_url=env.get("BOCHA_API_URL", ""))
+            if eng and eng.is_available():
+                engines["bocha"] = eng
+
+        # Tavily（AI Agent 专用搜索）
+        tavily_key = env.get("TAVILY_API_KEY", "")
+        if tavily_key:
+            eng = create_engine("tavily", api_key=tavily_key,
+                                api_url=env.get("TAVILY_API_URL", ""))
+            if eng and eng.is_available():
+                engines["tavily"] = eng
+
+        # Serper（Google 搜索代理）
+        serper_key = env.get("SERPER_API_KEY", "")
+        if serper_key:
+            eng = create_engine("serper", api_key=serper_key,
+                                api_url=env.get("SERPER_API_URL", ""))
+            if eng and eng.is_available():
+                engines["serper"] = eng
 
         # Metaso（需 API Key）
         metaso_key = env.get("METASO_API_KEY", "")

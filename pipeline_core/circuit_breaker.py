@@ -83,11 +83,21 @@ class CircuitBreaker:
 
     def _transition_to(self, new_state: CircuitState):
         if self.state != new_state:
+            old_state = self.state
             self.state = new_state
             self.last_state_change = time.time()
             # 进入 OPEN 时重置 success 计数
             if new_state == CircuitState.OPEN:
                 self.success_count = 0
+            # ── 事件钩子 ──
+            try:
+                from .event_hook import emit_event
+                if new_state == CircuitState.OPEN:
+                    emit_event("circuit_breaker.open", {"agent": self.name, "failure_count": self.failure_count})
+                elif new_state == CircuitState.CLOSED:
+                    emit_event("circuit_breaker.close", {"agent": self.name, "from": old_state.value})
+            except Exception:
+                pass
 
     def reset(self):
         """完全重置熔断器（恢复 CLOSED）"""

@@ -27,13 +27,50 @@ import re
 import time
 import logging
 import threading
+import asyncio
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .fast_json import dumps as _fast_dumps, loads as _fast_loads
+
 logger = logging.getLogger(__name__)
+
+# ─── 共享 aiohttp Session（连接池复用）──────────────
+_shared_aiohttp_session: Optional[object] = None
+_session_lock = threading.Lock()
+
+
+async def _get_shared_session():
+    """获取共享 aiohttp.ClientSession（连接池复用，避免每次创建新连接）
+
+    首次调用时创建 Session，后续复用。线程安全。
+    """
+    global _shared_aiohttp_session
+    if _shared_aiohttp_session is not None and not _shared_aiohttp_session.closed:
+        return _shared_aiohttp_session
+    try:
+        import aiohttp
+    except ImportError:
+        return None
+    with _session_lock:
+        if _shared_aiohttp_session is not None and not _shared_aiohttp_session.closed:
+            return _shared_aiohttp_session
+        _shared_aiohttp_session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=120),
+            connector=aiohttp.TCPConnector(limit=20, limit_per_host=5),
+        )
+    return _shared_aiohttp_session
+
+
+async def _close_shared_session():
+    """关闭共享 Session（应用退出时调用）"""
+    global _shared_aiohttp_session
+    if _shared_aiohttp_session is not None:
+        await _shared_aiohttp_session.close()
+        _shared_aiohttp_session = None
 
 
 @dataclass
@@ -115,7 +152,7 @@ def _call_llm(provider: LLMProvider, messages: list[dict],
             "temperature": temperature,
         }
 
-    data = json.dumps(payload).encode()
+    data = _fast_dumps(payload).encode()
     req = urllib.request.Request(
         provider.api_url, data=data,
         headers={
@@ -124,7 +161,7 @@ def _call_llm(provider: LLMProvider, messages: list[dict],
         },
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = json.loads(resp.read().decode())
+        body = _fast_loads(resp.read())
 
     if is_cf:
         body = body.get("result", body)
@@ -137,6 +174,61 @@ def _call_llm(provider: LLMProvider, messages: list[dict],
     if not content:
         raise ValueError(f"供应商 {provider.name} 返回空内容（可能因 reasoning 模型 max_tokens 不足）")
     return content
+
+
+async def _call_llm_async(provider: LLMProvider, messages: list[dict],
+                          max_tokens: int = 4096, temperature: float = 0.3,
+                          timeout: int = None) -> str:
+    """异步 LLM 调用 — 使用 aiohttp 真异步 HTTP，不阻塞事件循环。
+
+    优先使用共享 aiohttp Session（连接池复用），无 aiohttp 时回退到 run_in_executor。
+    """
+    timeout = timeout or provider.timeout
+    is_cf = provider.is_cloudflare or "/ai/run" in provider.api_url
+
+    if is_cf:
+        payload = {
+            "model": provider.model,
+            "input": {"messages": messages},
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+    else:
+        payload = {
+            "model": provider.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {provider.api_key}",
+    }
+
+    # 尝试 aiohttp 真异步
+    session = await _get_shared_session()
+    if session is not None:
+        try:
+            async with session.post(
+                provider.api_url, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout) if 'aiohttp' in dir() else None,
+            ) as resp:
+                body = await resp.json()
+            if is_cf:
+                body = body.get("result", body)
+            content = body["choices"][0]["message"].get("content", "") or ""
+            content = re.sub(r'<\s*think\s*>.*?<\s*/\s*think\s*>', '', content, flags=re.DOTALL).strip()
+            if not content:
+                raise ValueError(f"供应商 {provider.name} 返回空内容")
+            return content
+        except Exception as e:
+            logger.debug(f"aiohttp 调用 {provider.name} 失败，回退同步: {e}")
+
+    # 回退到同步（run_in_executor）
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, _call_llm, provider, messages, max_tokens, temperature, timeout,
+    )
 
 
 class LLMRouter:
@@ -228,6 +320,57 @@ class LLMRouter:
                 continue
 
         raise RuntimeError(f"所有 LLM 供应商调用失败，最后错误: {last_error}")
+
+    async def chat_async(self, messages: list[dict], max_tokens: int = 4096,
+                         temperature: float = 0.3, timeout: int = None,
+                         preferred: str = None) -> tuple[str, str]:
+        """异步调用 LLM（自动 fallback）— 不阻塞事件循环
+
+        返回: (content, provider_name)
+        异常: 所有供应商都失败时抛 RuntimeError
+        """
+        with self._lock:
+            candidates = list(self._providers)
+
+        if preferred:
+            for p in candidates:
+                if p.name == preferred and p.enabled and p.healthy:
+                    candidates.remove(p)
+                    candidates.insert(0, p)
+                    break
+
+        usable = [p for p in candidates if p.enabled and p.healthy]
+        if not usable:
+            # 同步健康检查（快速路径，不阻塞事件循环太久）
+            logger.info("所有供应商不健康，尝试重新检查...")
+            usable = [p for p in candidates if p.enabled]
+            for p in usable:
+                if p.check_health(cooldown=self.HEALTH_CHECK_COOLDOWN):
+                    logger.info(f"供应商 {p.name} 已恢复")
+                else:
+                    if not p._healthy and p._last_check > 0:
+                        elapsed = time.time() - p._last_check
+                        if elapsed >= self.HEALTH_CHECK_COOLDOWN:
+                            logger.warning(f"供应商 {p.name} 仍不健康: {p._last_error}")
+            usable = [p for p in usable if p.healthy]
+
+        if not usable:
+            raise RuntimeError("所有 LLM 供应商不可用")
+
+        last_error = ""
+        for provider in usable:
+            try:
+                content = await _call_llm_async(provider, messages, max_tokens, temperature, timeout)
+                provider.mark_success()
+                logger.debug(f"LLM 异步调用成功: {provider.name}")
+                return content, provider.name
+            except Exception as e:
+                provider.mark_failed(str(e))
+                last_error = f"{provider.name}: {e}"
+                logger.warning(f"LLM 供应商 {provider.name} 异步失败: {e}")
+                continue
+
+        raise RuntimeError(f"所有 LLM 供应商异步调用失败，最后错误: {last_error}")
 
     def health_check_all(self) -> dict:
         """检查所有供应商健康状态"""
@@ -371,9 +514,10 @@ def _load_env(env_path: str = None) -> dict:
     except Exception as e:
         logger.warning(f"加载 .env 失败: {e}")
 
-    # 合并系统环境变量（系统优先，覆盖 .env 中的同名变量）
+    # 合并系统环境变量（系统优先，但空值不覆盖 .env 中的有效值）
     for k, v in os.environ.items():
-        env[k] = v
+        if v:
+            env[k] = v
 
     return env
 

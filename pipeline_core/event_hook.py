@@ -18,13 +18,15 @@ EventHook - 事件钩子系统
   - circuit_breaker.close   熔断器恢复
 
 钩子触发方式：
-  - webhook: HTTP POST 回调到指定 URL
+  - webhook: HTTP POST 回调到指定 URL（全异步 aiohttp 发送，不阻塞调用方）
   - callback: Python 可调用对象（进程内）
 
 线程安全：所有操作均通过 _lock 保护。
+Webhook 异步架构：专用事件循环线程 + asyncio.Queue + aiohttp.ClientSession（连接池复用）
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -34,6 +36,122 @@ from typing import Any, Callable, Optional
 from dataclasses import dataclass, field, asdict
 
 _logger = logging.getLogger(__name__)
+
+
+# ── 全异步 webhook 投递引擎 ────────────────────────────────────
+# 专用事件循环运行在后台线程中，emit() 通过 run_coroutine_threadsafe 投递任务
+_webhook_loop: Optional[asyncio.AbstractEventLoop] = None
+_webhook_thread: Optional[threading.Thread] = None
+_webhook_async_queue: Optional[asyncio.Queue] = None
+_webhook_session: Optional[Any] = None  # aiohttp.ClientSession
+_webhook_stop_event: Optional[asyncio.Event] = None
+_webhook_worker_future: Optional[Any] = None  # concurrent.futures.Future for worker task
+_webhook_pending_tasks: set = set()  # track in-flight _deliver_one tasks for graceful shutdown
+_webhook_init_lock = threading.Lock()
+_WEBHOOK_QUEUE_MAXSIZE = 10000
+_WEBHOOK_TIMEOUT = 10  # seconds per HTTP POST
+_WEBHOOK_MAX_CONCURRENCY = 50  # max simultaneous in-flight webhook requests
+
+
+async def _async_webhook_worker():
+    """Async worker: drain queue and deliver webhooks via aiohttp with concurrency limit."""
+    global _webhook_session
+    import aiohttp
+
+    _webhook_session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=_WEBHOOK_TIMEOUT),
+        connector=aiohttp.TCPConnector(
+            limit=_WEBHOOK_MAX_CONCURRENCY,
+            limit_per_host=20,
+            ttl_dns_cache=300,
+        ),
+    )
+    _logger.info("[EventHook] aiohttp session started (async webhook engine)")
+
+    semaphore = asyncio.Semaphore(_WEBHOOK_MAX_CONCURRENCY)
+
+    while True:
+        try:
+            job = await asyncio.wait_for(_webhook_async_queue.get(), timeout=1.0)
+        except asyncio.TimeoutError:
+            if _webhook_stop_event.is_set():
+                break
+            continue
+
+        if job is None:  # shutdown sentinel
+            break
+
+        task = asyncio.create_task(_deliver_one(semaphore, job))
+        _webhook_pending_tasks.add(task)
+        task.add_done_callback(_webhook_pending_tasks.discard)
+
+    # 等待所有 in-flight 请求完成
+    if _webhook_pending_tasks:
+        _logger.info(f"[EventHook] Draining {len(_webhook_pending_tasks)} in-flight webhooks...")
+        await asyncio.gather(*_webhook_pending_tasks, return_exceptions=True)
+
+    await _webhook_session.close()
+    _logger.info("[EventHook] aiohttp session closed (async webhook engine stopped)")
+
+
+async def _deliver_one(semaphore: asyncio.Semaphore, job: tuple):
+    """Deliver a single webhook with concurrency control."""
+    hook_id, url, headers, body = job
+    async with semaphore:
+        try:
+            async with _webhook_session.post(
+                url, data=body, headers=headers
+            ) as resp:
+                if resp.status >= 400:
+                    _logger.warning(
+                        f"[EventHook] webhook {url} returned {resp.status}"
+                    )
+        except Exception as e:
+            _logger.error(f"[EventHook] webhook {url} failed: {e}")
+
+
+def _safe_enqueue(queue: asyncio.Queue, item):
+    """Safely enqueue item, logging warning if queue is full."""
+    try:
+        queue.put_nowait(item)
+    except asyncio.QueueFull:
+        _logger.warning("[EventHook] async queue full, dropping webhook event")
+
+
+def _ensure_webhook_engine():
+    """Start the async webhook engine (dedicated loop thread + aiohttp session) if not running."""
+    global _webhook_thread, _webhook_loop, _webhook_async_queue, _webhook_stop_event, _webhook_worker_future
+
+    with _webhook_init_lock:
+        if _webhook_thread is not None and _webhook_thread.is_alive():
+            return
+
+        # Create event loop in main thread (safe), run it in background thread
+        _webhook_loop = asyncio.new_event_loop()
+
+        def _run_loop():
+            asyncio.set_event_loop(_webhook_loop)
+            _webhook_loop.run_forever()
+
+        _webhook_thread = threading.Thread(
+            target=_run_loop, name="event-hook-async-loop", daemon=True
+        )
+        _webhook_thread.start()
+
+        # Now _webhook_loop is set, safe to schedule coroutines on it
+        async def _init():
+            global _webhook_async_queue, _webhook_stop_event
+            _webhook_async_queue = asyncio.Queue(maxsize=_WEBHOOK_QUEUE_MAXSIZE)
+            _webhook_stop_event = asyncio.Event()
+
+        future = asyncio.run_coroutine_threadsafe(_init(), _webhook_loop)
+        future.result(timeout=5)
+
+        # Start the worker coroutine on the dedicated loop and track its future
+        _webhook_worker_future = asyncio.run_coroutine_threadsafe(
+            _async_webhook_worker(), _webhook_loop
+        )
+        _logger.info("[EventHook] Async webhook engine started (asyncio + aiohttp)")
 
 
 @dataclass
@@ -149,8 +267,7 @@ class EventHookManager:
         return count
 
     def _fire_webhook(self, hook: Hook, event: str, payload: dict):
-        """发送 webhook HTTP POST 请求"""
-        import requests
+        """Schedule async webhook HTTP POST via aiohttp (non-blocking, thread-safe)."""
         body = json.dumps({
             "event": event,
             "payload": payload,
@@ -160,18 +277,76 @@ class EventHookManager:
         headers = {"Content-Type": "application/json"}
         headers.update(hook.headers)
         try:
-            resp = requests.post(hook.url, data=body, headers=headers, timeout=10)
-            if resp.status_code >= 400:
-                _logger.warning(
-                    f"[EventHook] webhook {hook.url} 返回 {resp.status_code}"
-                )
+            _ensure_webhook_engine()
+            # put_nowait is sync but must run on the loop thread
+            _webhook_loop.call_soon_threadsafe(
+                _safe_enqueue, _webhook_async_queue, (hook.id, hook.url, headers, body)
+            )
         except Exception as e:
-            _logger.error(f"[EventHook] webhook {hook.url} 请求失败: {e}")
+            _logger.error(f"[EventHook] failed to enqueue webhook: {e}")
 
     def clear(self):
         """清空所有钩子"""
         with self._lock:
             self._hooks.clear()
+
+
+def shutdown_webhook(timeout_s: float = 10.0):
+    """Gracefully shut down the async webhook engine.
+
+    Signals the async worker to stop, waits for in-flight requests to drain,
+    then stops the dedicated event loop and joins the thread.
+    Safe to call multiple times.
+    """
+    global _webhook_thread, _webhook_loop, _webhook_async_queue, _webhook_stop_event, _webhook_worker_future
+
+    if _webhook_loop is None or _webhook_thread is None:
+        return
+
+    if not _webhook_thread.is_alive():
+        return
+
+    # Signal stop + enqueue sentinel
+    async def _signal_stop():
+        _webhook_stop_event.set()
+        if _webhook_async_queue is not None:
+            try:
+                _webhook_async_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+
+    try:
+        fut = asyncio.run_coroutine_threadsafe(_signal_stop(), _webhook_loop)
+        fut.result(timeout=5)
+    except Exception:
+        pass
+
+    # Wait for worker to drain in-flight requests and close session
+    if _webhook_worker_future is not None:
+        try:
+            _webhook_worker_future.result(timeout=timeout_s)
+        except Exception:
+            # Timeout: cancel any remaining in-flight tasks before stopping loop
+            if _webhook_pending_tasks:
+                _logger.warning(
+                    f"[EventHook] Shutdown timeout, cancelling {len(_webhook_pending_tasks)} in-flight webhooks"
+                )
+                for task in list(_webhook_pending_tasks):
+                    if not task.done():
+                        task.cancel()
+                _webhook_pending_tasks.clear()
+
+    # Now safe to stop the event loop and join thread
+    _webhook_loop.call_soon_threadsafe(_webhook_loop.stop)
+    _webhook_thread.join(timeout=5)
+
+    # Cleanup globals
+    _webhook_loop = None
+    _webhook_thread = None
+    _webhook_async_queue = None
+    _webhook_stop_event = None
+    _webhook_worker_future = None
+    _logger.info("[EventHook] Async webhook engine stopped")
 
 
 # ── 全局单例 ──────────────────────────────────────

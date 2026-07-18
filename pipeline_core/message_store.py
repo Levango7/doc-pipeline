@@ -21,6 +21,8 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Optional, Any, Callable
 
+from .fast_json import dumps as _fast_dumps, loads as _fast_loads
+
 
 # ─── 常量 ─────────────────────────────────────
 
@@ -213,7 +215,7 @@ class PersistentStore:
                 idempotency_key, created_at, delivered, error)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                msg.msg_id, msg.topic, json.dumps(msg.payload, ensure_ascii=False),
+                msg.msg_id, msg.topic, _fast_dumps(msg.payload),
                 msg.msg_type.value, msg.from_agent, msg.to_agent,
                 msg.correlation_id, msg.trace_id, msg.priority,
                 msg.retry_count, msg.max_retries,
@@ -240,7 +242,7 @@ class PersistentStore:
             conn.execute(
                 """INSERT INTO dlq (msg_id, topic, payload_json, error_msg, failed_at)
                    VALUES (?,?,?,?,?)""",
-                (msg.msg_id, msg.topic, json.dumps(msg.to_dict(), ensure_ascii=False),
+                (msg.msg_id, msg.topic, _fast_dumps(msg.to_dict()),
                  error, time.time()),
             )
             conn.execute("UPDATE messages SET delivered=1, error=? WHERE msg_id=?", (error, msg.msg_id))
@@ -259,7 +261,7 @@ class PersistentStore:
         return {
             "msg_id": row[0],
             "topic": row[1],
-            "payload": json.loads(row[2]),
+            "payload": _fast_loads(row[2]),
             "error": row[3],
             "replay_count": row[4] + 1,
         }
@@ -275,7 +277,7 @@ class PersistentStore:
             return None
         return {
             "id": row[0], "msg_id": row[1], "topic": row[2],
-            "payload": json.loads(row[3]), "error": row[4],
+            "payload": _fast_loads(row[3]), "error": row[4],
             "failed_at": row[5], "replay_count": row[6],
         }
 

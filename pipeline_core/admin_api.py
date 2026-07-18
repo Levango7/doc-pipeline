@@ -41,6 +41,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Optional
 
+from .fast_json import dumps as _fast_dumps, loads as _fast_loads
+
 _logger = logging.getLogger(__name__)
 
 
@@ -56,7 +58,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(json.dumps(data, ensure_ascii=False, default=str).encode())
+        self.wfile.write(_fast_dumps(data, default=str).encode())
 
     def _prometheus(self, text: str):
         self.send_response(200)
@@ -456,8 +458,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
         try:
-            data = json.loads(body) if body else {}
-        except json.JSONDecodeError:
+            data = _fast_loads(body) if body else {}
+        except (json.JSONDecodeError, Exception):
             return self._json({"error": "invalid JSON body"}, 400)
         key = data.get("key")
         value = data.get("value")
@@ -577,8 +579,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         """注册事件钩子。body: {"event": "task.completed", "url": "https://..."}"""
         from pipeline_core.event_hook import get_hook_manager
         try:
-            data = json.loads(body) if body else {}
-        except json.JSONDecodeError:
+            data = _fast_loads(body) if body else {}
+        except (json.JSONDecodeError, Exception):
             return self._json({"error": "invalid JSON body"}, 400)
         event = data.get("event")
         url = data.get("url")
@@ -641,7 +643,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         def _send_sse(event_type: str, data: dict, event_id: int = 0):
-            payload = json.dumps({"type": event_type, "data": data}, ensure_ascii=False)
+            payload = _fast_dumps({"type": event_type, "data": data})
             id_line = f"id: {event_id}\n" if event_id else ""
             try:
                 self.wfile.write(f"{id_line}data: {payload}\n\n".encode())

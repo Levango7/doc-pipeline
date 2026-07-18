@@ -28,6 +28,7 @@ from collections import defaultdict
 from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
 from pipeline_core.cache_manager import CacheManager
 from pipeline_core.streaming import StreamCallback
+from pipeline_core.fast_json import dumps as _fast_dumps, loads as _fast_loads
 
 
 AGENT_NAME = "writer"
@@ -163,13 +164,13 @@ class WriterAgent(BaseAgent):
         else:
             payload = {"model": self._llm_model, "messages": messages,
                        "max_tokens": max_tokens, "temperature": temperature}
-        data = json.dumps(payload).encode()
+        data = _fast_dumps(payload).encode()
         req = urllib.request.Request(
             self._llm_api_url, data=data,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Bearer {self._llm_api_key}"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = json.loads(resp.read().decode())
+            body = _fast_loads(resp.read())
         if is_cf:
             body = body.get("result", body)
         return body["choices"][0]["message"]["content"]
@@ -251,7 +252,7 @@ class WriterAgent(BaseAgent):
                         if data_str == "[DONE]":
                             break
                         try:
-                            chunk_data = json.loads(data_str)
+                            chunk_data = _fast_loads(data_str)
                             if is_cf:
                                 chunk_data = chunk_data.get("result", chunk_data)
                             delta = chunk_data.get("choices", [{}])[0].get("delta", {})
@@ -299,7 +300,7 @@ class WriterAgent(BaseAgent):
             payload = {"model": self._llm_model, "messages": messages,
                        "max_tokens": max_tokens, "temperature": temperature,
                        "stream": True}
-        data = json.dumps(payload).encode()
+        data = _fast_dumps(payload).encode()
         req = urllib.request.Request(
             self._llm_api_url, data=data,
             headers={"Content-Type": "application/json",
@@ -346,7 +347,7 @@ class WriterAgent(BaseAgent):
                     break
 
                 try:
-                    chunk_json = json.loads(data_str)
+                    chunk_json = _fast_loads(data_str)
                 except json.JSONDecodeError:
                     continue
 
@@ -814,7 +815,7 @@ class WriterAgent(BaseAgent):
             text = re.sub(r"\n## 参考资料\s*\n(?=## )", "\n", text)
             return text.strip()
 
-        # 并行生成：asyncio + ThreadPoolExecutor 并发所有 sections
+        # 并行生成：真异步并发所有 sections（aiohttp + asyncio.gather）
         sec_specs = []
         for i, sec in enumerate(sections):
             sec_name = sec.get("name", f"Section {i+1}")
@@ -822,20 +823,64 @@ class WriterAgent(BaseAgent):
             sec_prompt = sec_prompt.replace("{title}", title).replace("{query}", query)
             sec_specs.append((i, sec_name, sec_prompt))
 
-        def _gen_one(idx: int, sec_name: str, sec_prompt: str) -> tuple[int, str, str]:
-            part = _llm_generate(sec_prompt, max_tok=4096, time_out=180)
+        async def _gen_one_async(idx: int, sec_name: str, sec_prompt: str) -> tuple[int, str, str]:
+            """真异步生成单个 section"""
+            part = await _llm_generate_async(sec_prompt, max_tok=4096, time_out=180)
             return (idx, sec_name, part)
 
-        loop = asyncio.new_event_loop()
+        async def _llm_generate_async(section_prompt: str, max_tok: int = 4096,
+                                       time_out: int = 120) -> str:
+            """异步 LLM 生成（优先 aiohttp 真异步，回退同步）"""
+            prompt = (
+                f"{system_prompt}\n\n"
+                f"{section_prompt}\n\n"
+                f"素材文章参考（如有）:\n{context[:2000]}\n"
+            )
+            try:
+                # 优先尝试 LLMRouter 异步接口
+                try:
+                    from pipeline_core.llm_router import get_router
+                    router = get_router()
+                    if router and router.get_active_providers():
+                        content, provider = await router.chat_async(
+                            [{"role": "user", "content": prompt}],
+                            max_tokens=max_tok, temperature=0.3, timeout=time_out,
+                        )
+                        return content.strip() if content else ""
+                except Exception as e:
+                    self.log_debug(f"LLMRouter 异步不可用，回退: {e}")
+
+                # 回退到 _llm_chat_async
+                text = await self._llm_chat_async(
+                    [{"role": "user", "content": prompt}],
+                    max_tokens=max_tok, temperature=0.3, timeout=time_out,
+                )
+                return text.strip()
+            except Exception as e:
+                self.log_warning(f"LLM 异步生成异常: {e}")
+                return ""
+
+        # 使用 asyncio 真并行（不创建新事件循环，复用或创建）
         try:
-            async def _run_parallel():
-                return await asyncio.gather(*[
-                    loop.run_in_executor(None, _gen_one, i, sn, sp)
-                    for i, sn, sp in sec_specs
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # 已在 async 上下文中，直接 await
+                results_parallel = await asyncio.gather(*[
+                    _gen_one_async(i, sn, sp) for i, sn, sp in sec_specs
                 ])
-            results_parallel = loop.run_until_complete(_run_parallel())
-        finally:
-            loop.close()
+            else:
+                raise RuntimeError("not running")
+        except RuntimeError:
+            # 不在 async 上下文中，创建新循环运行
+            loop = asyncio.new_event_loop()
+            try:
+                results_parallel = loop.run_until_complete(
+                    asyncio.gather(*[
+                        _gen_one_async(i, sn, sp) for i, sn, sp in sec_specs
+                    ])
+                )
+            finally:
+                loop.close()
 
         parts = []
         for idx, sec_name, part in sorted(results_parallel, key=lambda x: x[0]):
@@ -996,7 +1041,7 @@ class WriterAgent(BaseAgent):
 
     def _semantic_rank(self, paragraphs: list[dict],
                        keywords: list[str]) -> list[dict]:
-        """用 TF-IDF + 余弦相似度对段落排序（纯 NumPy 实现）"""
+        """用 TF-IDF + 余弦相似度对段落排序（纯 Python 实现，无 numpy 依赖）"""
         if not keywords:
             return paragraphs[:8]
 
@@ -1019,9 +1064,8 @@ class WriterAgent(BaseAgent):
         n_docs = len(all_docs)
         n_terms = len(vocab)
 
-        # 3. TF-IDF 矩阵
-        import numpy as np
-        tfidf = np.zeros((n_docs, n_terms), dtype=np.float32)
+        # 3. TF-IDF（纯 Python 列表实现）
+        tfidf = [[0.0] * n_terms for _ in range(n_docs)]
 
         for i, doc in enumerate(all_docs):
             if not doc:
@@ -1032,35 +1076,44 @@ class WriterAgent(BaseAgent):
             max_tf = max(tf_counter.values()) if tf_counter else 1
             for w, cnt in tf_counter.items():
                 if w in vocab_idx:
-                    tfidf[i, vocab_idx[w]] = cnt / max_tf
+                    tfidf[i][vocab_idx[w]] = cnt / max_tf
 
         # IDF
-        df = np.zeros(n_terms, dtype=np.float32)
+        df = [0.0] * n_terms
         for i in range(n_docs):
-            df += (tfidf[i] > 0).astype(np.float32)
-        idf = np.log((n_docs + 1) / (df + 1)) + 1
-        tfidf *= idf.reshape(1, -1)
+            for j in range(n_terms):
+                if tfidf[i][j] > 0:
+                    df[j] += 1.0
+        import math
+        idf = [math.log((n_docs + 1) / (df[j] + 1)) + 1 for j in range(n_terms)]
+        for i in range(n_docs):
+            for j in range(n_terms):
+                tfidf[i][j] *= idf[j]
 
         # 4. 查询向量
-        query_vec = np.zeros(n_terms, dtype=np.float32)
+        query_vec = [0.0] * n_terms
         for w in query_words:
             if w in vocab_idx:
                 query_vec[vocab_idx[w]] = 1.0
-        query_norm = np.linalg.norm(query_vec)
+        query_norm = math.sqrt(sum(v * v for v in query_vec))
         if query_norm > 0:
-            query_vec = query_vec / query_norm
+            query_vec = [v / query_norm for v in query_vec]
 
         # 5. 余弦相似度
-        doc_norms = np.linalg.norm(tfidf, axis=1, keepdims=True)
-        doc_norms[doc_norms == 0] = 1
-        tfidf_normed = tfidf / doc_norms
-        similarities = tfidf_normed @ query_vec
+        similarities = []
+        for i in range(n_docs):
+            doc_norm = math.sqrt(sum(v * v for v in tfidf[i]))
+            if doc_norm == 0:
+                similarities.append(0.0)
+                continue
+            dot = sum(tfidf[i][j] * query_vec[j] for j in range(n_terms))
+            similarities.append(dot / doc_norm)
 
         # 6. 排序
-        sorted_indices = np.argsort(-similarities)
+        sorted_indices = sorted(range(n_docs), key=lambda x: -similarities[x])
         scored = []
         for idx in sorted_indices:
-            score = float(similarities[idx])
+            score = similarities[idx]
             if score > 0.01:
                 scored.append({**paragraphs[idx], "score": score})
 

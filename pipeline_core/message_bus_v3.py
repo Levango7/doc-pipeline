@@ -52,6 +52,9 @@ class MessageBus:
         self._peak_depth = 0
         self._high_watermark_hits = 0
 
+        # 背压通知条件变量（替代 sleep 轮询）
+        self._backpressure_cv = threading.Condition(self._lock)
+
         # 工作线程
         self._worker_thread = threading.Thread(target=self._process_loop, daemon=True)
         self._worker_running = True
@@ -180,8 +183,9 @@ class MessageBus:
         """
         阻塞式发布 EVENT 消息
 
-        当背压触发时，以 0.1s 间隔轮询队列深度，直到水位降至
-        backpressure_watermark 以下再发布。超时时返回 timeout 状态。
+        当背压触发时，通过 Condition 通知机制等待水位降至
+        backpressure_watermark 以下再发布（替代 sleep 轮询）。
+        超时时返回 timeout 状态。
 
         Args:
             topic: 主题
@@ -194,15 +198,20 @@ class MessageBus:
             {"status": "timeout", "queue_depth": int} — 超时，消息未发送
         """
         deadline = time.time() + max_wait
-        while time.time() < deadline:
-            depth = self.queue_depth()
-            self._track_peak(depth)
-            if depth < self.backpressure_watermark:
-                return self.publish(topic, from_a, payload)
-            time.sleep(0.1)
-        depth = self.queue_depth()
-        self._track_peak(depth)
-        return {"status": "timeout", "queue_depth": depth}
+        with self._backpressure_cv:
+            while True:
+                depth = self.queue_depth()
+                self._track_peak(depth)
+                if depth < self.backpressure_watermark:
+                    break
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    depth = self.queue_depth()
+                    self._track_peak(depth)
+                    return {"status": "timeout", "queue_depth": depth}
+                # 等待通知或超时，不再 sleep 轮询
+                self._backpressure_cv.wait(timeout=min(remaining, 1.0))
+        return self.publish(topic, from_a, payload)
 
     def queue_depth(self) -> int:
         """返回当前未投递的 EVENT 消息数量（背压检测用）"""
@@ -263,6 +272,9 @@ class MessageBus:
 
         if delivered_ok and self._store and msg.msg_id:
             self._store.mark_delivered(msg.msg_id)
+            # 通知背压等待者水位可能已下降
+            with self._backpressure_cv:
+                self._backpressure_cv.notify_all()
 
     def _process_loop(self):
         """异步事件处理循环"""

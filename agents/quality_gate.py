@@ -189,6 +189,18 @@ class QualityGateAgent(BaseAgent):
             self.log_info(f"质量分 {overall:.1f}/{self._threshold} 通过 (profile={self._profile_name})")
 
         self.publish("quality_gate.done" if not needs_regenerate else "quality_gate.failed", result)
+
+        # ── 事件钩子 ──
+        try:
+            from pipeline_core.event_hook import emit_event
+            emit_event("quality_gate.evaluated", {"task_id": task_id, "score": round(overall, 1),
+                       "threshold": self._threshold, "passed": not needs_regenerate, "profile": self._profile_name})
+            if needs_regenerate and can_regenerate:
+                emit_event("quality_gate.regenerate", {"task_id": task_id, "score": round(overall, 1),
+                           "generation_count": generation_count, "target": "writer"})
+        except Exception:
+            pass
+
         return result
 
     # ── 多维度评分 ─────────────────────
