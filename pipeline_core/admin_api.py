@@ -38,12 +38,21 @@ import mimetypes
 import threading
 import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from pathlib import Path
 from typing import Any, Optional
 
 from .fast_json import dumps as _fast_dumps, loads as _fast_loads
 
 _logger = logging.getLogger(__name__)
+
+
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """多线程 HTTP 服务器 — 替代单线程 HTTPServer，避免慢请求阻塞所有连接"""
+    daemon_threads = True
+    allow_reuse_address = True
 
 
 class AdminHandler(BaseHTTPRequestHandler):
@@ -103,10 +112,58 @@ class AdminHandler(BaseHTTPRequestHandler):
         except Exception:
             return False
 
+
+    # ─── 版本管理端点 ─────────────────────────────
+
+    def _handle_versions_list(self, file_path: str):
+        """GET /api/versions?file=<path> — 获取文件版本历史"""
+        try:
+            from .version_manager import get_version_manager
+            vm = get_version_manager()
+            history = vm.history(file_path, limit=50)
+            self._json({"status": "ok", "file": file_path, "versions": history, "count": len(history)})
+        except Exception as e:
+            self._json({"status": "error", "error": str(e)}, 500)
+
+    def _handle_versions_diff(self, file_path: str, v1: int, v2: int):
+        """GET /api/versions/diff?file=<path>&v1=N&v2=M — 对比两版本"""
+        try:
+            from .version_manager import get_version_manager
+            vm = get_version_manager()
+            diff_text = vm.diff(file_path, v1, v2)
+            self._json({"status": "ok", "file": file_path, "v1": v1, "v2": v2, "diff": diff_text})
+        except Exception as e:
+            self._json({"status": "error", "error": str(e)}, 500)
+
+    def _handle_versions_rollback(self, file_path: str, version: int):
+        """POST /api/versions/rollback — 回滚到指定版本"""
+        try:
+            from .version_manager import get_version_manager
+            vm = get_version_manager()
+            result = vm.rollback(file_path, version)
+            status_code = 200 if result["status"] == "ok" else 404
+            self._json(result, status_code)
+        except Exception as e:
+            self._json({"status": "error", "error": str(e)}, 500)
+
+    def _handle_versions_stats(self):
+        """GET /api/versions/stats — 版本管理统计"""
+        try:
+            from .version_manager import get_version_manager
+            vm = get_version_manager()
+            self._json({"status": "ok", **vm.stats()})
+        except Exception as e:
+            self._json({"status": "error", "error": str(e)}, 500)
+
+
     def _check_auth(self) -> bool:
-        """校验 API key（未配置则不校验）。使用恒定时间比较防止时序攻击。"""
+        """校验 API key。
+
+        未配置 api_key 时，所有受保护端点返回 401（默认开启鉴权门，无钥匙则不可进）。
+        /health 与 /stream 已在路由层豁免。
+        """
         if not self.api_key:
-            return True
+            return False
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             token = auth[len("Bearer "):].strip()
@@ -124,9 +181,12 @@ class AdminHandler(BaseHTTPRequestHandler):
             # 静态资源免鉴权
             if self._serve_static(self.path):
                 return
-            # 健康端点免鉴权
+            # 健康与流式端点免鉴权（只读 / 实时推送，供 Dashboard 使用）
             if self.path == "/health":
                 self._handle_health()
+                return
+            if self.path.startswith("/stream"):
+                self._handle_stream()
                 return
             # 其余端点需要鉴权
             if not self._check_auth():
@@ -171,8 +231,6 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._handle_dashboard()
             elif self.path == "/api/pipeline":
                 self._handle_pipeline()
-            elif self.path.startswith("/stream"):
-                self._handle_stream()
             elif self.path == "/":
                 self._text("Doc-Pipeline Admin API v1\n"
                            "Endpoints: /health /metrics /tasks /agents /dlq /api/dashboard /api/pipeline /stream")
@@ -757,7 +815,9 @@ class AdminHandler(BaseHTTPRequestHandler):
                 if event.event_type in ("complete", "error"):
                     break
 
-            worker.join(timeout=5)
+            # 等待后台生成线程完整结束，确保 complete/error 事件已推送给客户端；
+            # 不设置 timeout，避免早退导致回调提前注销、客户端收不到完整流。
+            worker.join()
             unregister_callback(task_id)
 
         except Exception as e:
@@ -790,7 +850,12 @@ class AdminAPI:
                 _logger.info(f"[AdminAPI] 静态文件目录: {self.dashboard_dir}")
             if self.api_key:
                 _logger.info("[AdminAPI] 已启用 API Key 鉴权")
-            self._server = HTTPServer((self.host, self.port), AdminHandler)
+            else:
+                _logger.warning(
+                    "[AdminAPI] 未配置 ADMIN_API_KEY：Admin API 写/读受保护端点"
+                    "将全部返回 401（默认关闭）。设置 ADMIN_API_KEY 以启用鉴权访问。"
+                )
+            self._server = ThreadingHTTPServer((self.host, self.port), AdminHandler)
             self._thread = threading.Thread(
                 target=self._server.serve_forever, daemon=True,
                 name="admin-api",

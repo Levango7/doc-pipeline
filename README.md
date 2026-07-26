@@ -124,14 +124,20 @@ python run.py test_input.md --dashboard
 | 模块 | 职责 |
 |------|------|
 | `pipeline_core/scheduler.py` | 读取 pipeline YAML → ExecutionPlan（含 Schema 校验、Lockfile） |
-| `pipeline_core/pipeline.py` | Orchestrator：DAG 执行、断点续传、rerun、日志轮转 |
-| `pipeline_core/message_bus_v3.py` | SQLite 持久化消息总线 |
+| `pipeline_core/pipeline.py` | Orchestrator：DAG 执行、断点续传、rerun、统一节点模型 |
+| `pipeline_core/dag_executor.py` | DAG 构建、节点调度、熔断/限流/重做循环 |
+| `pipeline_core/message_bus_v3.py` | SQLite 持久化消息总线（WAL + 批量投递 + 背压） |
 | `pipeline_core/circuit_breaker.py` | 熔断器（CLOSED/OPEN/HALF_OPEN） |
-| `pipeline_core/rate_limiter.py` | 限流器 |
-| `pipeline_core/registry.py` | Agent 注册表 |
-| `pipeline_core/observability.py` | 结构化日志 + Metrics |
-| `pipeline_core/admin_api.py` | REST API（健康/指标/任务/Rerun/鉴权） |
-| `agents/` | 7 个 Agent 实现 |
+| `pipeline_core/rate_limiter.py` | 令牌桶限流器 |
+| `pipeline_core/registry.py` | Agent 注册表（健康检查 + 热插拔） |
+| `pipeline_core/observability.py` | 结构化日志（异步批量写入）+ Prometheus Metrics |
+| `pipeline_core/admin_api.py` | REST API（多线程，健康/指标/任务/版本管理/鉴权） |
+| `pipeline_core/version_manager.py` | 文档版本管理（自动版本号/diff/回滚） |
+| `pipeline_core/batch_queue.py` | 批量文档生成队列 |
+| `pipeline_core/cache_manager.py` | 统一缓存（memory/file/multi 三级） |
+| `pipeline_core/llm_router.py` | 多供应商 LLM 路由器（10 供应商 fallback） |
+| `pipeline_core/search_engines.py` | 统一搜索引擎接口（10 引擎） |
+| `agents/` | 7 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/layout/safe_writer） |
 
 ---
 
@@ -271,7 +277,7 @@ docker run -p 8910:8910 -v $(pwd)/checkpoints:/app/checkpoints doc-pipeline
 python -m pytest tests/ -v
 ```
 
-**89 个测试全部通过**，覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API。
+**170 个测试全部通过**，覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂。
 
 ---
 
@@ -303,24 +309,35 @@ python -m pytest tests/ -v
 ```
 doc-pipeline/
 ├── agents/              # 7 个 Agent 实现
-├── pipeline_core/       # 核心编排框架
-│   ├── scheduler.py     # DAG 计划 + Schema + Lockfile
-│   ├── pipeline.py      # Orchestrator
-│   ├── admin_api.py     # REST API
-│   ├── message_bus_v3.py
-│   ├── circuit_breaker.py
-│   ├── rate_limiter.py
-│   ├── registry.py
-│   └── observability.py
+├── pipeline_core/       # 核心编排框架（27 个模块）
+│   ├── pipeline.py      # Orchestrator（统一节点模型）
+│   ├── dag_executor.py  # DAG 构建 + 节点调度
+│   ├── scheduler.py     # YAML → ExecutionPlan + Schema + Lockfile
+│   ├── message_bus_v3.py # 消息总线（WAL + 批量投递）
+│   ├── message_store.py  # SQLite 持久化层
+│   ├── circuit_breaker.py # 熔断器
+│   ├── rate_limiter.py  # 令牌桶限流
+│   ├── registry.py      # Agent 注册表
+│   ├── observability.py # 结构化日志（异步）+ Metrics
+│   ├── admin_api.py     # REST API（多线程）
+│   ├── version_manager.py # 文档版本管理
+│   ├── batch_queue.py   # 批量文档队列
+│   ├── cache_manager.py # 统一缓存
+│   ├── llm_router.py    # LLM 多供应商路由
+│   ├── search_engines.py # 10 引擎统一接口
+│   ├── streaming.py     # SSE 流式输出
+│   └── ...              # 更多模块
 ├── pipelines/           # Pipeline 定义 + Quality Profile
-│   ├── docgen.yaml
+│   ├── docgen.yaml      # 默认文档生成流水线
+│   ├── three_pass.yaml  # 三阶段流水线（DAG 版）
 │   ├── test_pipeline.yaml
 │   └── quality/
 │       ├── technical-doc.yaml
 │       └── tutorial.yaml
 ├── dashboard/           # 前端仪表盘
-├── tests/               # 89 个测试
+├── tests/               # 170 个测试
 ├── checkpoints/         # 断点 + 日志（自动轮转）
+├── versions/            # 文档版本存储
 ├── run.py               # CLI 入口
 ├── Dockerfile
 ├── requirements.txt
@@ -331,12 +348,28 @@ doc-pipeline/
 
 ## 📈 性能
 
-| 指标 | 数值 |
-|------|------|
-| 端到端（docgen, 20 页抓取） | ~7s |
-| Fetcher 并发 | 20 页 / 3s (aiohttp) |
-| LLM 额度消耗 | 0（质量门控跳过，规则兜底） |
-| 测试覆盖 | 89 tests |
+> **注意**：默认 `config.json` 使用 `search_engines: ["mock"]`（模拟引擎，无网络请求），
+> 质量门控自动跳过 LLM。以下数据为 **mock 模式** 下的框架性能基准。
+> 真实搜索 + LLM 润色请切换：`python run.py input.md -c config.production.json -o out.md`
+
+| 指标 | 数值 | 模式 |
+|------|------|------|
+| 端到端（docgen, 20 页抓取） | ~7s | mock（无网络 I/O） |
+| Fetcher 并发 | 20 页 / 3s (aiohttp) | 真实网络 |
+| LLM 额度消耗 | 0（质量门控跳过，规则兜底） | mock |
+| 消息总线吞吐 | 批量 drain 50 条/轮 | — |
+| 缓存命中 | 125 万 ops/s | — |
+| 测试覆盖 | 170 tests | — |
+
+### 生产模式预期耗时（config.production.json）
+
+| 阶段 | 预期耗时 | 说明 |
+|------|----------|------|
+| Researcher（真实搜索） | 3-8s | 取决于引擎响应速度 |
+| Fetcher（20 页下载） | 2-4s | aiohttp 并发 |
+| Writer（TF-IDF + LLM 润色） | 5-30s | LLM 调用为主要耗时 |
+| QualityGate + Checker + Layout | <1s | 纯规则计算 |
+| **总计** | **10-45s** | 视 LLM 可用性和网络状况 |
 
 ---
 

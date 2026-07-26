@@ -109,8 +109,26 @@ class SafeWriterAgent(BaseAgent):
                     man["files"][rel]["latest"] = man["files"][rel]["backups"][-1]
                     self._save_manifest(manifest_path, man)
                 self._cleanup(backup_dir, manifest_path)
+                # ── 版本管理：写入成功后自动提交版本 ──
+                version_info = None
+                try:
+                    from pipeline_core.version_manager import get_version_manager
+                    vm = get_version_manager()
+                    quality_score = payload.get("quality_score", 0.0) if hasattr(self, '_current_payload') else 0.0
+                    version_info = vm.commit(
+                        target, content,
+                        task_id=task_id,
+                        quality_score=quality_score,
+                        message=f"SafeWriter 自动提交 (reason={reason})",
+                    )
+                    self.log_info(f"版本: v{version_info['version']}")
+                except Exception as e:
+                    self.log_warning(f"版本管理提交失败（不影响写入）: {e}")
                 self.log_info(f"完成: {target} ({new_size:,} bytes)")
-                return {"status": "ok", "backup": backup_path, "size": new_size, "lines": new_lines}
+                result = {"status": "ok", "backup": backup_path, "size": new_size, "lines": new_lines}
+                if version_info:
+                    result["version"] = version_info["version"]
+                return result
             except Exception as e:
                 self.log_error(f"替换失败: {e}")
                 return {"status": "error", "message": str(e)}

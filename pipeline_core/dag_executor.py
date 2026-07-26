@@ -49,7 +49,7 @@ class DAGExecutor:
         self._checkpoint_save = checkpoint_save_fn
         self._audit_log = audit_log_fn
         self._execution_stats: list[dict] = []
-        self._query_cache = CacheManager(name="dag_queries", max_size=100, ttl=0)
+        self._query_cache = CacheManager(name="dag_queries", max_size=100, ttl=3600)
 
     # ─── pickle 支持（ProcessPoolExecutor 兼容） ─────────────
 
@@ -149,31 +149,28 @@ class DAGExecutor:
     # ─── DAG 执行 ─────────────────────────────
 
     def execute_node(self, task, node, input_file: str, config: dict) -> dict:
-        """执行单个 DAG 节点（委托给 execute_node_from_scheduler）"""
+        """执行单个 DAG 节点（统一节点模型，TaskNode 已兼容 ExecutionNode 接口）"""
         from types import SimpleNamespace
 
-        exec_node = SimpleNamespace(
-            agent_name=node.agent_name,
-            timeout=node.timeout,
-            max_retries=node.max_retries,
-            rate_limit=node.rate_limit,
-            agent_config=SimpleNamespace(
+        # 确保 node 有 agent_config（统一模型下 TaskNode 自带）
+        if not hasattr(node, "agent_config") or node.agent_config is None:
+            from .pipeline import NodeConfig
+            node.agent_config = NodeConfig(
                 config=config,
                 pool_size=1,
-                rate_limit=node.rate_limit,
+                rate_limit=getattr(node, "rate_limit", {}),
                 circuit_breaker=config.get("circuit_breaker", {}),
-            ),
-            dependencies=node.dependencies,
-            backoff="exponential",
-            initial_delay=1.0,
-        )
+            )
+        elif hasattr(node.agent_config, "config") and not node.agent_config.config:
+            node.agent_config.config = config
+
         plan = SimpleNamespace(
             pipeline_name=task.pipeline_name,
             checkpoint=config if isinstance(config, dict) else {},
             fail_fast=config.get("fail_fast", True) if isinstance(config, dict) else True,
             raw=config if isinstance(config, dict) else {},
         )
-        return self.execute_node_from_scheduler(task, exec_node, input_file, plan)
+        return self.execute_node_from_scheduler(task, node, input_file, plan)
 
     def execute_node_from_scheduler(self, task, node, input_file: str, plan) -> dict:
         """由 run_plan 调度：基于 ExecutionNode 执行单个节点"""
@@ -618,7 +615,10 @@ class DAGExecutor:
                     )
                     self._log("warning", f"Node {node.agent_name} 失败，{delay:.1f}s 后重试 (尝试 {dag_node.attempts + 1}/{node.max_retries})",
                               task_id=task.id, error=str(e)[:100])
-                    if task.stop_event.wait(delay):
+                    # 原实现用 task.stop_event.wait(delay) 会阻塞 asyncio 事件循环；
+                    # 改为 await asyncio.sleep 避免阻塞，随后再检查 stop 信号。
+                    await asyncio.sleep(delay)
+                    if task.stop_event.is_set():
                         break
                     dag_node.attempts += 1
                     dag_node.status = "pending"

@@ -48,6 +48,7 @@ _webhook_stop_event: Optional[asyncio.Event] = None
 _webhook_worker_future: Optional[Any] = None  # concurrent.futures.Future for worker task
 _webhook_pending_tasks: set = set()  # track in-flight _deliver_one tasks for graceful shutdown
 _webhook_init_lock = threading.Lock()
+_webhook_engine_ready = False  # True only when queue + worker fully initialized
 _WEBHOOK_QUEUE_MAXSIZE = 10000
 _WEBHOOK_TIMEOUT = 10  # seconds per HTTP POST
 _WEBHOOK_MAX_CONCURRENCY = 50  # max simultaneous in-flight webhook requests
@@ -70,28 +71,36 @@ async def _async_webhook_worker():
 
     semaphore = asyncio.Semaphore(_WEBHOOK_MAX_CONCURRENCY)
 
-    while True:
-        try:
-            job = await asyncio.wait_for(_webhook_async_queue.get(), timeout=1.0)
-        except asyncio.TimeoutError:
-            if _webhook_stop_event.is_set():
+    try:
+        while True:
+            try:
+                job = await asyncio.wait_for(_webhook_async_queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                if _webhook_stop_event.is_set():
+                    break
+                continue
+
+            if job is None:  # shutdown sentinel
                 break
-            continue
 
-        if job is None:  # shutdown sentinel
-            break
+            task = asyncio.create_task(_deliver_one(semaphore, job))
+            _webhook_pending_tasks.add(task)
+            task.add_done_callback(_webhook_pending_tasks.discard)
 
-        task = asyncio.create_task(_deliver_one(semaphore, job))
-        _webhook_pending_tasks.add(task)
-        task.add_done_callback(_webhook_pending_tasks.discard)
-
-    # 等待所有 in-flight 请求完成
-    if _webhook_pending_tasks:
-        _logger.info(f"[EventHook] Draining {len(_webhook_pending_tasks)} in-flight webhooks...")
-        await asyncio.gather(*_webhook_pending_tasks, return_exceptions=True)
-
-    await _webhook_session.close()
-    _logger.info("[EventHook] aiohttp session closed (async webhook engine stopped)")
+        # 等待所有 in-flight 请求完成
+        if _webhook_pending_tasks:
+            _logger.info(f"[EventHook] Draining {len(_webhook_pending_tasks)} in-flight webhooks...")
+            await asyncio.gather(*_webhook_pending_tasks, return_exceptions=True)
+    finally:
+        # P0 fix: ensure session is closed even if worker is cancelled during
+        # shutdown timeout (task.cancel() at asyncio.gather would otherwise skip
+        # the close() call below, leaking the aiohttp ClientSession).
+        if _webhook_session is not None and not _webhook_session.closed:
+            try:
+                await _webhook_session.close()
+            except Exception:
+                pass
+        _logger.info("[EventHook] aiohttp session closed (async webhook engine stopped)")
 
 
 async def _deliver_one(semaphore: asyncio.Semaphore, job: tuple):
@@ -151,6 +160,7 @@ def _ensure_webhook_engine():
         _webhook_worker_future = asyncio.run_coroutine_threadsafe(
             _async_webhook_worker(), _webhook_loop
         )
+        _webhook_engine_ready = True
         _logger.info("[EventHook] Async webhook engine started (asyncio + aiohttp)")
 
 
@@ -268,6 +278,9 @@ class EventHookManager:
 
     def _fire_webhook(self, hook: Hook, event: str, payload: dict):
         """Schedule async webhook HTTP POST via aiohttp (non-blocking, thread-safe)."""
+        if not _webhook_engine_ready:
+            _logger.warning("[EventHook] webhook engine not ready, dropping event")
+            return
         body = json.dumps({
             "event": event,
             "payload": payload,
@@ -292,18 +305,14 @@ class EventHookManager:
 
 
 def shutdown_webhook(timeout_s: float = 10.0):
-    """Gracefully shut down the async webhook engine.
-
-    Signals the async worker to stop, waits for in-flight requests to drain,
-    then stops the dedicated event loop and joins the thread.
-    Safe to call multiple times.
-    """
-    global _webhook_thread, _webhook_loop, _webhook_async_queue, _webhook_stop_event, _webhook_worker_future
+    """Gracefully shut down the async webhook engine."""
+    global _webhook_thread, _webhook_loop, _webhook_async_queue, _webhook_stop_event, _webhook_worker_future, _webhook_session, _webhook_engine_ready
 
     if _webhook_loop is None or _webhook_thread is None:
         return
 
     if not _webhook_thread.is_alive():
+        _webhook_engine_ready = False
         return
 
     # Signal stop + enqueue sentinel
@@ -335,6 +344,18 @@ def shutdown_webhook(timeout_s: float = 10.0):
                     if not task.done():
                         task.cancel()
                 _webhook_pending_tasks.clear()
+            # P0 fix: explicitly close aiohttp session on shutdown timeout.
+            # The worker coroutine may have been cancelled at asyncio.gather()
+            # before reaching its finally block, so we close the session here
+            # via run_coroutine_threadsafe to avoid "Unclosed client session" warning.
+            if _webhook_session is not None and not _webhook_session.closed:
+                try:
+                    close_fut = asyncio.run_coroutine_threadsafe(
+                        _webhook_session.close(), _webhook_loop
+                    )
+                    close_fut.result(timeout=3)
+                except Exception:
+                    pass
 
     # Now safe to stop the event loop and join thread
     _webhook_loop.call_soon_threadsafe(_webhook_loop.stop)
@@ -346,6 +367,7 @@ def shutdown_webhook(timeout_s: float = 10.0):
     _webhook_async_queue = None
     _webhook_stop_event = None
     _webhook_worker_future = None
+    _webhook_session = None
     _logger.info("[EventHook] Async webhook engine stopped")
 
 

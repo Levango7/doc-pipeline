@@ -67,7 +67,7 @@ class ResearcherAgent(BaseAgent):
     """增强型内容检索 Agent"""
 
     DEFAULT_SPAM_DOMAINS = {
-        "yuanbao.tencent.com", "wb.admaster.com.cn", "clickc.admaster.com.cn",
+        "yuanbao.tencent.com", "wb.admaster.com.cn", "click.admaster.com.cn",
         "admaster.com.cn", "adsensor.org", "duomai.com", "tanx.com",
         "ex.bidswitch.com", "ib.adnxs.com", "nexage.com", "pubmatic.com",
         "adzerk.net", "doubleclick.net", "googleadservices.com",
@@ -89,6 +89,7 @@ class ResearcherAgent(BaseAgent):
             name="researcher", max_size=cache_size,
             ttl=self.meta.cache_ttl or CACHE_TTL,
         )
+        self._search_manager = None  # 缓存 SearchEngineManager 实例（避免每次查询重建）
         
         self.dedup_set: set = set()
         self._dedup_lock = threading.Lock()
@@ -246,9 +247,12 @@ class ResearcherAgent(BaseAgent):
         all_results = []
 
         # 优先尝试 SearchEngineManager（多引擎统一接口 + Metaso API）
+        # 性能优化：缓存 manager 实例，避免每次查询都重建（含引擎初始化、环境变量读取）
         try:
             from pipeline_core.search_engines import SearchEngineManager
-            manager = SearchEngineManager.from_env()
+            if self._search_manager is None:
+                self._search_manager = SearchEngineManager.from_env()
+            manager = self._search_manager
             if manager.is_available():
                 self.log_debug(f"SearchEngineManager 可用: {manager.get_engine_names()}")
                 items = manager.search_with_sites(query, max_results=10)

@@ -51,6 +51,8 @@ BAD_PATTERNS = [
 
 # 最小可用内容长度
 MIN_CONTENT_LENGTH = 200
+# 大文章阈值：超过此长度的内容改为文件引用传递（减少消息总线内存压力）
+LARGE_ARTICLE_THRESHOLD = 50000  # 50KB
 # 最大下载数
 MAX_DOWNLOADS = 20
 # 单页面超时

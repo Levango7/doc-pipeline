@@ -78,8 +78,14 @@ class MessageBus:
 
     # ─── 发送 ─────────────────────────────────
 
-    def send(self, msg: Message, wait_for_delivery: bool = False):
-        """发送消息（同步写入 SQLite，异步投递）"""
+    def send(self, msg: Message, wait_for_delivery: bool = False, persist: bool = True):
+        """发送消息
+
+        Args:
+            msg: 消息对象
+            wait_for_delivery: 是否等待投递完成
+            persist: 是否持久化到 SQLite（REQUEST/RESPONSE 热路径可跳过）
+        """
         with self._lock:
             self._log.append(msg)
             if len(self._log) > self._max_log:
@@ -90,8 +96,9 @@ class MessageBus:
                 if self._store.check_and_mark_idempotent(msg.idempotency_key):
                     return  # 已存在，重复消息，跳过
 
-            # 持久化
-            if self._store:
+            # 持久化（仅 EVENT 消息写入 SQLite，REQUEST/RESPONSE 是瞬态同步消息跳过）
+            # 优化：减少热路径写锁竞争，EVENT 需要持久化用于 DLQ/审计
+            if persist and self._store and msg.msg_type == MessageType.EVENT:
                 self._store.save_message(msg)
 
             # 同步投递（REQUEST 类型需要同步等待，直接走回调）
@@ -271,17 +278,42 @@ class MessageBus:
                     self._metrics.record_dlq()
 
         if delivered_ok and self._store and msg.msg_id:
-            self._store.mark_delivered(msg.msg_id)
-            # 通知背压等待者水位可能已下降
-            with self._backpressure_cv:
-                self._backpressure_cv.notify_all()
+            # EVENT 消息由 _process_loop 批量标记，此处仅处理非 EVENT（如 RESPONSE）
+            if msg.msg_type != MessageType.EVENT:
+                self._store.mark_delivered(msg.msg_id)
+                with self._backpressure_cv:
+                    self._backpressure_cv.notify_all()
 
     def _process_loop(self):
-        """异步事件处理循环"""
+        """异步事件处理循环（批量 drain 优化：一次取多条，减少锁竞争和 SQLite 写入）"""
+        BATCH_SIZE = 50  # 单批最大处理条数
         while self._worker_running and not self._shutdown_event.is_set():
             try:
+                # 阻塞等待第一条消息
                 msg = self._async_queue.get(timeout=1)
-                self._deliver(msg)
+                batch = [msg]
+                # 非阻塞 drain：尽可能多取（最多 BATCH_SIZE 条）
+                while len(batch) < BATCH_SIZE:
+                    try:
+                        batch.append(self._async_queue.get_nowait())
+                    except Empty:
+                        break
+                # 逐条投递，收集已投递的 msg_id
+                delivered_ids = []
+                for m in batch:
+                    self._deliver(m)
+                    if m.msg_id and m.msg_type == MessageType.EVENT:
+                        delivered_ids.append(m.msg_id)
+                # 批量标记已投递（一次 UPDATE 替代 N 次）
+                if delivered_ids and self._store:
+                    try:
+                        self._store.mark_delivered_batch(delivered_ids)
+                    except Exception:
+                        pass  # 标记失败不影响投递
+                # 通知背压等待者
+                if delivered_ids:
+                    with self._backpressure_cv:
+                        self._backpressure_cv.notify_all()
             except Empty:
                 continue
             except Exception as e:

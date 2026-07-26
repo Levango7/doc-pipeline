@@ -14,7 +14,7 @@ pipeline_core v3 - 文档生成流水线核心框架
 from .config import ConfigCenter
 from .registry import Registry, AgentMeta, AgentStatus, AgentStats, AgentPriority
 from .base_agent import BaseAgent, AgentLogger
-from .pipeline import PipelineOrchestrator, PipelineTask, TaskStatus, StepResult
+from .pipeline import PipelineOrchestrator, PipelineTask, TaskStatus, StepResult, NodeConfig
 from .message_bus_v3 import MessageBus, Message, MessageType, MessagePriority, MessageMetrics
 from .message_store import PersistentStore
 from .circuit_breaker import CircuitBreakerRegistry, backoff_with_jitter
@@ -34,6 +34,8 @@ from .three_pass_pipeline import ThreePassPipeline, DocumentPlan, PassResult
 from .document_enhancer import DocumentEnhancer
 from .bootstrap import run_startup_check, quick_check, StartupReport
 from .event_hook import EventHookManager, get_hook_manager, emit_event
+from .batch_queue import BatchQueue, BatchTask, BatchTaskStatus
+from .version_manager import VersionManager, VersionEntry, get_version_manager
 
 __all__ = [
     "ConfigCenter",
@@ -41,7 +43,7 @@ __all__ = [
     "PersistentStore",
     "Registry", "AgentMeta", "AgentStatus", "AgentStats", "AgentPriority",
     "BaseAgent", "AgentLogger",
-    "PipelineOrchestrator", "PipelineTask", "TaskStatus", "StepResult",
+    "PipelineOrchestrator", "PipelineTask", "TaskStatus", "StepResult", "NodeConfig",
     "Scheduler", "ExecutionPlan", "ExecutionNode", "AgentConfig",
     "AgentLoader", "DAGExecutor", "CheckpointManager",
     "LLMRouter", "get_router", "reset_router",
@@ -54,6 +56,8 @@ __all__ = [
     "DocumentEnhancer",
     "run_startup_check", "quick_check", "StartupReport",
     "EventHookManager", "get_hook_manager", "emit_event",
+    "BatchQueue", "BatchTask", "BatchTaskStatus",
+    "VersionManager", "VersionEntry", "get_version_manager",
 ]
 
 __version__ = "3.2.0"

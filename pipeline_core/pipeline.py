@@ -55,8 +55,22 @@ class StepResult:
 
 
 @dataclass
+class NodeConfig:
+    """节点配置（替代 SimpleNamespace，提供类型安全的 agent_config）"""
+    config: dict = field(default_factory=dict)
+    pool_size: int = 1
+    rate_limit: dict = field(default_factory=dict)
+    circuit_breaker: dict = field(default_factory=dict)
+    parallelism: dict = field(default_factory=dict)
+
+
+@dataclass
 class TaskNode:
-    """DAG 任务节点"""
+    """DAG 任务节点（统一模型，兼容 ExecutionNode 接口）
+
+    合并了原 TaskNode（运行时状态）和 ExecutionNode（计划配置）的职责，
+    消除 SimpleNamespace 中间转换层。
+    """
     name: str                          # 节点名称（对应 agent 名称）
     agent_name: str                    # 执行的 Agent
     dependencies: list[str] = field(default_factory=list)  # 依赖的节点名
@@ -66,6 +80,10 @@ class TaskNode:
     max_retries: int = 3               # 最大重试次数
     timeout: float = 300               # 超时时间（秒）
     rate_limit: dict = field(default_factory=dict)  # 限流配置
+    # 原 ExecutionNode 字段（统一后无需 SimpleNamespace 转换）
+    backoff: str = "exponential"       # 退避策略: exponential | linear | fixed
+    initial_delay: float = 1.0         # 初始退避延迟（秒）
+    agent_config: "NodeConfig" = field(default_factory=lambda: NodeConfig())
 
     # 运行时状态
     status: str = "pending"            # pending/running/success/failed/skipped
@@ -246,7 +264,8 @@ class PipelineOrchestrator:
 
         return "\n".join(lines)
 
-    # ─── 委托：DAG 构建与执行 ─────────────────────────────
+    # ─── 委托：DAG 构建与执行（通过 _executor 直接访问） ─────────────────────────────
+    # 注：内部方法通过 self._executor 直接调用，无需逐一包装
 
     def _build_dag(self, agent_order: list[str], config: Optional[dict] = None) -> tuple[dict[str, TaskNode], list[list[str]]]:
         return self._executor.build_dag(agent_order, config)
@@ -289,7 +308,7 @@ class PipelineOrchestrator:
     # ─── DAG 并行执行（内部） ─────────────────────────────
 
     def _run_dag_parallel(self, task: PipelineTask, input_file: str, config: dict) -> bool:
-        """并行执行 DAG"""
+        """并行执行 DAG（统一节点模型，无 SimpleNamespace 转换）"""
         from types import SimpleNamespace
 
         agent_order = self.registry.deps_order()
@@ -302,31 +321,22 @@ class PipelineOrchestrator:
 
         cb_cfg = config.get("circuit_breaker", {}) if config else {}
 
+        # 为每个 TaskNode 填充 agent_config（统一模型，无需 SimpleNamespace）
+        for name, node in nodes.items():
+            node.agent_config = NodeConfig(
+                config=config or {},
+                pool_size=1,
+                rate_limit=node.rate_limit,
+                circuit_breaker=cb_cfg,
+            )
+
         # 使用执行器工厂：支持 thread（默认）或 process（多进程水平扩展）
         executor_type = (config or {}).get("executor_type", "thread")
         max_workers = max(len(l) for l in execution_order) if execution_order else 1
         with create_executor(max_workers=max_workers, executor_type=executor_type) as executor:
             for level_idx, level_names in enumerate(execution_order):
-                # 将 TaskNode 转换为 ExecutionNode 兼容的 SimpleNamespace
-                level_nodes = []
-                for name in level_names:
-                    node = nodes[name]
-                    exec_node = SimpleNamespace(
-                        agent_name=node.agent_name,
-                        timeout=node.timeout,
-                        max_retries=node.max_retries,
-                        rate_limit=node.rate_limit,
-                        agent_config=SimpleNamespace(
-                            config=config,
-                            pool_size=1,
-                            rate_limit=node.rate_limit,
-                            circuit_breaker=cb_cfg,
-                        ),
-                        dependencies=node.dependencies,
-                        backoff="exponential",
-                        initial_delay=1.0,
-                    )
-                    level_nodes.append(exec_node)
+                # 直接使用 TaskNode（已兼容 ExecutionNode 接口）
+                level_nodes = [nodes[name] for name in level_names if name in nodes]
 
                 plan_ns = SimpleNamespace(
                     pipeline_name=task.pipeline_name,

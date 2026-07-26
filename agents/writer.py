@@ -30,6 +30,11 @@ from pipeline_core.cache_manager import CacheManager
 from pipeline_core.streaming import StreamCallback
 from pipeline_core.fast_json import dumps as _fast_dumps, loads as _fast_loads
 
+# ─── 章节级并行 LLM 润色 ──────────────────────────────
+# 当 LLM 可用时，多章节并行调用 LLM 润色（ThreadPoolExecutor），
+# 减少串行等待时间。单章节降级为同步调用。
+PARALLEL_POLISH_WORKERS = 4
+
 
 AGENT_NAME = "writer"
 AGENT_VERSION = "2.0"
@@ -55,6 +60,11 @@ class ContentChunk:
     relevance_score: float = 0.0
 
 
+def _md_escape(text: str) -> str:
+    """Escape markdown special chars inside link text/url."""
+    return text.replace("[", "\\[").replace("]", "\\]").replace("(", "\\(").replace(")", "\\)").replace("*", "\\*").replace("_", "\\_")
+
+
 class TemplateManager:
     """模板管理器"""
 
@@ -74,7 +84,10 @@ class TemplateManager:
         for sec in sections:
             parts.append(template["section"].format(
                 section_title=sec.get("title", ""), content=sec.get("content", "")))
-        refs = "\n".join(f"- [{r['title']}]({r['url']})" for r in references) if references else ""
+        refs = "\n".join(
+            f"- [{_md_escape(r.get('title', ''))}]({_md_escape(r.get('url', ''))})"
+            for r in references
+        ) if references else ""
         parts.append(template["footer"].format(references=refs))
         return "\n".join(parts)
 
@@ -385,6 +398,74 @@ class WriterAgent(BaseAgent):
                 yield result
             except Exception as e:
                 self.log_warning(f"SSE 流式回退非流式失败: {e}")
+
+    def _polish_sections_parallel(self, sections: list[dict], context: str = "",
+                                   task_id: str = "") -> list[dict]:
+        """章节级并行 LLM 润色 - 多章节同时调用 LLM，减少串行等待。
+
+        当 LLM 不可用或章节数 <= 1 时降级为串行处理。
+        使用 PARALLEL_POLISH_WORKERS 控制并发度。
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        if len(sections) <= 1:
+            return sections
+
+        if not self._llm_api_key:
+            return sections  # LLM 不可用，跳过润色
+
+        polished = [None] * len(sections)
+
+        def _polish_one(idx: int, section: dict) -> tuple:
+            """润色单个章节"""
+            sec_title = section.get("title", "")
+            sec_content = section.get("content", "")
+            if not sec_content or len(sec_content) < 100:
+                return idx, section  # 内容过短不润色
+
+            messages = [
+                {"role": "system", "content": "你是技术文档润色专家。保持专业性和准确性，改善行文流畅度。"},
+                {"role": "user", "content": (
+                    f"请润色以下技术文档章节。\n"
+                    f"章节标题: {sec_title}\n"
+                    f"文档主题: {context}\n\n"
+                    f"{sec_content[:3000]}"
+                )},
+            ]
+            try:
+                result = self._llm_chat(messages, max_tokens=2048, temperature=0.3)
+                if result and len(result) > 50:
+                    section = dict(section)
+                    section["content"] = result
+                    section["polished"] = True
+            except Exception as e:
+                self.log_debug(f"章节润色失败 [{sec_title}]: {e}")
+            return idx, section
+
+        workers = min(PARALLEL_POLISH_WORKERS, len(sections))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_polish_one, i, sec): i
+                for i, sec in enumerate(sections)
+            }
+            for fut in as_completed(futures):
+                try:
+                    idx, result = fut.result(timeout=90)
+                    polished[idx] = result
+                except Exception:
+                    idx = futures[fut]
+                    polished[idx] = sections[idx]
+
+        # 填充未完成的（超时等异常情况）
+        for i in range(len(polished)):
+            if polished[i] is None:
+                polished[i] = sections[i]
+
+        polished_count = sum(1 for p in polished if p.get("polished"))
+        if polished_count:
+            self.log_info(f"任务 {task_id}: 并行润色 {polished_count}/{len(sections)} 个章节")
+
+        return polished
 
     def _polish_with_llm(self, content: str, query: str) -> str:
         """用 LLM 润色文档段落衔接（含缓存+质量门控+分段+规则兜底）"""
@@ -860,27 +941,16 @@ class WriterAgent(BaseAgent):
                 self.log_warning(f"LLM 异步生成异常: {e}")
                 return ""
 
-        # 使用 asyncio 真并行（不创建新事件循环，复用或创建）
+        # 使用 asyncio 真并行（创建新事件循环运行）
+        loop = asyncio.new_event_loop()
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # 已在 async 上下文中，直接 await
-                results_parallel = await asyncio.gather(*[
+            results_parallel = loop.run_until_complete(
+                asyncio.gather(*[
                     _gen_one_async(i, sn, sp) for i, sn, sp in sec_specs
                 ])
-            else:
-                raise RuntimeError("not running")
-        except RuntimeError:
-            # 不在 async 上下文中，创建新循环运行
-            loop = asyncio.new_event_loop()
-            try:
-                results_parallel = loop.run_until_complete(
-                    asyncio.gather(*[
-                        _gen_one_async(i, sn, sp) for i, sn, sp in sec_specs
-                    ])
-                )
-            finally:
-                loop.close()
+            )
+        finally:
+            loop.close()
 
         parts = []
         for idx, sec_name, part in sorted(results_parallel, key=lambda x: x[0]):
@@ -1041,7 +1111,14 @@ class WriterAgent(BaseAgent):
 
     def _semantic_rank(self, paragraphs: list[dict],
                        keywords: list[str]) -> list[dict]:
-        """用 TF-IDF + 余弦相似度对段落排序（纯 Python 实现，无 numpy 依赖）"""
+        """用 TF-IDF + 余弦相似度对段落排序（稀疏向量优化版）
+
+        性能优化：
+          - 稀疏字典表示替代密集列表（500 段 x 700 词 → 仅存非零项）
+          - 单次遍历构建 TF + DF（减少一轮 O(n_docs * n_terms) 循环）
+          - 查询向量仅含 keywords 对应的非零项（点积只遍历稀疏项）
+        """
+        import math
         if not keywords:
             return paragraphs[:8]
 
@@ -1051,63 +1128,54 @@ class WriterAgent(BaseAgent):
             words = re.findall(r'[\w\u4e00-\u9fff]{2,}', p["text"].lower())
             all_docs.append(words)
 
-        query_words = [kw.lower() for kw in keywords if len(kw) > 1]
-
-        # 2. 构建词汇表
-        vocab_set = set()
-        for doc in all_docs:
-            vocab_set.update(doc)
-        vocab = sorted(vocab_set)
-        if not vocab:
-            return paragraphs[:8]
-        vocab_idx = {w: i for i, w in enumerate(vocab)}
+        query_words = set(kw.lower() for kw in keywords if len(kw) > 1)
         n_docs = len(all_docs)
-        n_terms = len(vocab)
+        if n_docs == 0:
+            return paragraphs[:8]
 
-        # 3. TF-IDF（纯 Python 列表实现）
-        tfidf = [[0.0] * n_terms for _ in range(n_docs)]
+        # 2. 稀疏 TF + 文档频率（单次遍历）
+        sparse_tf = []  # list[dict[str, float]] — 每篇文档的非零 TF
+        df = {}         # word -> 出现在多少篇文档中
 
-        for i, doc in enumerate(all_docs):
+        for doc in all_docs:
             if not doc:
+                sparse_tf.append({})
                 continue
             tf_counter = {}
             for w in doc:
                 tf_counter[w] = tf_counter.get(w, 0) + 1
-            max_tf = max(tf_counter.values()) if tf_counter else 1
-            for w, cnt in tf_counter.items():
-                if w in vocab_idx:
-                    tfidf[i][vocab_idx[w]] = cnt / max_tf
+            max_tf = max(tf_counter.values())
+            normalized = {w: cnt / max_tf for w, cnt in tf_counter.items()}
+            sparse_tf.append(normalized)
+            for w in normalized:
+                df[w] = df.get(w, 0) + 1
 
-        # IDF
-        df = [0.0] * n_terms
-        for i in range(n_docs):
-            for j in range(n_terms):
-                if tfidf[i][j] > 0:
-                    df[j] += 1.0
-        import math
-        idf = [math.log((n_docs + 1) / (df[j] + 1)) + 1 for j in range(n_terms)]
-        for i in range(n_docs):
-            for j in range(n_terms):
-                tfidf[i][j] *= idf[j]
+        # 3. IDF（仅计算出现在文档中的词）
+        idf = {w: math.log((n_docs + 1) / (freq + 1)) + 1 for w, freq in df.items()}
 
-        # 4. 查询向量
-        query_vec = [0.0] * n_terms
-        for w in query_words:
-            if w in vocab_idx:
-                query_vec[vocab_idx[w]] = 1.0
-        query_norm = math.sqrt(sum(v * v for v in query_vec))
-        if query_norm > 0:
-            query_vec = [v / query_norm for v in query_vec]
+        # 4. TF-IDF 稀疏向量 + 文档范数
+        sparse_tfidf = []
+        doc_norms = []
+        for tf_dict in sparse_tf:
+            tfidf_dict = {}
+            norm_sq = 0.0
+            for w, tf_val in tf_dict.items():
+                val = tf_val * idf.get(w, 1.0)
+                tfidf_dict[w] = val
+                norm_sq += val * val
+            sparse_tfidf.append(tfidf_dict)
+            doc_norms.append(math.sqrt(norm_sq) if norm_sq > 0 else 0.0)
 
-        # 5. 余弦相似度
+        # 5. 余弦相似度（仅遍历查询词对应的稀疏项）
         similarities = []
         for i in range(n_docs):
-            doc_norm = math.sqrt(sum(v * v for v in tfidf[i]))
-            if doc_norm == 0:
+            if doc_norms[i] == 0:
                 similarities.append(0.0)
                 continue
-            dot = sum(tfidf[i][j] * query_vec[j] for j in range(n_terms))
-            similarities.append(dot / doc_norm)
+            dot = sum(sparse_tfidf[i].get(w, 0.0) for w in query_words)
+            # 查询向量范数 = sqrt(len(query_words))（每个权重为 1）
+            query_norm = math.sqrt(len(query_words))
+            similarities.append(dot / (doc_norms[i] * query_norm) if query_norm > 0 else 0.0)
 
         # 6. 排序
         sorted_indices = sorted(range(n_docs), key=lambda x: -similarities[x])
@@ -1118,7 +1186,7 @@ class WriterAgent(BaseAgent):
                 scored.append({**paragraphs[idx], "score": score})
 
         if not scored:
-            return paragraphs[:3]  # 兜底：返回前 3 段
+            return paragraphs[:3]
 
         return scored
 

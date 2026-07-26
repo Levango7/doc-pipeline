@@ -1,0 +1,28 @@
+# 密钥与本地配置（绝不可打进镜像）
+.env
+*.env
+*.secret
+config/secrets.yaml
+config/secrets.yml
+credentials.json
+
+# 构建/运行时产物
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+output/
+logs/
+dist/
+build/
+
+# 版本控制与编辑器
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# 依赖（用 requirements 重新安装，不要拷宿主机的）
+venv/
+.venv/

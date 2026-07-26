@@ -1,0 +1,125 @@
+# Three-Pass Pipeline — 三阶段文档生成（DAG 编排版）
+# 复用 DAG 基础设施：熔断器 / 限流 / 断点续传 / 可观测性
+# 用法: python run.py input.md --pipeline three_pass -o output/doc.md
+_name: three_pass
+_version: "1.0"
+description: >
+  三阶段文档生成流水线（Research → Structure → Refine），
+  通过 DAG 编排复用熔断器、限流、断点续传等基础设施。
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+  timeout: 300
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1.0
+
+# ── Agent 定义 ──────────────────────────────
+agents:
+  # Phase 1: Research & Gather（复用 researcher + fetcher）
+  - name: researcher
+    version: "2.0"
+    timeout: 180
+    dependencies: []
+    pool_size: 2
+    rate_limit:
+      rate: 5
+      burst: 10
+    config:
+      search_engines:
+        - bing
+        - sogou
+        - "360"
+      max_results: 20
+
+  - name: fetcher
+    version: "1.0"
+    timeout: 120
+    dependencies: ["researcher"]
+    config:
+      max_downloads: 20
+      temp_dir: tmp_fetcher
+      download_workers: 8
+
+  # Phase 2: Structure & Draft（复用 writer，启用骨架模式）
+  - name: writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["fetcher"]
+    config:
+      prompt_profile: generic-tech
+      mode: three_pass_structure
+      skeleton_sections: 7
+      use_tfidf: true
+
+  # Phase 3: Refine & Polish（复用 quality_gate + layout + safe_writer）
+  - name: quality_gate
+    version: "2.0"
+    timeout: 300
+    dependencies: ["writer"]
+    config:
+      quality_profile: technical-doc
+      threshold: 65
+      max_regenerations: 2
+
+  - name: checker
+    version: "1.1"
+    timeout: 120
+    dependencies: ["quality_gate"]
+    config:
+      fail_fast: false
+
+  - name: layout
+    version: "2.0"
+    timeout: 120
+    dependencies: ["checker"]
+    config:
+      style: markdown
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 60
+    dependencies: ["layout"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+# ── DAG 拓扑 ──────────────────────────────
+topology:
+  type: dag
+  levels:
+    - [researcher]
+    - [fetcher]
+    - [writer]
+    - [quality_gate]
+    - [checker]
+    - [layout]
+    - [safe_writer]
+
+  edges:
+    - [researcher, fetcher]
+    - [fetcher, writer]
+    - [writer, quality_gate]
+    - [quality_gate, checker]
+    - [checker, layout]
+    - [layout, safe_writer]
+
+# ── 流水线全局策略 ──────────────────────────
+pipeline:
+  timeout: 900
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

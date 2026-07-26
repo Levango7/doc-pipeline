@@ -32,6 +32,56 @@ class StructuredLogger:
         self._lock = threading.RLock()
         self._current_file = None
 
+        # 异步写入队列：后台线程批量刷盘，减少主线程 I/O 阻塞
+        import queue as _queue
+        self._write_queue: _queue.Queue = _queue.Queue(maxsize=10000)
+        self._writer_stop = threading.Event()
+        self._writer_thread = threading.Thread(
+            target=self._async_writer_loop, daemon=True, name="log-writer"
+        )
+        self._writer_thread.start()
+
+    def _async_writer_loop(self):
+        """后台日志写入线程：从队列批量取出日志条目写入文件"""
+        import queue as _queue
+        batch: list = []
+        while not self._writer_stop.is_set():
+            try:
+                entry = self._write_queue.get(timeout=0.5)
+                batch.append(entry)
+                # 批量取出（最多 100 条一次写入）
+                while len(batch) < 100:
+                    try:
+                        batch.append(self._write_queue.get_nowait())
+                    except _queue.Empty:
+                        break
+            except _queue.Empty:
+                continue
+
+            if batch:
+                self._flush_batch(batch)
+                batch = []
+
+        # 关闭前刷完剩余
+        while not self._write_queue.empty():
+            try:
+                batch.append(self._write_queue.get_nowait())
+            except _queue.Empty:
+                break
+        if batch:
+            self._flush_batch(batch)
+
+    def _flush_batch(self, batch: list):
+        """批量写入日志条目到文件"""
+        if not batch:
+            return
+        with self._lock:
+            filepath = self._get_file()
+            self._rotate_if_needed(filepath)
+            lines = [json.dumps(entry, ensure_ascii=False) + "\n" for entry in batch]
+            with open(filepath, "a", encoding="utf-8") as f:
+                f.writelines(lines)
+
     def _get_file(self) -> Path:
         now = datetime.now()
         filename = f"{self.app_name}_{now.strftime('%Y%m%d')}.jsonl"
@@ -51,7 +101,7 @@ class StructuredLogger:
     def log(self, level: str, message: str, trace_id: str = "",
             agent: str = "", task_id: str = "",
             **extra):
-        """写入一条结构化日志"""
+        """写入一条结构化日志（异步写入队列，减少主线程 I/O 阻塞）"""
         entry = {
             "timestamp": datetime.now().isoformat(),
             "level": level.upper(),
@@ -73,11 +123,8 @@ class StructuredLogger:
                 except (TypeError, ValueError):
                     entry[k] = str(v)
 
-        with self._lock:
-            filepath = self._get_file()
-            self._rotate_if_needed(filepath)
-            with open(filepath, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        # 异步写入：放入队列由后台线程刷盘，减少主线程 I/O 阻塞
+        self._write_queue.put(entry)
 
     def info(self, msg: str, **kw):
         self.log("info", msg, **kw)
