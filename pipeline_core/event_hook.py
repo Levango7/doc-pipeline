@@ -129,7 +129,7 @@ def _safe_enqueue(queue: asyncio.Queue, item):
 
 def _ensure_webhook_engine():
     """Start the async webhook engine (dedicated loop thread + aiohttp session) if not running."""
-    global _webhook_thread, _webhook_loop, _webhook_async_queue, _webhook_stop_event, _webhook_worker_future
+    global _webhook_thread, _webhook_loop, _webhook_async_queue, _webhook_stop_event, _webhook_worker_future, _webhook_engine_ready
 
     with _webhook_init_lock:
         if _webhook_thread is not None and _webhook_thread.is_alive():
@@ -278,6 +278,7 @@ class EventHookManager:
 
     def _fire_webhook(self, hook: Hook, event: str, payload: dict):
         """Schedule async webhook HTTP POST via aiohttp (non-blocking, thread-safe)."""
+        _ensure_webhook_engine()
         if not _webhook_engine_ready:
             _logger.warning("[EventHook] webhook engine not ready, dropping event")
             return
