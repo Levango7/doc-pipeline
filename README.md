@@ -10,14 +10,16 @@
 
 | 类别 | 能力 |
 |------|------|
-| **编排** | DAG 并行执行、断点续传、可视化执行计划 |
-| **检索** | Bing + Sogou + 360 三引擎（中国网络优化）、HTML 正文提取 |
+| **编排** | DAG 并行执行、断点续传、可视化执行计划、SQLite 任务队列恢复 |
+| **检索** | Bocha + Tavily + Serper + Bing + Sogou + 360 六引擎、LRU+TTL 跨任务缓存 |
 | **抓取** | Async I/O（aiohttp 并发）/ 同步线程池降级、内容质量识别 |
-| **写作** | TF-IDF 向量语义匹配、骨架生成、LLM 润色（可配置） |
-| **质量** | QualityGate v2（Profile 模板机制）、Style Enforcer、Citation Verifier |
-| **弹性** | 熔断器、限流器、Agent Pool、背压、自动重生成 |
-| **可观测** | 结构化日志（轮转）、Prometheus Metrics、Admin REST API、Dashboard |
-| **运维** | 版本锁定（Lockfile）、Schema 校验、基础鉴权、Docker 化 |
+| **写作** | TF-IDF 向量语义匹配、骨架生成、LLM 润色、质量反馈闭环 |
+| **质量** | QualityGate v2（Profile 模板）、Style Enforcer、Citation Verifier、评分历史学习 |
+| **弹性** | 熔断器、限流器、Agent Pool、背压、自动重生成、告警机制 |
+| **可观测** | 结构化日志（轮转）、Prometheus Metrics、Admin REST API、Dashboard、日志查询 |
+| **成本** | LLM 调用成本追踪（12 供应商定价）、预算熔断、`GET /api/cost` |
+| **安全** | Agent 沙箱（AST 安全检查 + 白名单）、.env 明文密钥检测 |
+| **运维** | 版本锁定、Schema 校验、基础鉴权、Docker 化、配置热更新、MCP Server |
 
 ---
 
@@ -27,7 +29,7 @@
 
 - Python 3.10+
 - 网络连接（用于检索引擎抓取内容）
-- 无需 API Key — 默认使用 Bing/Sogou/360 搜索引擎
+- 搜索引擎 API Key（可选）— 复制 `.env.example` 为 `.env` 并填入 Bocha/Tavily/Serper 等 Key；无 Key 时默认使用 Bing/Sogou/360 免费引擎
 
 ### 3 步快速体验
 
@@ -81,6 +83,8 @@ python run.py test_input.md --dashboard
 | `--plan / --dry-run` | 仅预览计划，不执行 |
 | `--admin / --dashboard` | 启动管理 API / 仪表盘 |
 | `--daemon` | 执行完后保持 API 常驻 |
+| `--mcp` | 启动 MCP Server（JSON-RPC over stdio，供外部 Agent 调度） |
+| `--recover` | 启动时恢复中断的任务队列 |
 | `--config, -c` | 自定义配置文件 |
 | `--json-output` | 输出 JSON 结果（供 wrapper 解析） |
 
@@ -131,12 +135,19 @@ python run.py test_input.md --dashboard
 | `pipeline_core/rate_limiter.py` | 令牌桶限流器 |
 | `pipeline_core/registry.py` | Agent 注册表（健康检查 + 热插拔） |
 | `pipeline_core/observability.py` | 结构化日志（异步批量写入）+ Prometheus Metrics |
-| `pipeline_core/admin_api.py` | REST API（多线程，健康/指标/任务/版本管理/鉴权） |
+| `pipeline_core/admin_api.py` | REST API（多线程，健康/指标/任务/成本/告警/日志/配置管理） |
 | `pipeline_core/version_manager.py` | 文档版本管理（自动版本号/diff/回滚） |
 | `pipeline_core/batch_queue.py` | 批量文档生成队列 |
 | `pipeline_core/cache_manager.py` | 统一缓存（memory/file/multi 三级） |
 | `pipeline_core/llm_router.py` | 多供应商 LLM 路由器（10 供应商 fallback） |
-| `pipeline_core/search_engines.py` | 统一搜索引擎接口（10 引擎） |
+| `pipeline_core/search_engines.py` | 统一搜索引擎接口（10 引擎 + LRU+TTL 缓存） |
+| `pipeline_core/cost_tracker.py` | LLM 成本追踪（12 供应商定价表 + 预算熔断） |
+| `pipeline_core/alert_manager.py` | 告警机制（熔断/DLQ/限流/预算超限通知） |
+| `pipeline_core/quality_feedback.py` | 质量评分历史 + 弱项模式分析 + 写作建议 |
+| `pipeline_core/task_queue.py` | SQLite 持久化任务队列（中断恢复） |
+| `pipeline_core/mcp_server.py` | MCP Server（JSON-RPC 2.0 over stdio，5 tools） |
+| `pipeline_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
+| `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
 | `agents/` | 7 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/layout/safe_writer） |
 
 ---
@@ -157,7 +168,7 @@ agents:
   - name: researcher
     version: "2.0"
     config:
-      search_engines: [bing, sogou, 360]
+      search_engines: [bocha, tavily, serper, bing, sogou, 360]
       max_results: 20
 
   - name: writer
@@ -215,7 +226,7 @@ citation:
 
 | 配置项 | 测试 (config.json) | 生产 (config.production.json) |
 |--------|-------------------|------------------------------|
-| `search_engines` | `["mock"]` | `["bing", "sogou", "360"]` |
+| `search_engines` | `["mock"]` | `["bocha", "tavily", "serper", "bing", "sogou", "360"]` |
 | `fail_fast` | `true` | `false`（单 Agent 失败不中断流水线） |
 | `max_workers` | 3 | 5 |
 | `cache_size` | 1000 | 2000 |
@@ -237,12 +248,20 @@ python run.py input.md -c config.production.json -o output/doc.md
 | `/health` | GET | 总线 + Registry 健康状态（免鉴权） |
 | `/metrics` | GET | Prometheus 格式指标 |
 | `/tasks` | GET | 任务列表 |
-| `/tasks/<id>` | GET | 单任务详情 |
+| `/tasks` | POST | 提交新任务（同步/异步，外部 Agent 调度入口） |
+| `/tasks/<id>` | GET | 单任务详情（含 result/output_content/output_path） |
 | `/tasks/<id>/cancel` | POST | 取消任务 |
 | `/tasks/<id>/rerun` | POST | 重跑流水线（复用 last plan） |
 | `/agents` | GET | 已注册 Agent |
 | `/dlq` | GET | 死信队列 |
 | `/dlq/<id>/replay` | POST | 重放死信 |
+| `/api/cost` | GET | LLM 成本统计（按供应商/Agent/时间维度） |
+| `/api/cost/budget` | POST | 设置预算上限（超限自动熔断） |
+| `/api/alerts` | GET | 告警历史查询（level/category/since 过滤） |
+| `/api/logs` | GET | 结构化日志查询（level/agent/since/keyword 过滤） |
+| `/api/quality/feedback` | GET | 质量评分历史 + 弱项模式分析 |
+| `/api/config/reload` | POST | 配置热更新（通知所有 Agent on_config_update） |
+| `/api/openapi.json` | GET | OpenAPI 3.0 规范 |
 | `/api/dashboard` | GET | Dashboard 数据 |
 | `/` | GET | 静态仪表盘（若 `--dashboard`） |
 
@@ -257,6 +276,21 @@ python run.py input.md --admin
 
 客户端请求携带 `Authorization: Bearer <key>` 或 `?token=<key>`。
 未配置时禁用鉴权（仅本机访问）。`/health` 与静态资源始终免鉴权。
+
+### MCP Server
+
+通过 `--mcp` 启动 JSON-RPC 2.0 over stdio，供外部 Agent（如 Claude Desktop）调度：
+
+```bash
+python run.py --mcp
+```
+
+提供 5 个 tools：`submit_task`、`get_task_status`、`get_task_result`、`list_tasks`、`get_system_health`。
+
+### Agent 安全沙箱
+
+第三方 Agent 加载时自动执行 AST 安全检查（禁止 `os.system`/`subprocess`/`eval`/`exec`/`open` 等），
+内置 Agent 白名单跳过检查。默认 `strict_safety=True`，检测到危险调用直接阻断加载。
 
 ---
 
@@ -277,7 +311,12 @@ docker run -p 8910:8910 -v $(pwd)/checkpoints:/app/checkpoints doc-pipeline
 python -m pytest tests/ -v
 ```
 
-**170 个测试全部通过**，覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂。
+**255 个测试全部通过**（6 个 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
+
+```bash
+# 运行真实端到端测试（需要网络 + LLM API Key）
+python -m pytest tests/ -m e2e -v
+```
 
 ---
 
@@ -309,7 +348,7 @@ python -m pytest tests/ -v
 ```
 doc-pipeline/
 ├── agents/              # 7 个 Agent 实现
-├── pipeline_core/       # 核心编排框架（27 个模块）
+├── pipeline_core/       # 核心编排框架（35 个模块）
 │   ├── pipeline.py      # Orchestrator（统一节点模型）
 │   ├── dag_executor.py  # DAG 构建 + 节点调度
 │   ├── scheduler.py     # YAML → ExecutionPlan + Schema + Lockfile
@@ -324,7 +363,14 @@ doc-pipeline/
 │   ├── batch_queue.py   # 批量文档队列
 │   ├── cache_manager.py # 统一缓存
 │   ├── llm_router.py    # LLM 多供应商路由
-│   ├── search_engines.py # 10 引擎统一接口
+│   ├── search_engines.py # 10 引擎统一接口 + 缓存
+│   ├── cost_tracker.py  # LLM 成本追踪 + 预算熔断
+│   ├── alert_manager.py # 告警机制
+│   ├── quality_feedback.py # 质量闭环学习
+│   ├── task_queue.py    # SQLite 任务队列
+│   ├── mcp_server.py    # MCP Server (JSON-RPC)
+│   ├── openapi_spec.py  # OpenAPI 3.0 规范
+│   ├── agent_loader.py  # Agent 安全加载（沙箱）
 │   ├── streaming.py     # SSE 流式输出
 │   └── ...              # 更多模块
 ├── pipelines/           # Pipeline 定义 + Quality Profile
@@ -335,7 +381,7 @@ doc-pipeline/
 │       ├── technical-doc.yaml
 │       └── tutorial.yaml
 ├── dashboard/           # 前端仪表盘
-├── tests/               # 170 个测试
+├── tests/               # 255 个测试（+ 6 个 e2e）
 ├── checkpoints/         # 断点 + 日志（自动轮转）
 ├── versions/            # 文档版本存储
 ├── run.py               # CLI 入口
@@ -359,7 +405,7 @@ doc-pipeline/
 | LLM 额度消耗 | 0（质量门控跳过，规则兜底） | mock |
 | 消息总线吞吐 | 批量 drain 50 条/轮 | — |
 | 缓存命中 | 125 万 ops/s | — |
-| 测试覆盖 | 170 tests | — |
+| 测试覆盖 | 255 tests (+ 6 e2e) | — |
 
 ### 生产模式预期耗时（config.production.json）
 

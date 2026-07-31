@@ -203,6 +203,10 @@ class PipelineOrchestrator:
 
         self._admin_api = None
 
+        # 持久化任务队列
+        from .task_queue import TaskQueue
+        self.task_queue = TaskQueue()
+
         # 性能统计
         self._execution_stats: list[dict] = []
         self._max_task_history: int = 100
@@ -379,7 +383,9 @@ class PipelineOrchestrator:
         with self._lock:
             self._running_tasks[task.id] = task
 
-        task.status = TaskStatus.RUNNING
+        self.task_queue.submit(task.id, plan.pipeline_name, input_file,
+                               plan.raw.get("pipeline", {}))
+
         task.started_at = time.time()
 
         emit_event("task.created", {"task_id": task.id, "pipeline": pipeline_name, "input_file": input_file})
@@ -710,6 +716,13 @@ class PipelineOrchestrator:
                 task.progress = 100 if task.status == TaskStatus.DONE else task.progress
                 task.finished_at = time.time()
 
+                self.task_queue.update_status(
+                    task.id,
+                    task.status.value if hasattr(task.status, "value") else str(task.status),
+                    result=dict(task.result) if task.result else None,
+                    error=task.error,
+                )
+
                 # ── 事件钩子 ──
                 if task.status == TaskStatus.DONE:
                     emit_event("task.completed", {"task_id": task.id, "pipeline": plan.pipeline_name,
@@ -961,6 +974,21 @@ class PipelineOrchestrator:
 
     def get_task(self, task_id: str) -> Optional[PipelineTask]:
         return self._running_tasks.get(task_id)
+
+    def recover_tasks(self) -> list[dict]:
+        """恢复中断的任务：重启时把 running 状态改回 pending。
+
+        返回被恢复的任务列表。调用方可选择重新执行：
+            recovered = orch.recover_tasks()
+            for t in recovered:
+                plan = scheduler.parse(t["pipeline_name"])
+                orch.run_plan(plan, input_file=t["input_file"], task_id=t["task_id"])
+        """
+        return self.task_queue.recover()
+
+    def list_queued_tasks(self, status: str = None) -> list[dict]:
+        """列出持久化队列中的任务"""
+        return self.task_queue.list_all(status=status)
 
     def replay_dlq(self, dlq_id: int) -> Optional[dict]:
         """重放一条死信：重新执行故障 node 并回填结果

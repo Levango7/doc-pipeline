@@ -1,5 +1,5 @@
 """测试 PipelineOrchestrator.run_plan_async —— async 编排验证"""
-import asyncio
+import inspect
 import pytest
 from pathlib import Path
 
@@ -22,12 +22,12 @@ class TestRunPlanAsync:
     def test_run_plan_async_exists(self, orchestrator):
         """run_plan_async 方法存在且是 coroutine function"""
         assert hasattr(orchestrator, "run_plan_async")
-        assert asyncio.iscoroutinefunction(orchestrator.run_plan_async)
+        assert inspect.iscoroutinefunction(orchestrator.run_plan_async)
 
     def test_execute_level_async_exists(self, orchestrator):
         """DAGExecutor.execute_level_async 方法存在且是 coroutine function"""
         assert hasattr(orchestrator._executor, "execute_level_async")
-        assert asyncio.iscoroutinefunction(orchestrator._executor.execute_level_async)
+        assert inspect.iscoroutinefunction(orchestrator._executor.execute_level_async)
 
     @pytest.mark.asyncio
     async def test_run_plan_async_with_empty_plan(self, orchestrator, tmp_path):

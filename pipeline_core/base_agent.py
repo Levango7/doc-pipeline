@@ -250,6 +250,10 @@ class BaseAgent(ABC):
         """流水线恢复时调用（可覆盖）。重新初始化资源、恢复中间状态。"""
         self._logger.info("Agent 恢复")
 
+    def on_config_update(self, changed_keys: list[str]):
+        """配置热更新时调用（可覆盖）。changed_keys 为变更的配置键列表。"""
+        self._logger.info(f"配置已更新: {changed_keys}")
+
     def on_snapshot(self) -> dict:
         """创建检查点时调用（可覆盖）。返回 agent 状态快照，用于断点续传。
         返回的 dict 会被序列化保存到 checkpoint 中。"""

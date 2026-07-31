@@ -20,6 +20,9 @@ agents:
       burst: 10
     config:
       search_engines:
+        - bocha
+        - tavily
+        - serper
         - bing
         - sogou
         - "360"

@@ -94,6 +94,10 @@ class CircuitBreaker:
                 from .event_hook import emit_event
                 if new_state == CircuitState.OPEN:
                     emit_event("circuit_breaker.open", {"agent": self.name, "failure_count": self.failure_count})
+                    from .alert_manager import alert
+                    alert("critical", "circuit_breaker",
+                          f"Agent {self.name} 熔断器 OPEN（连续失败 {self.failure_count} 次）",
+                          {"agent": self.name, "failure_count": self.failure_count})
                 elif new_state == CircuitState.CLOSED:
                     emit_event("circuit_breaker.close", {"agent": self.name, "from": old_state.value})
             except Exception:

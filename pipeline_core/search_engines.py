@@ -60,6 +60,16 @@ class SearchItem:
             "fetched_at": self.fetched_at,
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "SearchItem":
+        return cls(
+            title=d.get("title", ""), url=d.get("url", ""),
+            snippet=d.get("snippet", ""), source=d.get("source", ""),
+            query=d.get("query", ""), score=d.get("score", 0.0),
+            relevance=d.get("relevance", 0.0),
+            fetched_at=d.get("fetched_at", time.time()),
+        )
+
 
 class SearchEngineBase:
     """搜索引擎基类"""
@@ -838,6 +848,8 @@ class SearchEngineManager:
         self._engines: dict[str, SearchEngineBase] = engines or {}
         self._lock = threading.Lock()
         self._fail_counts: dict[str, int] = {}
+        from .cache_manager import CacheManager
+        self._cache = CacheManager(max_size=500, ttl=3600)
         logger.info(f"SearchEngineManager 初始化: {list(self._engines.keys())}")
 
     def is_available(self) -> bool:
@@ -857,10 +869,16 @@ class SearchEngineManager:
         """搜索（多引擎 fallback）
 
         引擎按列表顺序尝试，失败自动切换下一个。
-        结果合并去重。
+        结果合并去重。跨任务缓存（LRU+TTL）。
         """
         if engines is None:
             engines = list(self._engines.keys())
+
+        cache_key = f"{query}|{max_results}|{','.join(engines)}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            logger.debug(f"搜索缓存命中: {query}")
+            return [SearchItem.from_dict(d) for d in cached]
 
         all_results = []
         seen_urls = set()
@@ -887,7 +905,10 @@ class SearchEngineManager:
             if len(all_results) >= max_results:
                 break
 
-        return all_results[:max_results]
+        result = all_results[:max_results]
+        if result:
+            self._cache.put(cache_key, [r.to_dict() for r in result])
+        return result
 
     async def search_async(self, query: str, max_results: int = 10,
                            engines: list[str] = None) -> list[SearchItem]:

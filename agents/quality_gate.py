@@ -190,6 +190,13 @@ class QualityGateAgent(BaseAgent):
 
         self.publish("quality_gate.done" if not needs_regenerate else "quality_gate.failed", result)
 
+        try:
+            from pipeline_core.quality_feedback import record_quality
+            record_quality(task_id=task_id, scores={k: round(v, 1) for k, v in scores.items()},
+                           pipeline=getattr(self, "_profile_name", ""))
+        except Exception:
+            pass
+
         # ── 事件钩子 ──
         try:
             from pipeline_core.event_hook import emit_event

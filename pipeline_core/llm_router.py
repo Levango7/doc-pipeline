@@ -312,6 +312,18 @@ class LLMRouter:
                 content = _call_llm(provider, messages, max_tokens, temperature, timeout)
                 provider.mark_success()
                 logger.debug(f"LLM 调用成功: {provider.name}")
+
+                try:
+                    from .cost_tracker import get_cost_tracker
+                    get_cost_tracker().record_call(
+                        provider=provider.name,
+                        messages=messages,
+                        response=content,
+                        model=provider.model,
+                    )
+                except Exception:
+                    pass
+
                 return content, provider.name
             except Exception as e:
                 provider.mark_failed(str(e))

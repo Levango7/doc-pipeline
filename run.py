@@ -153,11 +153,13 @@ def main():
     parser.add_argument("--enhance", action="store_true", help="增强已有文档（逐章节 LLM 深化 + 搜索补充）")
     parser.add_argument("--enhance-output", default=None, help="增强输出目录")
     parser.add_argument("--no-search", action="store_true", help="禁用搜索补充（仅 LLM 增强）")
+    parser.add_argument("--mcp", action="store_true", help="启动 MCP server（stdio JSON-RPC，供 AI agent 调度）")
+    parser.add_argument("--recover", action="store_true", help="恢复中断的任务（重启后把 running 改回 pending 并重新执行）")
 
     args = parser.parse_args()
 
     # 非 --check 模式需要输入文件
-    if args.input is None and not args.check:
+    if args.input is None and not args.check and not args.mcp and not args.recover:
         parser.error('需要指定输入文件，或使用 --check 运行启动自检')
 
     print_banner()
@@ -168,6 +170,41 @@ def main():
         report = run_startup_check(run_health_check=args.health_check)
         print(report.summary())
         sys.exit(1 if report.has_errors else 0)
+
+    # ─── MCP server 模式 ──────────────────────
+    if args.mcp:
+        from pipeline_core.mcp_server import run_mcp_server
+        run_mcp_server()
+        return
+
+    # ─── 恢复中断任务 ──────────────────────
+    if args.recover:
+        from pipeline_core import PipelineOrchestrator
+        from pipeline_core.scheduler import Scheduler
+        project_root = Path(__file__).parent
+        orch = PipelineOrchestrator(
+            agents_dir=str(project_root / "agents"),
+            checkpoint_dir=str(project_root / "checkpoints"),
+        )
+        orch.register_agents()
+        recovered = orch.recover_tasks()
+        if not recovered:
+            print("[recover] 没有需要恢复的中断任务")
+            sys.exit(0)
+        print(f"[recover] 发现 {len(recovered)} 个中断任务，开始恢复...")
+        sched = Scheduler()
+        for t in recovered:
+            print(f"  → 恢复任务 {t['task_id']} (pipeline={t['pipeline_name']}, input={t['input_file']})")
+            try:
+                plan = sched.parse(t["pipeline_name"])
+                task = orch.run_plan(plan, input_file=t["input_file"],
+                                     task_id=t["task_id"], wait=False)
+                print(f"    已重新启动，新状态: {task.status.value}")
+            except Exception as e:
+                print(f"    恢复失败: {e}")
+        print(f"[recover] 恢复完成，{len(recovered)} 个任务已重新提交")
+        orch.shutdown()
+        return
 
     # 快速自检（非阻塞，仅警告）
     try:

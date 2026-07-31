@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "doc-pipeline"
-version = "3.2.0"
+version = "3.3.0"
 description = "Multi-agent document generation pipeline with DAG orchestration, quality gating, and elastic fault tolerance"
 readme = "README.md"
 license = {text = "MIT"}
@@ -42,7 +42,11 @@ packages = ["pipeline_core", "agents", "scripts"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short -m 'not e2e'"
+markers = [
+    "e2e: 真实端到端测试（调用真实 LLM + 搜索引擎，需 .env 配置，CI 默认跳过）",
+    "slow: 慢测试（超时 >60s，默认运行但可用 -m 'not slow' 跳过）",
+]
 
 [tool.ruff]
 line-length = 120

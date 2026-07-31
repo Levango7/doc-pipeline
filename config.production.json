@@ -7,7 +7,7 @@
   "researcher": {
     "cache_size": 2000,
     "max_workers": 5,
-    "search_engines": ["metaso", "duckduckgo", "bing", "baidu", "sogou", "360"],
+    "search_engines": ["bocha", "tavily", "serper", "bing", "sogou", "360"],
     "min_score": 0.3,
     "max_results": 20
   },
@@ -35,8 +35,8 @@
     "dry_run": false
   },
   "admin_api": {
-    "enabled": false,
-    "host": "127.0.0.1",
+    "enabled": true,
+    "host": "0.0.0.0",
     "port": 8910
   }
 }

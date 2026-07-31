@@ -132,6 +132,12 @@ class ResearcherAgent(BaseAgent):
         
         self.log_info(f"Researcher v{AGENT_VERSION} 初始化完成 (engines={self._search_engines})")
 
+    def on_config_update(self, changed_keys: list[str]):
+        """配置热更新：重新加载搜索引擎配置"""
+        super().on_config_update(changed_keys)
+        self._search_manager = None
+        self.log_info(f"搜索引擎配置已刷新，下次搜索将重新初始化")
+
     def handle(self, msg: Message) -> dict | None:
         """处理检索请求"""
         self.report(AgentStatus.RUNNING, "开始检索...")

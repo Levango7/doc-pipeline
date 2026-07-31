@@ -262,6 +262,37 @@ def _check_git(report: StartupReport, project_root: Path):
         report.add(CheckResult("Git 仓库", "warn", "未初始化（建议 git init）"))
 
 
+def _check_env_security(report: StartupReport, project_root: Path):
+    """检查 .env 安全性：真实密钥明文风险检测"""
+    env_file = project_root / ".env"
+    if not env_file.exists():
+        return
+
+    real_keys = []
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip()
+        if not val or "your_" in val.lower() or val in ("ollama",):
+            continue
+        if key.endswith("_API_KEY") or key.endswith("_TOKEN") or key.endswith("_SECRET_KEY"):
+            real_keys.append(key)
+
+    if real_keys:
+        report.add(CheckResult(
+            ".env 安全", "warn",
+            f"检测到 {len(real_keys)} 个真实密钥明文存储于 .env。"
+            f"虽然 .gitignore/.dockerignore 已排除，建议迁移至 secrets manager 或环境变量注入。"
+        ))
+    else:
+        report.add(CheckResult(".env 安全", "ok", "未检测到明文密钥"))
+
+
 # ─── 主入口 ──────────────────────────────────────
 
 def run_startup_check(project_root: str = None,
@@ -289,6 +320,7 @@ def run_startup_check(project_root: str = None,
     _check_pipeline_config(report, project_root)
     _check_output_dirs(report, project_root)
     _check_git(report, project_root)
+    _check_env_security(report, project_root)
 
     # 模块检查
     _check_llm_router(report)

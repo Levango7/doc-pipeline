@@ -36,6 +36,12 @@ from .bootstrap import run_startup_check, quick_check, StartupReport
 from .event_hook import EventHookManager, get_hook_manager, emit_event
 from .batch_queue import BatchQueue, BatchTask, BatchTaskStatus
 from .version_manager import VersionManager, VersionEntry, get_version_manager
+from .mcp_server import MCPServer, run_mcp_server
+from .task_queue import TaskQueue
+from .cost_tracker import CostTracker, get_cost_tracker, estimate_tokens, calc_cost
+from .alert_manager import alert, get_alerts, clear_alerts
+from .quality_feedback import QualityFeedback, get_quality_feedback, record_quality
+from .openapi_spec import generate_spec
 
 __all__ = [
     "ConfigCenter",
@@ -58,6 +64,9 @@ __all__ = [
     "EventHookManager", "get_hook_manager", "emit_event",
     "BatchQueue", "BatchTask", "BatchTaskStatus",
     "VersionManager", "VersionEntry", "get_version_manager",
+    "MCPServer", "run_mcp_server",
+    "TaskQueue",
+    "CostTracker", "get_cost_tracker", "estimate_tokens", "calc_cost",
 ]
 
 __version__ = "3.2.0"

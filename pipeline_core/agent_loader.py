@@ -1,19 +1,87 @@
 """Agent 加载器 —— 负责 Agent 发现、注册和生命周期管理"""
 from __future__ import annotations
 import sys
+import ast
 import importlib.util
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+_DANGEROUS_CALLS = {
+    "os.system", "os.popen", "os.execv", "os.execvp", "os.execve", "os.execvpe",
+    "subprocess.Popen", "subprocess.run", "subprocess.call", "subprocess.check_call",
+    "subprocess.check_output",
+    "eval", "exec", "__import__",
+    "shutil.rmtree",
+}
+
+
+def _check_safety(file_path: Path, strict: bool = False) -> list[str]:
+    """AST 安全检查：扫描危险调用
+
+    Args:
+        file_path: Agent .py 文件路径
+        strict: True 时抛异常，False 时仅 log warning
+    Returns:
+        发现的危险调用列表
+    """
+    try:
+        source = file_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(file_path))
+    except SyntaxError:
+        return []
+
+    dangers = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        full_name = ""
+        if isinstance(func, ast.Attribute):
+            parts = []
+            n = func
+            while isinstance(n, ast.Attribute):
+                parts.append(n.attr)
+                n = n.value
+            if isinstance(n, ast.Name):
+                parts.append(n.id)
+            full_name = ".".join(reversed(parts))
+        elif isinstance(func, ast.Name):
+            full_name = func.id
+
+        if full_name in _DANGEROUS_CALLS:
+            dangers.append(f"{full_name} (line {node.lineno})")
+
+    if dangers:
+        msg = f"Agent {file_path.name} 包含危险调用: {', '.join(dangers)}"
+        if strict:
+            raise SecurityError(msg)
+        logger.warning(msg)
+    return dangers
+
+
+class SecurityError(Exception):
+    """Agent 安全检查失败"""
+    pass
 
 
 class AgentLoader:
     """Agent 发现和注册"""
 
-    def __init__(self, registry, bus, agents_dir: str = "agents", logger=None):
+    _TRUSTED_AGENTS = {
+        "researcher", "fetcher", "writer", "quality_gate",
+        "checker", "layout", "safe_writer_agent", "fast_pool_0",
+    }
+
+    def __init__(self, registry, bus, agents_dir: str = "agents", logger=None,
+                 strict_safety: bool = True):
         self.registry = registry
         self.bus = bus
         self.agents_dir = Path(agents_dir)
         self._logger = logger
+        self._strict_safety = strict_safety
         # 统一将项目根目录加入 sys.path，替代各 agent 文件中的 sys.path.insert hack
         project_root = str(self.agents_dir.parent.resolve())
         if project_root not in sys.path:
@@ -49,6 +117,10 @@ class AgentLoader:
                 mod = importlib.util.module_from_spec(spec)
                 # 必须先注册到 sys.modules，这样 _extract_meta 才能找到模块属性
                 sys.modules[f"agents.{name}"] = mod
+
+                if name not in self._TRUSTED_AGENTS:
+                    _check_safety(self.agents_dir / f"{name}.py", strict=self._strict_safety)
+
                 spec.loader.exec_module(mod)
 
                 # 找 Agent 类

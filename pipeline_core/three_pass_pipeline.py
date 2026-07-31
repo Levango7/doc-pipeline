@@ -77,6 +77,13 @@ class ThreePassPipeline:
     """
 
     def __init__(self, project_root: str = None):
+        import warnings
+        warnings.warn(
+            "ThreePassPipeline 已废弃，请使用 DAG 流水线模式（python run.py --pipeline docgen）。"
+            "该模块绕过 DAG/registry/bus，不再维护，将在未来版本移除。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._root = Path(project_root) if project_root else Path(__file__).parent.parent
         self._llm_router = None
         self._search_mgr = None

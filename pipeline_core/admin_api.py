@@ -6,7 +6,8 @@ Admin API v1 - 轻量级 REST API（零外部依赖）
   GET  /api/health/deep     → 全组件深度健康检查（LLM/搜索/缓存/检查点）
   GET  /metrics             → Prometheus 格式指标
   GET  /tasks               → 所有任务列表
-  GET  /tasks/<id>          → 单任务详情
+  GET  /tasks/<id>          → 单任务详情（含 result/output_content）
+  POST /api/tasks           → 提交新文档生成任务（body: query/title/pipeline/wait/output）
   POST /tasks/<id>/cancel   → 取消任务
   POST /tasks/<id>/rerun    → 重跑流水线（复用上一次 plan + 输入）
   GET  /agents              → 已注册 agent 列表
@@ -220,6 +221,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._handle_health_deep()
             elif self.path == "/api/cache":
                 self._handle_cache_stats()
+            elif self.path == "/api/cost":
+                self._handle_cost_stats()
             elif self.path == "/api/events/hooks":
                 self._handle_list_hooks()
             elif self.path == "/dlq":
@@ -231,6 +234,16 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._handle_dashboard()
             elif self.path == "/api/pipeline":
                 self._handle_pipeline()
+            elif self.path == "/api/openapi.json":
+                from .openapi_spec import generate_spec
+                self._json(generate_spec())
+            elif self.path == "/api/alerts":
+                self._handle_alerts()
+            elif self.path == "/api/quality/feedback":
+                from .quality_feedback import get_quality_feedback
+                self._json(get_quality_feedback().stats())
+            elif self.path.startswith("/api/logs"):
+                self._handle_logs()
             elif self.path == "/":
                 self._text("Doc-Pipeline Admin API v1\n"
                            "Endpoints: /health /metrics /tasks /agents /dlq /api/dashboard /api/pipeline /stream")
@@ -257,6 +270,9 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return
 
             # 处理 POST 专属路由
+            if self.path == "/api/tasks":
+                self._handle_submit_task(body)
+                return
             if self.path.startswith("/tasks/"):
                 task_id = self.path.split("/tasks/")[1].split("/")[0]
                 if self.path.endswith("/cancel"):
@@ -278,8 +294,14 @@ class AdminHandler(BaseHTTPRequestHandler):
             elif self.path == "/api/config":
                 self._handle_config_set(body)
                 return
+            elif self.path == "/api/config/reload":
+                self._handle_config_reload()
+                return
             elif self.path == "/api/cache/clear":
                 self._handle_cache_clear()
+                return
+            elif self.path == "/api/cost/budget":
+                self._handle_set_budget(body)
                 return
             elif self.path == "/api/events/hooks":
                 self._handle_register_hook(body)
@@ -351,16 +373,120 @@ class AdminHandler(BaseHTTPRequestHandler):
         task = self.orch.get_task(task_id)
         if not task:
             return self._json({"error": "task not found"}, 404)
+        result = dict(getattr(task, "result", {}))
+        output_content = None
+        output_path_found = None
+        _MAX_OUTPUT = 512 * 1024
+        for key in ("safe_writer", "safewriter", "layout", "checker"):
+            val = result.get(key)
+            path = None
+            if isinstance(val, dict):
+                path = val.get("output_path") or val.get("path") or val.get("file")
+            elif isinstance(val, str) and val.endswith(".md"):
+                path = val
+            if path and Path(path).exists():
+                output_path_found = str(path)
+                try:
+                    size = Path(path).stat().st_size
+                    if size <= _MAX_OUTPUT:
+                        output_content = Path(path).read_text(encoding="utf-8")
+                    else:
+                        output_content = f"[文件过大 {size} bytes，已省略，路径: {path}]"
+                except Exception:
+                    pass
+                break
         self._json({
             "id": task.id,
             "status": task.status.value if hasattr(task.status, "value") else str(task.status),
             "pipeline": task.pipeline_name,
             "input_file": getattr(task, "input_file", ""),
             "config": getattr(task, "config", {}),
+            "result": result,
+            "output_path": output_path_found,
+            "output_content": output_content,
             "created_at": getattr(task, "created_at", None),
             "finished_at": getattr(task, "finished_at", None),
             "error": getattr(task, "error", None),
         })
+
+    def _handle_submit_task(self, body: bytes):
+        """提交新文档生成任务
+
+        body JSON:
+          query (str, 必填) — 文档主题/查询
+          title (str, 可选) — 文档标题，默认同 query
+          pipeline (str, 可选) — 流水线名，默认 docgen
+          wait (bool, 可选) — 是否同步等待完成，默认 false
+          output (str, 可选) — 输出文件路径
+        """
+        if not self.orch:
+            return self._json({"error": "orchestrator not set"}, 500)
+        try:
+            data = _fast_loads(body) if body else {}
+        except Exception:
+            return self._json({"error": "invalid JSON body"}, 400)
+
+        query = data.get("query", "").strip()
+        if not query:
+            return self._json({"error": "missing 'query' field"}, 400)
+
+        title = data.get("title", query)
+        pipeline_name = data.get("pipeline", "docgen")
+        wait = bool(data.get("wait", False))
+        output_path = data.get("output", "")
+
+        import tempfile, uuid
+        task_id = str(uuid.uuid4())[:8]
+        input_file = Path(tempfile.gettempdir()) / f"task_{task_id}.md"
+        input_file.write_text(f"# {title}\n\n## 查询\n\n{query}\n", encoding="utf-8")
+
+        try:
+            from .scheduler import Scheduler
+            sched = Scheduler()
+            plan = sched.parse(pipeline_name)
+        except Exception as e:
+            return self._json({"error": f"failed to parse pipeline '{pipeline_name}': {e}"}, 400)
+
+        try:
+            task = self.orch.run_plan(plan, input_file=str(input_file),
+                                      task_id=task_id, wait=wait)
+        except Exception as e:
+            return self._json({"error": f"pipeline execution failed: {e}"}, 500)
+
+        response = {
+            "task_id": task.id,
+            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "pipeline": task.pipeline_name,
+            "query": query,
+            "title": title,
+        }
+
+        if wait:
+            result = dict(getattr(task, "result", {}))
+            response["result"] = result
+            response["error"] = getattr(task, "error", None)
+            for key in ("safe_writer", "safewriter", "layout", "checker"):
+                val = result.get(key)
+                if isinstance(val, dict):
+                    path = val.get("output_path") or val.get("path") or val.get("file")
+                    if path and Path(path).exists():
+                        response["output_path"] = path
+                        try:
+                            response["output_content"] = Path(path).read_text(encoding="utf-8")
+                        except Exception:
+                            pass
+                        break
+                elif isinstance(val, str) and val.endswith(".md") and Path(val).exists():
+                    response["output_path"] = val
+                    try:
+                        response["output_content"] = Path(val).read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+                    break
+        else:
+            response["message"] = "task started, poll GET /tasks/{task_id} for status"
+
+        self._json(response)
 
     def _handle_cancel_task(self, task_id: str):
         if not self.orch:
@@ -616,6 +742,99 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json({"caches": all_stats()})
         except Exception as e:
             self._json({"error": str(e)}, 500)
+
+    def _handle_cost_stats(self):
+        """LLM 成本统计"""
+        try:
+            from pipeline_core.cost_tracker import get_cost_tracker
+            self._json(get_cost_tracker().summary())
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+
+    def _handle_set_budget(self, body: bytes):
+        """设置预算上限"""
+        try:
+            data = _fast_loads(body) if body else {}
+            max_cost = float(data.get("max_cost", 0))
+            from pipeline_core.cost_tracker import get_cost_tracker
+            get_cost_tracker().set_budget(max_cost)
+            self._json({"budget_set": True, "max_cost": max_cost})
+        except Exception as e:
+            self._json({"error": str(e)}, 400)
+
+    def _handle_config_reload(self):
+        """热重载配置并通知所有 Agent"""
+        if not self.orch:
+            return self._json({"error": "orchestrator not set"}, 500)
+        try:
+            self.orch.config.reload()
+            notified = 0
+            for agent_info in self.orch.registry.list():
+                name = agent_info.get("name", "")
+                instance = self.orch.registry.get_instance(name)
+                if instance and hasattr(instance, "on_config_update"):
+                    try:
+                        instance.on_config_update(changed_keys=["*"])
+                        notified += 1
+                    except Exception:
+                        pass
+            self._json({"reloaded": True, "agents_notified": notified})
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+
+    def _handle_alerts(self):
+        """告警列表"""
+        from urllib.parse import urlparse, parse_qs
+        params = parse_qs(urlparse(self.path).query)
+        level = params.get("level", [None])[0]
+        category = params.get("category", [None])[0]
+        limit = int(params.get("limit", ["50"])[0])
+        from .alert_manager import get_alerts
+        self._json({"alerts": get_alerts(level=level, category=category, limit=limit)})
+
+    def _handle_logs(self):
+        """结构化日志查询
+
+        ?level=error&agent=writer&since=3600&limit=50
+        """
+        from urllib.parse import urlparse, parse_qs
+        params = parse_qs(urlparse(self.path).query)
+        level_filter = params.get("level", [None])[0]
+        agent_filter = params.get("agent", [None])[0]
+        since_seconds = int(params.get("since", ["3600"])[0])
+        limit = int(params.get("limit", ["100"])[0])
+
+        log_dir = Path("logs")
+        if not log_dir.exists():
+            self._json({"logs": [], "count": 0})
+            return
+
+        cutoff = time.time() - since_seconds
+        results = []
+        for log_file in sorted(log_dir.glob("*.jsonl"), reverse=True):
+            try:
+                for line in log_file.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = _fast_loads(line)
+                    except Exception:
+                        continue
+                    ts = entry.get("timestamp", 0)
+                    if ts < cutoff:
+                        continue
+                    if level_filter and entry.get("level", "").lower() != level_filter.lower():
+                        continue
+                    if agent_filter and entry.get("agent", "") != agent_filter:
+                        continue
+                    results.append(entry)
+                    if len(results) >= limit:
+                        break
+            except Exception:
+                continue
+            if len(results) >= limit:
+                break
+        self._json({"logs": results, "count": len(results)})
 
     def _handle_cache_clear(self):
         """清空所有缓存"""

@@ -809,6 +809,19 @@ class WriterAgent(BaseAgent):
             self.log_warning("Prompt 模板为空或加载失败，跳过 LLM 重构")
             return None
 
+        # 质量闭环：读取历史低分模式，加强薄弱环节
+        try:
+            from pipeline_core.quality_feedback import get_quality_feedback
+            recs = get_quality_feedback().get_recommendations()
+            if recs:
+                enhancement = "\n\n【质量改进提醒】基于历史评分数据，以下维度需要加强：\n"
+                for r in recs[:3]:
+                    enhancement += f"- {r}\n"
+                system_prompt += enhancement
+                self.log_info(f"质量闭环：应用 {len(recs[:3])} 条改进建议")
+        except Exception:
+            pass
+
         # 文章摘要（第一轮提供素材）
         article_summaries = []
         for art in articles[:3]:

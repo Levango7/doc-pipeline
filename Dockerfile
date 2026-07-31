@@ -7,7 +7,7 @@
 # =============================================================================
 
 # -- Stage 1: Builder --------------------------------------------------------
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 # Prevent Python from writing .pyc / buffering stdout
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -21,7 +21,7 @@ RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r requ
 
 
 # -- Stage 2: Runtime --------------------------------------------------------
-FROM python:3.11-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 # System setup: non-root user + runtime dirs
 RUN addgroup --system --gid 1001 app && \
