@@ -333,6 +333,55 @@ class PersistentStore:
         # affected rows = 0 means key already existed (duplicate)
         return cursor.rowcount == 0
 
+    def check_and_save_atomic(self, key: str, msg: Message) -> bool:
+        """修复 P0：原子地执行幂等检查 + 消息持久化（同事务）。
+
+        原 send() 分两步调用 check_and_mark_idempotent + save_message，
+        若 check 成功后 save_message 失败（磁盘满/IO 错误），幂等键已标记
+        但消息未落库 → 后续重复消息被静默丢弃，数据丢失。
+
+        本方法在单个 SQLite 事务中执行：
+          1. 检查幂等键是否存在 → 存在则返回 True（重复，不写任何数据）
+          2. 插入幂等键 + 保存消息 → 任一步失败则整个事务回滚，幂等键不残留
+        返回 True=重复跳过，False=首次已保存。
+        """
+        conn = self._get_conn()
+        try:
+            with conn:
+                # 1. 幂等检查
+                existing = conn.execute(
+                    "SELECT 1 FROM processed_keys WHERE key=?", (key,)
+                ).fetchone()
+                if existing:
+                    return True  # 重复，事务无写入直接结束
+                # 2. 标记幂等键
+                conn.execute(
+                    "INSERT INTO processed_keys (key, created_at) VALUES (?,?)",
+                    (key, time.time()),
+                )
+                # 3. 保存消息（INSERT OR REPLACE 语义与 save_message 一致）
+                conn.execute(
+                    """INSERT OR REPLACE INTO messages
+                       (msg_id, topic, payload_json, msg_type, from_agent, to_agent,
+                        correlation_id, trace_id, priority, retry_count, max_retries,
+                        idempotency_key, created_at, delivered, error)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        msg.msg_id, msg.topic, _fast_dumps(msg.payload),
+                        msg.msg_type.value, msg.from_agent, msg.to_agent,
+                        msg.correlation_id, msg.trace_id, msg.priority,
+                        msg.retry_count, msg.max_retries,
+                        msg.idempotency_key, msg.created_at,
+                        1 if msg.delivered else 0, msg.error,
+                    ),
+                )
+            # 事务提交成功后异步修剪（不阻塞主路径）
+            self._trim_processed_keys()
+            return False
+        except Exception:
+            # with conn 上下文已自动回滚，幂等键不会残留
+            raise
+
     def _trim_processed_keys(self):
         """保持幂等键数量在限制内"""
         conn = self._get_conn()

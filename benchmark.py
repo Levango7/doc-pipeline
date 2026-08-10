@@ -37,8 +37,12 @@ ITERATIONS = 3 if QUICK else 10
 LARGE_HTML_SIZE = 500_000  # 模拟大页面
 
 # 回归阈值：性能下降超过此比例则 CI 失败
+# P1 修复：边界保护 — 当 --threshold 是最后一个 argv 元素时避免 IndexError
 _threshold_idx = sys.argv.index("--threshold") + 1 if "--threshold" in sys.argv else -1
-REGRESSION_THRESHOLD = float(sys.argv[_threshold_idx]) if _threshold_idx > 0 and _threshold_idx < len(sys.argv) else 0.20
+try:
+    REGRESSION_THRESHOLD = float(sys.argv[_threshold_idx]) if 0 < _threshold_idx < len(sys.argv) else 0.20
+except (ValueError, IndexError):
+    REGRESSION_THRESHOLD = 0.20
 
 # 指标方向映射：True=越高越好（吞吐、加速比），False=越低越好（耗时、延迟）
 # 未列出的指标默认按值变化方向自动推断
@@ -105,7 +109,8 @@ def bench_html_extraction():
     results["regex"] = (time.perf_counter() - t0) / ITERATIONS
 
     if results["selectolax"] and results["regex"]:
-        results["speedup"] = results["regex"] / results["selectolax"]
+        # P1 修复：除零保护
+        results["speedup"] = results["regex"] / results["selectolax"] if results["selectolax"] > 0 else 0.0
 
     return results
 
@@ -135,10 +140,11 @@ def bench_cache_throughput():
         cache.get(f"miss_{i}")
     get_miss_time = time.perf_counter() - t0
 
+    # P1 修复：除零保护（极小时间可能为 0）
     return {
-        "set_ops_per_sec": n / set_time,
-        "get_hit_ops_per_sec": n / get_hit_time,
-        "get_miss_ops_per_sec": n / get_miss_time,
+        "set_ops_per_sec": n / set_time if set_time > 0 else float("inf"),
+        "get_hit_ops_per_sec": n / get_hit_time if get_hit_time > 0 else float("inf"),
+        "get_miss_ops_per_sec": n / get_miss_time if get_miss_time > 0 else float("inf"),
         "set_ms_per_op": set_time / n * 1000,
         "get_hit_ms_per_op": get_hit_time / n * 1000,
     }
@@ -177,8 +183,9 @@ def bench_parallel_execution():
         list(pool.map(_cpu_work, range(n)))
     results["process_pool"] = time.perf_counter() - t0
 
-    results["thread_speedup"] = results["serial"] / results["thread_pool"]
-    results["process_speedup"] = results["serial"] / results["process_pool"]
+    # P1 修复：除零保护（thread_pool/process_pool 时间极小时可能为 0）
+    results["thread_speedup"] = results["serial"] / results["thread_pool"] if results["thread_pool"] > 0 else 0.0
+    results["process_speedup"] = results["serial"] / results["process_pool"] if results["process_pool"] > 0 else 0.0
 
     return results
 
@@ -201,8 +208,9 @@ def bench_streaming_overhead():
     events = callback.get_events()
     consume_time = time.perf_counter() - t0
 
+    # P1 修复：除零保护
     return {
-        "emit_ops_per_sec": n / emit_time,
+        "emit_ops_per_sec": n / emit_time if emit_time > 0 else float("inf"),
         "emit_ms_per_op": emit_time / n * 1000,
         "consume_ms": consume_time * 1000,
         "events_buffered": len(events),

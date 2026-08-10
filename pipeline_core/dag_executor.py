@@ -490,6 +490,10 @@ class DAGExecutor:
 
                     if self._circuit_breaker(node, task):
                         task.status = TaskStatus.FAILED
+                        # 修复 P0：f.cancel() 只能取消尚未启动的 future，
+                        # 已在运行的节点不会被中断。设置 task.stop_event 软中断，
+                        # 让运行中的节点在下次检查 stop_event 时主动退出。
+                        task.stop_event.set()
                         for f in futures:
                             f.cancel()
                         break
@@ -497,6 +501,8 @@ class DAGExecutor:
                     fail_fast = getattr(plan, "fail_fast", True)
                     if fail_fast:
                         task.status = TaskStatus.FAILED
+                        # 修复 P0：同上，设置 stop_event 软中断已运行节点。
+                        task.stop_event.set()
                         for f in futures:
                             f.cancel()
                         break

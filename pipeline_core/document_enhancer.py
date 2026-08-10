@@ -271,6 +271,11 @@ class DocumentEnhancer:
                 enhanced_parts.append(f"{current_subtitle}\n\n{enhanced}")
                 current_subtitle = ""
 
+        # 防御：若所有子标题均未匹配（理论上 split 不会产生此情况），回退到原始 body 避免丢内容
+        if not enhanced_parts:
+            logger.warning("分块增强未产生任何子章节结果，回退到原始内容（%d 字符）", len(body))
+            return body
+
         return "\n\n".join(enhanced_parts)
 
 
@@ -292,7 +297,10 @@ class DocumentEnhancer:
         enh_h4 = set(re.findall(r'^#### .+', enhanced, re.MULTILINE))
         missing = orig_h4 - enh_h4
         if missing:
-            logger.warning(f"LLM 增强丢失 {len(missing)} 个 H4 标题，回退到原始内容: {missing}")
+            logger.warning(
+                "LLM 增强丢失 %d 个 H4 标题，回退到原始内容: %s",
+                len(missing), missing,
+            )
             return original
         return enhanced
 

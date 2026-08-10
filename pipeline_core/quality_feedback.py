@@ -39,6 +39,8 @@ class QualityFeedback:
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, timeout=5, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
+        # busy_timeout 防止并发写入时立即抛 SQLITE_BUSY，与 cost_tracker 保持一致
+        conn.execute("PRAGMA busy_timeout=3000")
         return conn
 
     def _init_db(self):

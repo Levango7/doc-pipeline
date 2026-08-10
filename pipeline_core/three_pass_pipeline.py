@@ -120,7 +120,10 @@ class ThreePassPipeline:
         # 抓取网页内容（并行）
         articles = []
         urls_to_fetch = search_results[:max_results]
-        with ThreadPoolExecutor(min(8, len(urls_to_fetch))) as pool:
+        # 修复 P1：原代码 ThreadPoolExecutor(min(8, len(urls_to_fetch)))，
+        # 当 urls_to_fetch 为空时 max_workers=0 会抛 ValueError。
+        # 用 max(1, ...) 保证至少 1 个 worker，空列表时循环体不执行。
+        with ThreadPoolExecutor(max(1, min(8, len(urls_to_fetch)))) as pool:
             future_map = {
                 pool.submit(self._fetch_url, item.url): item
                 for item in urls_to_fetch
@@ -210,7 +213,8 @@ class ThreePassPipeline:
         plan = self._plan_skeleton(query)
 
         # TF-IDF 填充（并行）
-        with ThreadPoolExecutor(min(len(plan.sections), 4)) as pool:
+        # 修复 P1：防御性 max(1, ...) 避免 sections 为空时 ThreadPoolExecutor(0) 崩溃
+        with ThreadPoolExecutor(max(1, min(len(plan.sections), 4))) as pool:
             future_map = {
                 pool.submit(self._fill_section, sec, articles, query): sec
                 for sec in plan.sections
@@ -334,7 +338,8 @@ class ThreePassPipeline:
 
         # 并行 LLM 精修
         sections_to_refine = list(enumerate(plan.sections))
-        with ThreadPoolExecutor(min(len(sections_to_refine), 4)) as pool:
+        # 修复 P1：防御性 max(1, ...) 避免 sections 为空时 ThreadPoolExecutor(0) 崩溃
+        with ThreadPoolExecutor(max(1, min(len(sections_to_refine), 4))) as pool:
             future_map = {
                 pool.submit(self._llm_refine_section, sec, plan.query, plan.title): (i, sec)
                 for i, sec in sections_to_refine

@@ -248,6 +248,7 @@ class FormatConverter:
         html_lines = []
         in_code = False
         in_table = False
+        in_list = False  # P1 修复：跟踪列表状态以正确包裹 <ul>
         table_rows = []
 
         for line in lines:
@@ -277,7 +278,8 @@ class FormatConverter:
             # 表格
             if "|" in line and line.strip().startswith("|"):
                 cells = [c.strip() for c in line.split("|")[1:-1]]
-                if all(re.match(r"^[-:]+$", c) for c in cells):
+                # P1 修复：空 cells 不应视为分隔行（all([]) == True 的陷阱）
+                if cells and all(re.match(r"^[-:]+$", c) for c in cells):
                     continue  # 分隔行
                 if not in_table:
                     html_lines.append("<table>")
@@ -299,8 +301,15 @@ class FormatConverter:
             # 列表
             m = re.match(r"^[\s]*[-*+]\s+(.*)", line)
             if m:
+                # P1 修复：列表项需用 <ul> 包裹，否则 HTML 不合法
+                if not in_list:
+                    html_lines.append("<ul>")
+                    in_list = True
                 html_lines.append(f"<li>{self._inline_md(m.group(1))}</li>")
                 continue
+            elif in_list:
+                html_lines.append("</ul>")
+                in_list = False
 
             # 引用
             if line.strip().startswith(">"):
@@ -321,6 +330,8 @@ class FormatConverter:
 
         if in_table:
             html_lines.append("</tbody></table>")
+        if in_list:
+            html_lines.append("</ul>")
         if in_code:
             html_lines.append("</code></pre>")
 
@@ -432,12 +443,16 @@ class FormatConverter:
 
         def replace_mermaid(match):
             code = match.group(1)
-            img_name = f"mermaid_{int(time.time()*1000)}.png"
+            # P2 修复：同毫秒内多个图会重名，加计数器
+            img_name = f"mermaid_{int(time.time()*1000)}_{replace_mermaid._counter}.png"
+            replace_mermaid._counter += 1
             img_path = output_dir / img_name
             if self.mermaid_to_png(code, str(img_path)):
                 return f"![{img_name}]({img_path})"
             else:
                 return match.group(0)  # 渲染失败保留原样
+
+        replace_mermaid._counter = 0
 
         content = re.sub(
             r"```mermaid\n(.*?)\n```",

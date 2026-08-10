@@ -265,6 +265,7 @@ class Registry:
     # ─── 状态管理 ─────────────────────────────────
 
     def set_status(self, name: str, status: AgentStatus):
+        need_respawn = False
         with self._lock:
             old_status = self._status.get(name)
             self._status[name] = status
@@ -274,7 +275,11 @@ class Registry:
             elif status == AgentStatus.ERROR:
                 stats = self._stats.setdefault(name, AgentStats())
                 stats.record_error(f"Status changed to ERROR from {old_status}")
-                self._check_respawn(name)
+                # P1 修复: 标记需要在锁外执行 respawn，避免持锁调用外部代码
+                need_respawn = True
+        # 锁外执行 respawn（on_stop/构造新实例可能阻塞或获取其他锁）
+        if need_respawn:
+            self._check_respawn(name)
 
     def get_status(self, name: str) -> AgentStatus:
         with self._lock:
@@ -287,12 +292,16 @@ class Registry:
     # ─── Respawn ─────────────────────────────────
 
     def _check_respawn(self, name: str):
-        """检查并执行 respawn"""
+        """检查并执行 respawn。
+
+        P1 修复: 将外部调用（on_stop、构造新实例）移出锁外执行，避免持锁调用
+        外部代码导致死锁或长时间持锁。原实现在外层锁内直接调用 on_stop/构造，
+        若回调中获取其他锁或阻塞 I/O 会严重影响 registry 并发度。
+        """
+        # 阶段 1: 锁内决策，收集 respawn 所需信息
         with self._lock:
             meta = self._agent_metas.get(name)
-            if not meta:
-                return
-            if not meta.respawn:
+            if not meta or not meta.respawn:
                 return
             stats = self._stats.setdefault(name, AgentStats())
             if stats.respawn_count >= meta.respawn_max:
@@ -301,29 +310,38 @@ class Registry:
 
             _logger.info(f"[Registry] 尝试重启 Agent: {name}")
             stats.record_respawn()
-
             old_instance = self._instances.get(name)
-            if old_instance and hasattr(old_instance, 'on_stop'):
-                try:
-                    old_instance.on_stop()
-                except Exception as e:
-                    _logger.warning(f"[Registry] 停止旧实例失败: {e}")
 
-            if old_instance and hasattr(old_instance, '__class__'):
-                try:
-                    new_instance = old_instance.__class__(
-                        name=name,
-                        meta=meta,
-                        config=meta.config,
-                        message_bus=getattr(old_instance, 'bus', None),
-                        registry=self,
-                    )
-                    self._instances[name] = new_instance
-                    self._status[name] = AgentStatus.LOADED
-                    _logger.info(f"[Registry] {name} 重启成功")
-                except Exception as e:
-                    _logger.error(f"[Registry] {name} 重启失败: {e}")
-                    self._status[name] = AgentStatus.ERROR
+        # 阶段 2: 锁外执行外部调用（on_stop、构造），避免持锁阻塞
+        if old_instance and hasattr(old_instance, 'on_stop'):
+            try:
+                old_instance.on_stop()
+            except Exception as e:
+                _logger.warning(f"[Registry] 停止旧实例失败: {e}")
+
+        new_instance = None
+        construct_error = None
+        if old_instance and hasattr(old_instance, '__class__'):
+            try:
+                new_instance = old_instance.__class__(
+                    name=name,
+                    meta=meta,
+                    config=meta.config,
+                    message_bus=getattr(old_instance, 'bus', None),
+                    registry=self,
+                )
+            except Exception as e:
+                construct_error = e
+
+        # 阶段 3: 锁内更新实例和状态
+        with self._lock:
+            if new_instance is not None:
+                self._instances[name] = new_instance
+                self._status[name] = AgentStatus.LOADED
+                _logger.info(f"[Registry] {name} 重启成功")
+            elif construct_error is not None:
+                _logger.error(f"[Registry] {name} 重启失败: {construct_error}")
+                self._status[name] = AgentStatus.ERROR
 
     # ─── 健康检查 ─────────────────────────────────
 
@@ -339,19 +357,29 @@ class Registry:
         self._health_check_thread.start()
 
     def _check_health(self):
+        # P1 修复: 将 is_healthy() 外部调用移出锁外，避免持锁调用外部代码
+        # 阶段 1: 锁内收集需要检查的 (name, instance) 快照
         with self._lock:
-            for name, instance in self._instances.items():
-                meta = self._agent_metas.get(name)
-                if not meta:
-                    continue
-                if hasattr(instance, 'is_healthy'):
-                    try:
-                        if not instance.is_healthy():
+            items = [(name, instance) for name, instance in self._instances.items()
+                     if self._agent_metas.get(name) is not None]
+
+        # 阶段 2: 锁外调用 is_healthy()（外部代码，可能阻塞）
+        respawn_candidates = []
+        for name, instance in items:
+            if hasattr(instance, 'is_healthy'):
+                try:
+                    if not instance.is_healthy():
+                        with self._lock:
                             self._status[name] = AgentStatus.UNHEALTHY
-                            self._check_respawn(name)
-                    except Exception as e:
+                        respawn_candidates.append(name)
+                except Exception as e:
+                    with self._lock:
                         self._status[name] = AgentStatus.ERROR
-                        _logger.error(f"[Registry] {name} 健康检查失败: {e}")
+                    _logger.error(f"[Registry] {name} 健康检查失败: {e}")
+
+        # 阶段 3: 锁外执行 respawn（_check_respawn 内部自行加锁）
+        for name in respawn_candidates:
+            self._check_respawn(name)
 
     # ─── 持久化 ─────────────────────────────────
 

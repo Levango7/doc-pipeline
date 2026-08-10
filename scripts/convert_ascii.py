@@ -59,7 +59,9 @@ BOX_CHARS = set("┌┐└┘├┤┬┴┼─│━┃┏┓┗┛┣┫┳┻
 ASCII_BOX_CHARS = set("+-|")
 # 树形字符
 TREE_CHARS = set("├└┤┴─│┃┌┐")
-ASCII_TREE_PATTERN = re.compile(r"^[ \t]*[├└┌┐┤┴─│┃]*[├└][─━�s]*")
+# P1 修复：原模式含乱码 �s，应为 \s（空白）或字面量。
+# 树形图行：前导空格 + 可选树干字符 + 必含 ├ 或 └ + 横线/空白填充
+ASCII_TREE_PATTERN = re.compile(r"^[ \t]*[├└┌┐┤┴─│┃]*[├└][─━\s]*")
 # 流程图箭头
 ARROW_CHARS = set("→↓↑←↔↕⇒⇓⇑⇐")
 ASCII_ARROW_PATTERN = re.compile(r"[-><]+|[\^v<>]")

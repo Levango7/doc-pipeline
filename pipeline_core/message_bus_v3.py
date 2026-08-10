@@ -91,14 +91,24 @@ class MessageBus:
             if len(self._log) > self._max_log:
                 self._log = self._log[-self._max_log:]
 
-            # 幂等检查（在锁内，避免 check-then-act 竞态）
+            # 修复 P0：幂等检查与持久化必须原子执行。
+            # 原代码分两步：check_and_mark_idempotent 成功后 save_message 可能失败，
+            # 导致幂等键已标记但消息未落库 → 后续重复消息被静默丢弃（数据丢失）。
+            # 改用 check_and_save_atomic 在同事务中完成检查+持久化：
+            #   - 有幂等键且需持久化（EVENT）→ 单事务原子执行
+            #   - 有幂等键但不持久化（REQUEST/RESPONSE）→ 仅检查标记
+            #   - 无幂等键但需持久化 → 直接 save_message
             if msg.idempotency_key and self._store:
-                if self._store.check_and_mark_idempotent(msg.idempotency_key):
-                    return  # 已存在，重复消息，跳过
-
-            # 持久化（仅 EVENT 消息写入 SQLite，REQUEST/RESPONSE 是瞬态同步消息跳过）
-            # 优化：减少热路径写锁竞争，EVENT 需要持久化用于 DLQ/审计
-            if persist and self._store and msg.msg_type == MessageType.EVENT:
+                if persist and msg.msg_type == MessageType.EVENT:
+                    # 原子：幂等检查 + 消息持久化同事务
+                    if self._store.check_and_save_atomic(msg.idempotency_key, msg):
+                        return  # 重复消息，跳过
+                else:
+                    # 仅幂等检查（非 EVENT 或不持久化）
+                    if self._store.check_and_mark_idempotent(msg.idempotency_key):
+                        return  # 重复消息，跳过
+            elif persist and self._store and msg.msg_type == MessageType.EVENT:
+                # 无幂等键，直接持久化
                 self._store.save_message(msg)
 
             # 同步投递（REQUEST 类型需要同步等待，直接走回调）
@@ -147,9 +157,20 @@ class MessageBus:
         self._metrics.record_sent()
         self._deliver(msg)
 
+        # 修复 P0：原代码 event.wait 超时后直接 pop callback 并返回 result[0]，
+        # 存在竞态：超时瞬间响应可能已到达 handler 并写入 result[0]，但主线程
+        # 未持锁检查，可能返回 None 丢失响应；或 handler 尚未执行，主线程 pop
+        # callback 后响应永远丢失（且未进 DLQ）。
+        # 修复：超时后持锁检查 result；若已有响应则直接返回；否则 pop callback
+        # 并返回 None，由 _deliver 在 callback 缺失时将响应转入 DLQ。
         event.wait(timeout=timeout)
 
         with self._lock:
+            # 持锁二次检查：若 handler 已在超时瞬间写入 result，返回真实响应
+            if result[0] is not None:
+                self._callbacks.pop(msg.correlation_id, None)
+                return result[0]
+            # 确实超时：移除 callback，后续到达的响应由 _deliver 路由到 DLQ
             self._callbacks.pop(msg.correlation_id, None)
 
         return result[0]
@@ -249,6 +270,19 @@ class MessageBus:
                     if self._store:
                         self._store.move_to_dlq(msg, str(e))
                         self._metrics.record_dlq()
+            else:
+                # 修复 P0：callback 不存在（request 已超时被 pop）时，
+                # 原代码直接 return 导致响应数据静默丢失。
+                # 将孤儿响应转入 DLQ，供后续 replay_dlq 自愈。
+                self._metrics.record_failed()
+                if self._store:
+                    try:
+                        self._store.move_to_dlq(
+                            msg, "orphan response: request timed out or no callback"
+                        )
+                        self._metrics.record_dlq()
+                    except Exception as e:
+                        _logger.warning(f"[MessageBus] orphan response DLQ failed: {e}")
             return
 
         with self._lock:

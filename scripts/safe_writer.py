@@ -53,8 +53,12 @@ def file_info(path: str) -> dict:
 def file_checksum(path: str) -> str | None:
     if not os.path.exists(path):
         return None
-    with open(path, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except (OSError, IOError):
+        # P1 修复：权限错误等不应抛异常，返回 None
+        return None
 
 
 # =============================================================================
@@ -69,13 +73,11 @@ def load_manifest(path: str) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # 校验和验证
+        # 校验和验证（P1 修复：使用排除 checksum 字段的验证）
         stored = data.get("checksum")
-        if stored:
-            actual = file_checksum(path)
-            if actual != stored:
-                print(f"[SafeWriter] ⚠  manifest 校验和不匹配，尝试从备份恢复...")
-                data = _restore_manifest(path, data)
+        if stored and not _verify_manifest_checksum(path):
+            print(f"[SafeWriter] ⚠  manifest 校验和不匹配，尝试从备份恢复...")
+            data = _restore_manifest(path, data)
 
         return data
     except Exception:
@@ -83,23 +85,50 @@ def load_manifest(path: str) -> dict:
 
 
 def save_manifest(path: str, data: dict, backup: bool = True):
-    """保存 manifest（自动生成校验和）"""
+    """保存 manifest（自动生成校验和）
+
+    P1 修复：原实现存在 checksum 自引用问题 — 第二次写入包含 checksum 字段，
+    但 checksum 是基于第一次写入（无 checksum）计算的，导致 load_manifest 校验失败。
+    现改为：checksum 基于不含 checksum 字段的内容计算，单次写入。
+    """
     Path(path).parent.mkdir(parents=True, exist_ok=True)
 
     # 先备份旧 manifest
     if backup and os.path.exists(path):
         shutil.copy2(path, path + ".bak")
 
-    # 清空旧 checksum 再写入
+    # 计算基于无 checksum 内容的 checksum
     data.pop("checksum", None)
+    content_without_checksum = json.dumps(data, ensure_ascii=False, indent=2)
+    chk = hashlib.sha256(content_without_checksum.encode("utf-8")).hexdigest()
+    data["checksum"] = chk
+
+    # 单次写入（包含 checksum）
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    # 计算并写入 checksum
-    chk = file_checksum(path)
-    data["checksum"] = chk
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def _verify_manifest_checksum(path: str) -> bool:
+    """验证 manifest 校验和（排除 checksum 字段本身）
+
+    P1 修复：由于 checksum 自引用，load_manifest 中的校验总是失败。
+    此函数通过重新计算排除 checksum 字段后的内容来验证，
+    使用与 save_manifest 相同的序列化格式（ensure_ascii=False, indent=2）。
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        stored = data.get("checksum")
+        if not stored:
+            return True  # 无 checksum，视为有效
+        # 重新计算排除 checksum 的内容（与 save_manifest 计算格式一致）
+        data.pop("checksum", None)
+        recomputed = hashlib.sha256(
+            json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        ).hexdigest()
+        return recomputed == stored
+    except Exception:
+        return False
 
 
 def _restore_manifest(path: str, corrupted: dict) -> dict:
@@ -181,21 +210,29 @@ def cleanup_tiered(backup_dir: str,
 
         def parse_ts(b):
             try:
-                return datetime.datetime.fromisoformat(b["timestamp"]).timestamp()
+                ts = datetime.datetime.fromisoformat(b["timestamp"]).timestamp()
+                # P1 修复：无效时间戳（0 或负数）视为"未知年龄"，返回 None 标记跳过
+                return ts if ts > 0 else None
             except Exception:
-                return 0
+                return None
 
-        sorted_backups = sorted(backups, key=parse_ts, reverse=True)
-        latest_ts = parse_ts(sorted_backups[0]) if sorted_backups else 0
+        # P1 修复：parse_ts 可能返回 None（无效时间戳），过滤掉这些备份而非按 ts=0 处理
+        # 原 bug：parse_ts 失败返回 0，age = now - 0 = now（巨大），导致最新备份被误删
+        valid_backups = [b for b in backups if parse_ts(b) is not None]
+        if not valid_backups:
+            continue
+        sorted_backups = sorted(valid_backups, key=parse_ts, reverse=True)
+        latest_ts = parse_ts(sorted_backups[0])
         to_delete = []
 
         for b in sorted_backups:
-            age = now - parse_ts(b)
+            b_ts = parse_ts(b)
+            age = now - b_ts
             bpath = b.get("path", "")
             if age < t_full:
                 pass  # 保留
             elif age < t_latest:
-                if parse_ts(b) != latest_ts:
+                if b_ts != latest_ts:
                     to_delete.append(bpath)
             else:
                 to_delete.append(bpath)
@@ -212,6 +249,10 @@ def cleanup_tiered(backup_dir: str,
             b for b in sorted_backups
             if b.get("path") not in to_delete
         ]
+        # 保留被 parse_ts 跳过的备份（无法判断年龄，不删）
+        skipped = [b for b in backups if parse_ts(b) is None]
+        if skipped:
+            finfo["backups"].extend(skipped)
         if finfo["backups"]:
             finfo["latest"] = finfo["backups"][0]
         else:

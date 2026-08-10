@@ -266,17 +266,36 @@ class QualityGateAgent(BaseAgent):
         text = content.lower()
         head = "\n".join(content.split("\n")[:30]).lower()  # 标题+目录+前两章
 
-        # mandatory token 检查：任一专有名词缺失 -> 直接归零
+        # mandatory token 检查（修复 P0：原实现任一专有名词缺失即归零，过严格。
+        # 例如 query="Apache Kafka 核心架构" 提取 mandatory={apache, kafka}，
+        # 若文档只提到 Kafka 未提 Apache 即归零，导致评分失效。
+        # 现改为覆盖率阈值：缺失专有名词超过 50% 才归零，否则按缺失比例扣分。）
         missing_mandatory = [t for t in mandatory if t not in text]
-        if missing_mandatory:
-            self.log_debug(f"topic_relevance 归零: 缺失专有名词 {missing_mandatory}")
-            return 0.0
+        if mandatory and missing_mandatory:
+            missing_ratio = len(missing_mandatory) / len(mandatory)
+            if missing_ratio > 0.5:
+                # 超过半数专有名词缺失 → 严重跑题，归零
+                self.log_debug(
+                    f"topic_relevance 归零: 缺失 {len(missing_mandatory)}/{len(mandatory)} "
+                    f"专有名词 {missing_mandatory}"
+                )
+                return 0.0
+            else:
+                # 少量缺失 → 按缺失比例扣分（不归零）
+                self.log_debug(
+                    f"topic_relevance 部分缺失: {missing_mandatory} "
+                    f"({len(missing_mandatory)}/{len(mandatory)})"
+                )
 
         hit = sum(1 for t in tokens if t.lower() in text)
         hit_head = sum(1 for t in tokens if t.lower() in head)
         coverage = hit / len(tokens)
         # 头部命中加权（跑题文档头部往往没有关键词）
-        return round(min(100.0, coverage * 70 + hit_head / len(tokens) * 30), 1)
+        base_score = min(100.0, coverage * 70 + hit_head / len(tokens) * 30)
+        # 对少量 mandatory 缺失施加额外扣分（每缺失一个扣 10 分）
+        if mandatory and missing_mandatory:
+            base_score = max(0.0, base_score - 10.0 * len(missing_mandatory))
+        return round(base_score, 1)
 
     def _score_substance(self, content: str) -> float:
         """内容实质度：检测水话 / 车轱辘话 / 空洞，而非仅看格式"""

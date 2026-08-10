@@ -50,9 +50,13 @@ class CheckerAgent(BaseAgent):
 
     def __init__(self, name, meta, config, message_bus, registry):
         super().__init__(name, meta, config, message_bus, registry)
-        if message_bus:
-            message_bus.subscribe("writer.done", self._on_writer_done)
-            message_bus.subscribe("checker.check", self.handle)
+        # 修复 P0：移除手动重复订阅。BaseAgent.__init__ 已通过 INPUT_TOPICS
+        # 自动订阅 writer.done / checker.check / checker.input 到 _wrapped_handle。
+        # 原 __init__ 再次手动订阅导致每条消息被处理两次：
+        #   - checker.check 被 handle 处理两次（一次经 _wrapped_handle，一次直接 handle）
+        #   - writer.done 被 handle + _on_writer_done 各处理一次
+        # 现改为：所有 topic 统一经 _wrapped_handle -> handle 分发，
+        # handle 内部根据 msg.topic 路由到 _on_writer_done（保留 publish 协议）。
 
     def _on_writer_done(self, msg: Message):
         """Writer 完成后，自动触发检查"""
@@ -69,7 +73,13 @@ class CheckerAgent(BaseAgent):
         self.publish("checker.done", {**result, "task_id": task_id})
 
     def handle(self, msg: Message) -> dict | None:
-        """处理主动检查请求"""
+        """处理消息：根据 topic 分发到自动检查或主动检查"""
+        # writer.done 触发自动检查（保留原 _on_writer_done 的 publish("checker.done") 协议）
+        if getattr(msg, "topic", "") == "writer.done":
+            self._on_writer_done(msg)
+            return None
+
+        # 主动检查请求
         self.report(AgentStatus.RUNNING, "开始检查...")
         payload = msg.payload
         target = payload.get("target") or payload.get("file")

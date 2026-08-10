@@ -347,7 +347,10 @@ class Checker:
 
     def _check_structure(self):
         name = Path(self.filepath).stem.lower() if self.filepath else ""
-        params = self._param("structure", None, {}) or {}
+        # P2 修复：原代码 self._param("structure", None, {}) 语义错误，
+        # get_param(category, key, default) 中 key=None 会查找 params[None]，永远返回 default。
+        # 改为通过 rules._index 读取整个 params 字典。
+        params = self.rules._index.get("structure", {}).get("params", {}) or {}
 
         if "kubernetes" in name or "k8s" in name:
             min_ch = params.get("k8s_min", 10)

@@ -38,50 +38,78 @@ class CircuitBreaker:
 
     def record_success(self):
         """记录成功"""
+        transition = None
         with self._lock:
             if self.state == CircuitState.HALF_OPEN:
-                self.half_open_attempts += 1
+                # half_open_attempts 已由 allow_request 占用测试名额时原子递增，
+                # 此处仅检查是否达到成功阈值，不再重复递增（避免双重计数）。
                 if self.half_open_attempts >= self.half_open_max_tests:
-                    self._transition_to(CircuitState.CLOSED)
+                    transition = self._transition_to(CircuitState.CLOSED)
                     self.failure_count = 0
                     self.half_open_attempts = 0
             elif self.state == CircuitState.CLOSED:
                 self.failure_count = 0  # 成功清零连续失败计数
+        # 回调在锁外触发，避免持锁调用外部代码（emit_event/alert）导致死锁
+        if transition:
+            self._fire_state_change_callbacks(*transition)
 
     def record_failure(self) -> CircuitState:
         """记录失败，返回当前状态"""
+        transition = None
         with self._lock:
             self.failure_count += 1
             self.last_failure_time = time.time()
 
             if self.state == CircuitState.HALF_OPEN:
-                self._transition_to(CircuitState.OPEN)
-                return CircuitState.OPEN
-
-            if self.state == CircuitState.CLOSED and self.failure_count >= self.failure_threshold:
-                self._transition_to(CircuitState.OPEN)
-                return CircuitState.OPEN
-
-            return self.state
+                transition = self._transition_to(CircuitState.OPEN)
+                current = CircuitState.OPEN
+            elif self.state == CircuitState.CLOSED and self.failure_count >= self.failure_threshold:
+                transition = self._transition_to(CircuitState.OPEN)
+                current = CircuitState.OPEN
+            else:
+                current = self.state
+        # 回调在锁外触发
+        if transition:
+            self._fire_state_change_callbacks(*transition)
+        return current
 
     def allow_request(self) -> bool:
         """是否允许请求通过"""
+        transition = None
+        allowed = False
         with self._lock:
             if self.state == CircuitState.CLOSED:
-                return True
-
-            if self.state == CircuitState.OPEN:
+                allowed = True
+            elif self.state == CircuitState.OPEN:
                 elapsed = time.time() - self.last_state_change
                 if elapsed >= self.recovery_timeout:
-                    self._transition_to(CircuitState.HALF_OPEN)
+                    transition = self._transition_to(CircuitState.HALF_OPEN)
                     self.half_open_attempts = 0
-                    return True
-                return False
+                    # 占用第一个测试名额（CAS 原子操作，修复 P0: 并发全部放行）
+                    self.half_open_attempts += 1
+                    allowed = True
+                else:
+                    allowed = False
+            else:  # HALF_OPEN: 原子地占用一个测试名额
+                # 修复 P0: 原先只读 half_open_attempts 不递增，导致并发请求全部放行
+                if self.half_open_attempts < self.half_open_max_tests:
+                    self.half_open_attempts += 1
+                    allowed = True
+                else:
+                    allowed = False
+        # OPEN→HALF_OPEN 转换的回调在锁外触发，避免死锁
+        if transition:
+            self._fire_state_change_callbacks(*transition)
+        return allowed
 
-            # HALF_OPEN
-            return self.half_open_attempts < self.half_open_max_tests
+    def _transition_to(self, new_state: CircuitState) -> Optional[tuple]:
+        """状态转换（必须在 self._lock 内调用）。
 
-    def _transition_to(self, new_state: CircuitState):
+        仅做状态变更和内部计数器重置，**不触发外部回调**。
+        返回 (old_state, new_state) 表示发生了转换，None 表示状态未变。
+        外部回调由调用方在锁外通过 _fire_state_change_callbacks 触发，
+        避免持锁调用 emit_event/alert 导致死锁（P0 修复）。
+        """
         if self.state != new_state:
             old_state = self.state
             self.state = new_state
@@ -89,27 +117,42 @@ class CircuitBreaker:
             # 进入 OPEN 时重置 success 计数
             if new_state == CircuitState.OPEN:
                 self.success_count = 0
-            # ── 事件钩子 ──
-            try:
-                from .event_hook import emit_event
-                if new_state == CircuitState.OPEN:
-                    emit_event("circuit_breaker.open", {"agent": self.name, "failure_count": self.failure_count})
-                    from .alert_manager import alert
-                    alert("critical", "circuit_breaker",
-                          f"Agent {self.name} 熔断器 OPEN（连续失败 {self.failure_count} 次）",
-                          {"agent": self.name, "failure_count": self.failure_count})
-                elif new_state == CircuitState.CLOSED:
-                    emit_event("circuit_breaker.close", {"agent": self.name, "from": old_state.value})
-            except Exception:
-                pass
+            return (old_state, new_state)
+        return None
+
+    def _fire_state_change_callbacks(self, old_state: CircuitState, new_state: CircuitState):
+        """触发状态变更的外部回调（必须在锁外调用，避免死锁）。
+
+        回调包括：
+        - event_hook.emit_event: 事件钩子（可能触发 webhook HTTP POST）
+        - alert_manager.alert: 告警通知（可能触发 webhook）
+
+        这些外部调用可能阻塞或获取其他锁，因此绝不能在 self._lock
+        持锁状态下执行（P0 修复：原先在 _transition_to 持锁时触发，存在死锁风险）。
+        """
+        try:
+            from .event_hook import emit_event
+            if new_state == CircuitState.OPEN:
+                emit_event("circuit_breaker.open", {"agent": self.name, "failure_count": self.failure_count})
+                from .alert_manager import alert
+                alert("critical", "circuit_breaker",
+                      f"Agent {self.name} 熔断器 OPEN（连续失败 {self.failure_count} 次）",
+                      {"agent": self.name, "failure_count": self.failure_count})
+            elif new_state == CircuitState.CLOSED:
+                emit_event("circuit_breaker.close", {"agent": self.name, "from": old_state.value})
+        except Exception:
+            pass
 
     def reset(self):
         """完全重置熔断器（恢复 CLOSED）"""
+        transition = None
         with self._lock:
-            self._transition_to(CircuitState.CLOSED)
+            transition = self._transition_to(CircuitState.CLOSED)
             self.failure_count = 0
             self.success_count = 0
             self.half_open_attempts = 0
+        if transition:
+            self._fire_state_change_callbacks(*transition)
 
     def to_dict(self) -> dict:
         with self._lock:

@@ -3,8 +3,20 @@ from __future__ import annotations
 import json
 import time
 import os
+import re
 from pathlib import Path
 from typing import Optional
+
+
+# 安全修复 (P0): task_id 路径遍历防护 —— 仅允许字母/数字/下划线/连字符
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _validate_task_id(task_id: str) -> bool:
+    """校验 task_id 仅含字母/数字/下划线/连字符（防止路径遍历）。"""
+    if not task_id or len(task_id) > 128:
+        return False
+    return bool(_TASK_ID_RE.match(task_id))
 
 
 class CheckpointManager:
@@ -22,6 +34,9 @@ class CheckpointManager:
 
     def save(self, task, full_state: bool = False, agent_snapshots: dict = None):
         """保存断点"""
+        # 安全修复 (P0): task_id 路径遍历防护
+        if not _validate_task_id(task.id):
+            raise ValueError(f"无效的 task_id: {task.id!r}")
         try:
             data = task.to_dict()
             if full_state:
@@ -57,6 +72,9 @@ class CheckpointManager:
 
     def load(self, task_id: str):
         """加载断点（仅恢复基础信息），返回 (task, agent_snapshots) 元组"""
+        # 安全修复 (P0): task_id 路径遍历防护
+        if not _validate_task_id(task_id):
+            raise ValueError(f"无效的 task_id: {task_id!r}")
         from .pipeline import PipelineTask, TaskStatus
 
         checkpoint_file = self.checkpoint_dir / f"{task_id}.json"
@@ -96,6 +114,9 @@ class CheckpointManager:
 
     def remove(self, task_id: str):
         """移除断点文件"""
+        # 安全修复 (P0): task_id 路径遍历防护
+        if not _validate_task_id(task_id):
+            raise ValueError(f"无效的 task_id: {task_id!r}")
         checkpoint_file = self.checkpoint_dir / f"{task_id}.json"
         try:
             if checkpoint_file.exists():

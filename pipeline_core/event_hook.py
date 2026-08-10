@@ -291,7 +291,8 @@ class EventHookManager:
         headers = {"Content-Type": "application/json"}
         headers.update(hook.headers)
         try:
-            _ensure_webhook_engine()
+            # P1 修复: 删除冗余的二次 _ensure_webhook_engine 调用
+            # （已在方法开头调用过，重复调用既无必要也增加锁竞争）
             # put_nowait is sync but must run on the loop thread
             _webhook_loop.call_soon_threadsafe(
                 _safe_enqueue, _webhook_async_queue, (hook.id, hook.url, headers, body)

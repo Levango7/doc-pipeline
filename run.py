@@ -18,10 +18,20 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+
 # ─── 优雅退出：SIGTERM (Docker/systemd) → 触发 KeyboardInterrupt ───
+# 注意：handler 注册移入 main()，避免 import run 副作用（测试时 import 会劫持 SIGTERM）
 def _sigterm_handler(signum, frame):
     raise KeyboardInterrupt
-signal.signal(signal.SIGTERM, _sigterm_handler)
+
+
+def _install_sigterm_handler():
+    """注册 SIGTERM 处理器（仅在 main 中调用，避免 import 副作用）"""
+    try:
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+    except (ValueError, OSError):
+        # 非主线程或非主解释器（如 worker 进程）无法注册信号，忽略
+        pass
 
 
 def _load_dotenv():
@@ -179,8 +189,7 @@ def main():
 
     # ─── 恢复中断任务 ──────────────────────
     if args.recover:
-        from pipeline_core import PipelineOrchestrator
-        from pipeline_core.scheduler import Scheduler
+        # P1 修复：移除局部 import（会遮蔽模块级 PipelineOrchestrator，导致其他分支 UnboundLocalError）
         project_root = Path(__file__).parent
         orch = PipelineOrchestrator(
             agents_dir=str(project_root / "agents"),
@@ -344,8 +353,13 @@ def main():
         if plan:
             print(sched.visualize(plan))
         else:
-            plan_preview = orch.plan(args.pipeline, args.input, config)
-            print(orch.visualize_plan(plan_preview))
+            # P1 修复：plan 为 None 时 sched 也可能未定义，使用 legacy 路径预览
+            try:
+                plan_preview = orch.plan(args.pipeline, args.input, config)
+                print(orch.visualize_plan(plan_preview))
+            except Exception as e:
+                print(f"[run] ✗ 无法生成预览: {e}")
+                sys.exit(1)
         return
 
     print(f"\n{'='*60}")
@@ -380,6 +394,12 @@ def main():
         )
     else:
         # ─── 声明式 Pipeline 路径 ──
+        # P0 修复：plan 可能为 None（所有 YAML 加载失败），友好退出而非 AttributeError
+        if plan is None:
+            print(f"[run] ✗ 无法加载流水线配置（pipeline={args.pipeline}）")
+            print(f"[run] 请检查 pipelines/ 目录或 --pipeline-file 指定的 YAML 文件")
+            print(f"[run] 或使用 --legacy 模式绕过 YAML 配置")
+            sys.exit(1)
         # 将 CLI --output 注入 pipeline 配置，供 safe_writer 使用
         if args.output:
             plan.raw.setdefault("pipeline", {})["output"] = args.output
@@ -504,4 +524,5 @@ def main():
 
 
 if __name__ == "__main__":
+    _install_sigterm_handler()
     main()

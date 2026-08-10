@@ -9,17 +9,45 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# 危险调用黑名单（含模块属性调用，如 os.remove / socket.socket / ctypes.CDLL）
 _DANGEROUS_CALLS = {
     "os.system", "os.popen", "os.execv", "os.execvp", "os.execve", "os.execvpe",
+    "os.remove", "os.unlink", "os.rmdir", "os.removedirs", "os.rename", "os.replace",
+    "os.chmod", "os.chown", "os.kill", "os.fork",
     "subprocess.Popen", "subprocess.run", "subprocess.call", "subprocess.check_call",
     "subprocess.check_output",
-    "eval", "exec", "__import__",
-    "shutil.rmtree",
+    "eval", "exec", "__import__", "compile",
+    "shutil.rmtree", "shutil.move", "shutil.copy2",
+    "open",
+    "socket.socket", "socket.connect", "socket.bind",
+    "ctypes.CDLL", "ctypes.cdll", "ctypes.PyDLL", "ctypes.WinDLL",
+    "ctypes.CFUNCTYPE", "ctypes.pythonapi",
+    "pickle.loads", "pickle.load", "marshal.loads",
+}
+
+# 危险 import 模块黑名单（用于 ImportFrom / Import 节点检查）
+_DANGEROUS_MODULES = {
+    "subprocess", "ctypes", "socket", "pickle", "marshal",
+    "multiprocessing", "threading",  # 仍允许 import 但禁止其危险调用
+}
+
+# ImportFrom 中绝对禁止的名称（from <module> import <name>）
+_DANGEROUS_IMPORT_NAMES = {
+    "system", "popen", "exec", "eval", "Popen", "run",
+    "rmtree", "remove", "unlink", "open",
+    "CDLL", "WinDLL", "PyDLL", "cdll",
+    "loads", "load",  # pickle/marshal 反序列化
 }
 
 
 def _check_safety(file_path: Path, strict: bool = False) -> list[str]:
-    """AST 安全检查：扫描危险调用
+    """AST 安全检查：扫描危险调用 + 危险 import
+
+    修复 P0：原实现仅检查 ast.Call，可被 ``from os import remove`` 或
+    ``from subprocess import Popen`` 绕过（后续直接调用 ``remove(...)`` /
+    ``Popen(...)`` 不会被识别为 ``os.remove``）。现增加对 ``ast.ImportFrom``
+    和 ``ast.Import`` 的检查，并扩展黑名单覆盖 open / os.remove / socket /
+    ctypes / pickle 等危险 API。
 
     Args:
         file_path: Agent .py 文件路径
@@ -35,24 +63,52 @@ def _check_safety(file_path: Path, strict: bool = False) -> list[str]:
 
     dangers = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        full_name = ""
-        if isinstance(func, ast.Attribute):
-            parts = []
-            n = func
-            while isinstance(n, ast.Attribute):
-                parts.append(n.attr)
-                n = n.value
-            if isinstance(n, ast.Name):
-                parts.append(n.id)
-            full_name = ".".join(reversed(parts))
-        elif isinstance(func, ast.Name):
-            full_name = func.id
+        # ── 检查危险函数调用 ──
+        if isinstance(node, ast.Call):
+            func = node.func
+            full_name = ""
+            if isinstance(func, ast.Attribute):
+                parts = []
+                n = func
+                while isinstance(n, ast.Attribute):
+                    parts.append(n.attr)
+                    n = n.value
+                if isinstance(n, ast.Name):
+                    parts.append(n.id)
+                full_name = ".".join(reversed(parts))
+            elif isinstance(func, ast.Name):
+                full_name = func.id
 
-        if full_name in _DANGEROUS_CALLS:
-            dangers.append(f"{full_name} (line {node.lineno})")
+            if full_name in _DANGEROUS_CALLS:
+                dangers.append(f"{full_name} (line {node.lineno})")
+
+        # ── 检查 from X import Y（可绕过 Call 检查的导入别名）──
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            # from subprocess import Popen, run, ...
+            if module in _DANGEROUS_MODULES:
+                for alias in node.names:
+                    imported_name = alias.asname or alias.name
+                    if alias.name in _DANGEROUS_IMPORT_NAMES or imported_name in _DANGEROUS_IMPORT_NAMES:
+                        dangers.append(
+                            f"from {module} import {alias.name} (line {node.lineno})"
+                        )
+            # from os import remove/system/popen 等（os 不在 _DANGEROUS_MODULES
+            # 因为 import os 本身无害，但其危险函数名需拦截）
+            if module == "os":
+                for alias in node.names:
+                    if alias.name in _DANGEROUS_IMPORT_NAMES:
+                        dangers.append(
+                            f"from os import {alias.name} (line {node.lineno})"
+                        )
+
+        # ── 检查 import X（仅对极危险模块：subprocess/ctypes 直接 import）──
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                # ctypes / pickle / marshal 直接 import 即视为危险
+                # （subprocess/socket 仍允许 import，由 _DANGEROUS_CALLS 拦截调用）
+                if alias.name in {"ctypes", "pickle", "marshal"}:
+                    dangers.append(f"import {alias.name} (line {node.lineno})")
 
     if dangers:
         msg = f"Agent {file_path.name} 包含危险调用: {', '.join(dangers)}"

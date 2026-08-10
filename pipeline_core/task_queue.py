@@ -39,12 +39,25 @@ class TaskQueue:
         self._db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # 修复 P0：原 _get_conn 每次调用都新建 SQLite 连接且永不关闭，
+        # 导致 fd 泄漏（每次 submit/acquire/complete 都泄漏一个 fd）。
+        # 改用 threading.local 缓存 per-thread 连接，复用同一 fd。
+        self._local = threading.local()
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=5, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=3000")
+        """获取当前线程缓存的 SQLite 连接（复用，避免 fd 泄漏）。
+
+        修复 P0：原实现每次新建连接 + 设置 PRAGMA，永不关闭。
+        现改为 threading.local 缓存：每个线程首次调用时建连并设置 PRAGMA，
+        后续复用同一连接。连接随线程结束由 GC 回收，close() 显式关闭。
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self._db_path, timeout=5, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=3000")
+            self._local.conn = conn
         return conn
 
     def _init_db(self):
@@ -72,14 +85,18 @@ class TaskQueue:
         """入队新任务。已存在则忽略（幂等）。"""
         with self._lock, self._get_conn() as conn:
             try:
-                conn.execute(
+                cursor = conn.execute(
                     "INSERT OR IGNORE INTO task_queue "
                     "(task_id, pipeline_name, input_file, status, config_json, created_at) "
                     "VALUES (?, ?, ?, 'pending', ?, ?)",
                     (task_id, pipeline_name, input_file,
                      _fast_dumps(config or {}), time.time()),
                 )
-                return conn.total_changes > 0
+                # 修复 P0 回归：原用 conn.total_changes > 0 判断是否插入，
+                # 但连接复用（threading.local 缓存）后 total_changes 累积历史变更，
+                # 导致幂等重复 submit 仍返回 True。
+                # 改用 cursor.rowcount：仅反映本次 INSERT 的行数（0=被 IGNORE，1=成功插入）。
+                return cursor.rowcount > 0
             except sqlite3.IntegrityError:
                 return False
 
@@ -98,12 +115,16 @@ class TaskQueue:
                 return None
             task_id, pipeline_name, input_file, config_json = row
             now = time.time()
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE task_queue SET status = 'running', started_at = ?, worker_id = ? "
                 "WHERE task_id = ? AND status = 'pending'",
                 (now, worker_id, task_id),
             )
-            if conn.total_changes == 0:
+            # 修复 P0 回归：原用 conn.total_changes == 0 判断 UPDATE 是否生效，
+            # 但连接复用后 total_changes 累积历史变更，永远 > 0，
+            # 导致并发场景下两个 worker 可能 acquire 同一任务（数据竞争）。
+            # 改用 cursor.rowcount：仅反映本次 UPDATE 的行数。
+            if cursor.rowcount == 0:
                 return None
             return {
                 "task_id": task_id,
@@ -246,4 +267,11 @@ class TaskQueue:
         }
 
     def close(self):
-        pass
+        """显式关闭当前线程缓存的连接（修复 P0：原为空实现，连接永不关闭）。"""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._local.conn = None

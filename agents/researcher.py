@@ -788,9 +788,12 @@ class ResearcherAgent(BaseAgent):
 
         # 查找有 API URL 的搜索引擎
         http_engines = []
-        if hasattr(self, '_search_mgr') and hasattr(self._search_mgr, '_engines'):
+        # 修复 P0：原代码引用 self._search_mgr，实际属性名为 self._search_manager
+        # （__init__ 第 92 行初始化为 self._search_manager）。属性名不匹配导致
+        # hasattr 永远 False，异步 HTTP 路径永远不生效，回退到同步线程池。
+        if hasattr(self, '_search_manager') and hasattr(self._search_manager, '_engines'):
             for eng_name in engines:
-                eng = self._search_mgr._engines.get(eng_name)
+                eng = self._search_manager._engines.get(eng_name)
                 if eng and hasattr(eng, 'api_url') and eng.api_url:
                     http_engines.append((eng_name, eng))
 

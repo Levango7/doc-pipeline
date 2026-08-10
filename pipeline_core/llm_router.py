@@ -24,6 +24,7 @@ LLM Router — 多供应商 LLM 路由器
 import json
 import os
 import re
+import sys
 import time
 import logging
 import threading
@@ -209,9 +210,13 @@ async def _call_llm_async(provider: LLMProvider, messages: list[dict],
     session = await _get_shared_session()
     if session is not None:
         try:
+            # 注意: aiohttp 在 _get_shared_session 内局部 import，
+            # 这里通过 sys.modules 引用，避免 NameError 和 dir() 误判
+            aiohttp_mod = sys.modules.get("aiohttp")
+            cf_timeout = aiohttp_mod.ClientTimeout(total=timeout) if aiohttp_mod else None
             async with session.post(
                 provider.api_url, json=payload, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=timeout) if 'aiohttp' in dir() else None,
+                timeout=cf_timeout,
             ) as resp:
                 body = await resp.json()
             if is_cf:
@@ -225,7 +230,11 @@ async def _call_llm_async(provider: LLMProvider, messages: list[dict],
             logger.debug(f"aiohttp 调用 {provider.name} 失败，回退同步: {e}")
 
     # 回退到同步（run_in_executor）
-    loop = asyncio.get_event_loop()
+    # 优先使用 get_running_loop()（3.10+ 推荐），无运行循环时回退到 get_event_loop()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, _call_llm, provider, messages, max_tokens, temperature, timeout,
     )
@@ -321,8 +330,9 @@ class LLMRouter:
                         response=content,
                         model=provider.model,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 记录成本失败不应影响主流程，但需留痕便于排查（避免 silent pass 吞掉 DB 损坏等关键错误）
+                    logger.warning(f"记录成本失败（不影响主流程）: {e}")
 
                 return content, provider.name
             except Exception as e:

@@ -37,7 +37,10 @@ class RateLimiter:
         self._tokens = float(burst)
         self._last_refill = time.time()
         self._lock = threading.RLock()
-        self._condition = threading.Condition()
+        # P0 修复: Condition 必须关联 self._lock，否则 wait/notify 无法正确协调
+        # （原 threading.Condition() 使用独立内部锁，导致 notify_all 无法唤醒
+        # 在 self._lock 上等待的线程，自适应限流失效）
+        self._condition = threading.Condition(self._lock)
 
         # 统计
         self._total_acquired = 0
@@ -105,6 +108,9 @@ class RateLimiter:
         """动态调整速率"""
         with self._lock:
             self.rate = new_rate
+            # P0 修复: 速率变更后必须唤醒所有等待线程，使其重新计算等待时间
+            # （原先不调用 notify_all，导致速率调高后阻塞的 acquire 无法及时唤醒）
+            self._condition.notify_all()
             _logger.info(f"[RateLimiter] {self.name} 速率调整为 {new_rate}/s")
 
     @property

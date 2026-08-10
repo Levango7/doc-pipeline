@@ -124,7 +124,13 @@ class StructuredLogger:
                     entry[k] = str(v)
 
         # 异步写入：放入队列由后台线程刷盘，减少主线程 I/O 阻塞
-        self._write_queue.put(entry)
+        # P1 修复: 使用 put_nowait 避免队列满时阻塞主线程（原 put 会无限阻塞）
+        try:
+            self._write_queue.put_nowait(entry)
+        except Exception:
+            # 队列满或已关闭：丢弃日志条目并记录到 stderr（避免递归调用 logger）
+            import sys as _sys
+            _sys.stderr.write(f"[StructuredLogger] write queue full, dropping log: {message}\n")
 
     def info(self, msg: str, **kw):
         self.log("info", msg, **kw)

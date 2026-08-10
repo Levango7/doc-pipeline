@@ -32,6 +32,26 @@ from pathlib import Path
 from typing import Optional
 
 
+# ─── 安全防护辅助 ─────────────────────────────
+# 安全修复 (P0): rollback 路径白名单校验，防止任意文件写入
+
+
+def _validate_file_path(path_str: str, base_dir: str = None) -> tuple[bool, str]:
+    """校验文件路径必须落在 base_dir（默认 cwd）范围内。"""
+    if not path_str:
+        return False, "路径为空"
+    base = Path(base_dir or os.getcwd()).resolve()
+    try:
+        target = Path(path_str).resolve()
+    except (OSError, ValueError) as e:
+        return False, f"路径解析失败: {e}"
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return False, f"路径 {path_str!r} 不在允许目录 {base!s} 内"
+    return True, ""
+
+
 @dataclass
 class VersionEntry:
     """单个版本记录"""
@@ -227,6 +247,10 @@ class VersionManager:
         Returns:
             {"status": "ok", "new_version": N, "rolled_back_to": version}
         """
+        # 安全修复 (P0): file_path 路径白名单校验，防止任意文件写入
+        ok, reason = _validate_file_path(file_path)
+        if not ok:
+            raise ValueError(f"无效的 file_path: {reason}")
         content = self.get_content(file_path, version)
         if content is None:
             return {"status": "error", "message": f"版本 v{version} 不存在或内容已清理"}

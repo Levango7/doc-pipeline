@@ -27,11 +27,16 @@ class SafeWriterAgent(BaseAgent):
         self.pending: dict = {}
         self._default_backup_dir = config.get("backup_dir", "backups")
         self._manifest_lock = threading.Lock()
+        # 修复 P0：_current_payload 未初始化，导致 _safe_write 中
+        # hasattr(self, '_current_payload') 永远 False，quality_score 永远 0.0。
+        self._current_payload: dict = {}
         self.log_info(f"SafeWriter v{AGENT_VERSION} 初始化完成")
 
     def handle(self, msg: Message) -> dict | None:
         self.report(AgentStatus.RUNNING, "准备写入...")
         payload = msg.payload
+        # 修复 P0：缓存当前 payload 供 _safe_write 读取 quality_score 等附加字段
+        self._current_payload = payload
         task_id = payload.get("task_id", "")
         content = payload.get("content", "")
         target = payload.get("target", payload.get("target_file", ""))
@@ -114,7 +119,10 @@ class SafeWriterAgent(BaseAgent):
                 try:
                     from pipeline_core.version_manager import get_version_manager
                     vm = get_version_manager()
-                    quality_score = payload.get("quality_score", 0.0) if hasattr(self, '_current_payload') else 0.0
+                    # 修复 P0：原代码引用 payload（handle 的局部变量，_safe_write 作用域不可见），
+                    # 且 hasattr(self, '_current_payload') 因未初始化永远 False。
+                    # 现改为从 self._current_payload 读取（handle 中已缓存）。
+                    quality_score = self._current_payload.get("quality_score", 0.0) if self._current_payload else 0.0
                     version_info = vm.commit(
                         target, content,
                         task_id=task_id,
@@ -194,10 +202,42 @@ class SafeWriterAgent(BaseAgent):
             self.log_error(f"清理失败: {e}")
 
     def handle_writer_done(self, msg: Message):
+        """Writer 完成后触发安全写入。
+
+        修复 P0：原实现只把消息缓存到 self.pending，从不消费 pending，
+        导致 pending 无限增长（内存泄漏）且文档永远不写入。
+        现改为：缓存后立即执行写入并从 pending 移除（消费）。
+        """
         payload = msg.payload
         task_id = payload.get("task_id", "")
         content = payload.get("content", "")
-        target = payload.get("target_file", "")
+        target = payload.get("target_file", "") or payload.get("target", "")
         if not target:
             target = self.config.get("default_target", "")
+
+        # 缓存（保留原语义，供合并/查询/调试）
         self.pending[task_id] = {"content": content, "target": target, "timestamp": time.time()}
+
+        # 实际执行写入并消费 pending（修复 P0：原实现到此就返回，pending 无限增长）
+        if not target or not content:
+            self.log_warning(
+                f"handle_writer_done 跳过写入: task_id={task_id} "
+                f"target={'有' if target else '无'} content={'有' if content else '无'}"
+            )
+            # 无效消息仍从 pending 移除，避免堆积
+            self.pending.pop(task_id, None)
+            return
+
+        # 缓存 payload 供 _safe_write 读取 quality_score 等附加字段
+        self._current_payload = payload
+        backup_dir = payload.get("backup_dir", self._default_backup_dir)
+        reason = payload.get("reason", "writer_done")
+        result = self._safe_write(target, content, backup_dir, reason, task_id)
+
+        # 消费 pending：写入完成后移除，避免无限增长
+        self.pending.pop(task_id, None)
+
+        self.publish(
+            "safe_writer.done" if result.get("status") == "ok" else "safe_writer.failed",
+            {"task_id": task_id, "target": target, "result": result},
+        )

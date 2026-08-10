@@ -165,14 +165,17 @@ class CacheManager:
             val = self._memory_get(key)
             if val is not None:
                 return val
-            val = self._file_get(key)
+            # P0 修复: 回填内存时必须使用文件原始 ts，而非 time.time()
+            # （原先用 time.time() 会重置 TTL 起始时间，导致过期项被回填后"续命"，
+            #   内存与文件层 TTL 不一致）
+            val, file_ts = self._file_get_entry(key)
             if val is not None:
                 # 回填内存层
                 with self._lock:
                     while len(self._cache) >= self.max_size:
                         self._cache.popitem(last=False)
                         self.stats.record_eviction()
-                    self._cache[key] = {"data": val, "ts": time.time()}
+                    self._cache[key] = {"data": val, "ts": file_ts}
             return val
 
         if self.backend == "file":
@@ -202,7 +205,7 @@ class CacheManager:
             return
 
         if self.backend in ("file", "multi"):
-            self._file_set(key, data)
+            self._file_set(key, data)  # _file_set 内部会 record_set
 
         if self.backend in ("memory", "multi"):
             with self._lock:
@@ -210,9 +213,10 @@ class CacheManager:
                     self._cache.popitem(last=False)
                     self.stats.record_eviction()
                 self._cache[key] = {"data": data, "ts": time.time()}
-                self.stats.record_set()
-            if self.backend == "memory":
-                self.stats.record_set()  # memory-only: 已在上面记录
+                # P1 修复: 仅 memory-only 后端在此记录 set
+                # file 后端已在 _file_set 中记录；multi 后端的 set 也已在 _file_set 中记录，不重复
+                if self.backend == "memory":
+                    self.stats.record_set()
 
     def remove(self, key: str):
         """删除单个缓存项。"""
@@ -255,7 +259,11 @@ class CacheManager:
     # ── 批量操作 ──────────────────────────────
 
     def get_many(self, keys: list[str]) -> dict[str, Any]:
-        """批量读取 —— 单次锁获取，减少竞争。返回 {key: value}（仅含命中的 key）。"""
+        """批量读取 —— 逐项 get，返回 {key: value}（仅含命中的 key）。
+
+        注: 当前实现逐项加锁，并非单次锁获取。如需减少锁竞争可改为
+        在单次锁内遍历内存层（file 后端仍需逐项 I/O）。
+        """
         result: dict[str, Any] = {}
         if self.ttl < 0:
             return result
@@ -266,7 +274,7 @@ class CacheManager:
         return result
 
     def set_many(self, items: dict[str, Any]):
-        """批量写入 —— 逐项 set，但统计仅记一次。"""
+        """批量写入 —— 逐项 set，每项各记一次 set 统计。"""
         if self.ttl < 0:
             return
         for key, data in items.items():
@@ -305,25 +313,36 @@ class CacheManager:
         return self._cache_dir / f"{h}.json"
 
     def _file_get(self, key: str) -> Any | None:
+        """文件层读取（仅返回 data，兼容旧调用方）。"""
+        data, _ = self._file_get_entry(key)
+        return data
+
+    def _file_get_entry(self, key: str) -> tuple[Any | None, float]:
+        """文件层读取，返回 (data, ts)。
+
+        未命中/过期/出错返回 (None, 0.0)。
+        ts 为写入时的时间戳，用于 multi 后端回填内存时保持 TTL 一致性（P0 修复）。
+        """
         fpath = self._file_path(key)
         if not fpath.exists():
             self.stats.record_miss()
-            return None
+            return None, 0.0
         try:
             with open(fpath, "r", encoding="utf-8") as f:
                 entry = json.load(f)
-            if self.ttl > 0 and time.time() - entry.get("ts", 0) > self.ttl:
+            ts = entry.get("ts", 0.0)
+            if self.ttl > 0 and time.time() - ts > self.ttl:
                 try:
                     os.remove(fpath)
                 except OSError:
                     pass
                 self.stats.record_miss()
-                return None
+                return None, 0.0
             self.stats.record_hit()
-            return entry.get("data")
+            return entry.get("data"), ts
         except (json.JSONDecodeError, OSError):
             self.stats.record_miss()
-            return None
+            return None, 0.0
 
     def _file_set(self, key: str, data: Any):
         fpath = self._file_path(key)

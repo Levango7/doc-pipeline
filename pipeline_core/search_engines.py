@@ -84,7 +84,11 @@ class SearchEngineBase:
 
         API 类引擎可覆盖此方法用 aiohttp 实现真异步。
         """
-        loop = asyncio.get_event_loop()
+        # 优先使用 get_running_loop()（3.10+ 推荐），无运行循环时回退到 get_event_loop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.search, query, max_results)
 
     def is_available(self) -> bool:
@@ -848,8 +852,13 @@ class SearchEngineManager:
         self._engines: dict[str, SearchEngineBase] = engines or {}
         self._lock = threading.Lock()
         self._fail_counts: dict[str, int] = {}
-        from .cache_manager import CacheManager
-        self._cache = CacheManager(max_size=500, ttl=3600)
+        # 缓存为可选依赖：cache_manager 不可用时降级为无缓存，避免整个管理器无法创建
+        self._cache = None
+        try:
+            from .cache_manager import CacheManager
+            self._cache = CacheManager(max_size=500, ttl=3600)
+        except Exception as e:
+            logger.warning(f"CacheManager 不可用，搜索降级为无缓存: {e}")
         logger.info(f"SearchEngineManager 初始化: {list(self._engines.keys())}")
 
     def is_available(self) -> bool:
@@ -875,7 +884,7 @@ class SearchEngineManager:
             engines = list(self._engines.keys())
 
         cache_key = f"{query}|{max_results}|{','.join(engines)}"
-        cached = self._cache.get(cache_key)
+        cached = self._cache.get(cache_key) if self._cache is not None else None
         if cached is not None:
             logger.debug(f"搜索缓存命中: {query}")
             return [SearchItem.from_dict(d) for d in cached]
@@ -898,7 +907,9 @@ class SearchEngineManager:
                 if results:
                     logger.debug(f"引擎 {engine_name} 返回 {len(results)} 条结果")
             except Exception as e:
-                self._fail_counts[engine_name] = self._fail_counts.get(engine_name, 0) + 1
+                # fail_counts 可能被 search_with_sites 线程池并发修改，加锁保护
+                with self._lock:
+                    self._fail_counts[engine_name] = self._fail_counts.get(engine_name, 0) + 1
                 logger.warning(f"引擎 {engine_name} 搜索失败: {e}")
 
             # 已有足够结果时停止
@@ -906,8 +917,9 @@ class SearchEngineManager:
                 break
 
         result = all_results[:max_results]
-        if result:
-            self._cache.put(cache_key, [r.to_dict() for r in result])
+        if result and self._cache is not None:
+            # P0 修复：CacheManager 接口是 set() 而非 put()，原代码导致搜索结果无法缓存
+            self._cache.set(cache_key, [r.to_dict() for r in result])
         return result
 
     async def search_async(self, query: str, max_results: int = 10,
@@ -927,7 +939,9 @@ class SearchEngineManager:
             try:
                 return await engine.search_async(query, max_results)
             except Exception as e:
-                self._fail_counts[name] = self._fail_counts.get(name, 0) + 1
+                # fail_counts 可能被并发修改，加锁保护
+                with self._lock:
+                    self._fail_counts[name] = self._fail_counts.get(name, 0) + 1
                 logger.warning(f"引擎 {name} 异步搜索失败: {e}")
                 return []
 
@@ -943,13 +957,17 @@ class SearchEngineManager:
                     if r.url and r.url not in seen_urls:
                         seen_urls.add(r.url)
                         all_results.append(r)
-            except Exception:
-                pass
+            except Exception as e:
+                # 记录异常而非 silent pass，便于排查引擎偶发错误
+                logger.debug(f"异步搜索任务异常: {e}")
             # 已有足够结果时可取消剩余任务
             if len(all_results) >= max_results:
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
+                pending = [t for t in tasks if not t.done()]
+                for t in pending:
+                    t.cancel()
+                # await 已取消任务，避免 "Task was destroyed but it is pending" 警告
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
                 break
 
         return all_results[:max_results]
@@ -983,8 +1001,9 @@ class SearchEngineManager:
                     if item.url and item.url not in seen_urls:
                         seen_urls.add(item.url)
                         all_results.append(item)
-            except Exception:
-                pass
+            except Exception as e:
+                # 记录异常而非 silent pass，便于排查站点搜索偶发错误
+                logger.debug(f"站点异步搜索异常: {e}")
 
         return all_results[:max_results]
 

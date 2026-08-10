@@ -48,6 +48,91 @@ from .fast_json import dumps as _fast_dumps, loads as _fast_loads
 _logger = logging.getLogger(__name__)
 
 
+# ─── 安全防护辅助 ─────────────────────────────
+# 安全修复 (P0): 集中定义 SSRF 防护与路径白名单校验，供各端点复用
+
+import re
+import ipaddress
+from urllib.parse import urlparse
+
+# task_id 仅允许字母、数字、下划线、连字符（防止路径遍历 ../../）
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _is_private_ip(host: str) -> bool:
+    """判断 host 是否为私有/保留 IP 地址（SSRF 防护）。
+
+    覆盖：私有段（10/8、172.16/12、192.168/16）、环回（127/8、::1）、
+    链路本地（169.254/16、fe80::/10）、元数据端点（169.254.169.254）、
+    未分配/组播/保留段、IPv6 私有（fc00::/7）。
+    """
+    try:
+        # 解析为 IP 地址对象（自动区分 v4/v6）
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        # 非 IP 字面量（可能是域名），交由调用方决定是否放行
+        return False
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
+
+
+def _validate_webhook_url(url: str) -> tuple[bool, str]:
+    """校验 webhook URL 安全性（SSRF 防护）。
+
+    Returns:
+        (ok, reason): ok=True 表示通过；ok=False 时 reason 为拒绝原因。
+    """
+    if not url or not isinstance(url, str):
+        return False, "url 为空"
+    try:
+        parsed = urlparse(url)
+    except Exception as e:
+        return False, f"url 解析失败: {e}"
+    # 仅允许 http/https 协议（拒绝 file://、gopher://、ftp:// 等）
+    if parsed.scheme not in ("http", "https"):
+        return False, f"协议 {parsed.scheme!r} 不允许，仅支持 http/https"
+    host = parsed.hostname or ""
+    if not host:
+        return False, "url 缺少 host"
+    # 拒绝裸 IP 形式的私有/保留地址（域名解析后的 SSRF 由出网层兜底，此处先拦裸 IP）
+    if _is_private_ip(host):
+        return False, f"host {host!r} 为私有/保留 IP，已拒绝（SSRF 防护）"
+    return True, ""
+
+
+def _validate_output_path(path_str: str, base_dir: Optional[str] = None) -> tuple[bool, str]:
+    """校验输出路径必须落在 base_dir（默认 cwd）范围内（防止任意文件写入）。
+
+    Returns:
+        (ok, reason): ok=True 表示通过；ok=False 时 reason 为拒绝原因。
+    """
+    if not path_str:
+        return True, ""  # 空路径不校验（交由默认逻辑）
+    base = Path(base_dir or os.getcwd()).resolve()
+    try:
+        target = Path(path_str).resolve()
+    except (OSError, ValueError) as e:
+        return False, f"路径解析失败: {e}"
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return False, f"路径 {path_str!r} 不在允许目录 {base!s} 内"
+    return True, ""
+
+
+def _validate_task_id(task_id: str) -> bool:
+    """校验 task_id 仅含字母/数字/下划线/连字符（防止路径遍历）。"""
+    if not task_id or len(task_id) > 128:
+        return False
+    return bool(_TASK_ID_RE.match(task_id))
+
+
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -119,6 +204,10 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_versions_list(self, file_path: str):
         """GET /api/versions?file=<path> — 获取文件版本历史"""
         try:
+            # 安全修复 (P0): file_path 路径白名单校验，防止任意文件读取
+            ok, reason = _validate_output_path(file_path)
+            if not ok:
+                return self._json({"error": f"file_path 校验失败: {reason}"}, 400)
             from .version_manager import get_version_manager
             vm = get_version_manager()
             history = vm.history(file_path, limit=50)
@@ -129,6 +218,10 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_versions_diff(self, file_path: str, v1: int, v2: int):
         """GET /api/versions/diff?file=<path>&v1=N&v2=M — 对比两版本"""
         try:
+            # 安全修复 (P0): file_path 路径白名单校验，防止任意文件读取
+            ok, reason = _validate_output_path(file_path)
+            if not ok:
+                return self._json({"error": f"file_path 校验失败: {reason}"}, 400)
             from .version_manager import get_version_manager
             vm = get_version_manager()
             diff_text = vm.diff(file_path, v1, v2)
@@ -139,6 +232,10 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_versions_rollback(self, file_path: str, version: int):
         """POST /api/versions/rollback — 回滚到指定版本"""
         try:
+            # 安全修复 (P0): file_path 路径白名单校验，防止任意文件写入
+            ok, reason = _validate_output_path(file_path)
+            if not ok:
+                return self._json({"error": f"file_path 校验失败: {reason}"}, 400)
             from .version_manager import get_version_manager
             vm = get_version_manager()
             result = vm.rollback(file_path, version)
@@ -182,16 +279,17 @@ class AdminHandler(BaseHTTPRequestHandler):
             # 静态资源免鉴权
             if self._serve_static(self.path):
                 return
-            # 健康与流式端点免鉴权（只读 / 实时推送，供 Dashboard 使用）
+            # 健康端点免鉴权（只读，供监控探针使用）
             if self.path == "/health":
                 self._handle_health()
                 return
-            if self.path.startswith("/stream"):
-                self._handle_stream()
-                return
-            # 其余端点需要鉴权
+            # 安全修复 (P0): /stream 触发文档生成会消耗 LLM 配额并执行流水线，
+            # 必须鉴权；原先置于 _check_auth() 之前导致任意未授权客户端可滥用
             if not self._check_auth():
                 self._json({"error": "unauthorized"}, 401)
+                return
+            if self.path.startswith("/stream"):
+                self._handle_stream()
                 return
 
             if self.path == "/metrics":
@@ -434,6 +532,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         pipeline_name = data.get("pipeline", "docgen")
         wait = bool(data.get("wait", False))
         output_path = data.get("output", "")
+        # 安全修复 (P0): output 路径白名单校验，防止任意文件写入
+        if output_path:
+            ok, reason = _validate_output_path(output_path)
+            if not ok:
+                return self._json({"error": f"output 路径校验失败: {reason}"}, 400)
 
         import tempfile, uuid
         task_id = str(uuid.uuid4())[:8]
@@ -863,6 +966,10 @@ class AdminHandler(BaseHTTPRequestHandler):
         url = data.get("url")
         if not event or not url:
             return self._json({"error": "missing 'event' or 'url' field"}, 400)
+        # 安全修复 (P0): webhook URL SSRF 防护，拒绝私有/保留 IP 与非 http(s) 协议
+        ok, reason = _validate_webhook_url(url)
+        if not ok:
+            return self._json({"error": f"webhook url 校验失败: {reason}"}, 400)
         mgr = get_hook_manager()
         hook_id = mgr.register(event, url, data.get("headers", {}))
         _logger.info(f"[AdminAPI] 事件钩子已注册: {event} -> {url} (id={hook_id})")
