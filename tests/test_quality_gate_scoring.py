@@ -5,18 +5,14 @@
   - 每个测试方法聚焦一个评分维度
   - 用 mock 绕过 BaseAgent.__init__
 """
-import sys
 import re
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.quality_gate import QualityGateAgent, load_profile
-from pipeline_core.quality_feedback import WEAK_THRESHOLD
-
 
 # ─── 创建测试用 QualityGateAgent 实例 ────────────────────────
 

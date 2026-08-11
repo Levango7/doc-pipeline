@@ -3,13 +3,13 @@ import pickle
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
-import pytest
-
 from pipeline_core.executor_factory import (
-    create_executor, is_process_executor, SmartExecutor,
-    _estimate_task_cost, _is_picklable,
+    SmartExecutor,
+    _estimate_task_cost,
+    _is_picklable,
+    create_executor,
+    is_process_executor,
 )
-
 
 # ── 模块级函数（可 pickle，供 ProcessPoolExecutor 提交） ──
 
@@ -100,8 +100,9 @@ class TestDAGExecutorPickleCompatibility:
 
     def test_execute_node_worker_is_module_level(self):
         """_execute_node_worker 必须是模块级函数（可 pickle）"""
-        from pipeline_core.dag_executor import _execute_node_worker
         import types
+
+        from pipeline_core.dag_executor import _execute_node_worker
 
         # 模块级函数的 __qualname__ 不含 '.'（不是 bound method）
         assert "." not in _execute_node_worker.__qualname__
@@ -293,7 +294,8 @@ class TestPicklableCheck:
 
     def test_lambda_not_picklable(self):
         """lambda 不可 pickle"""
-        f = lambda x: x * 2
+        def f(x):
+            return x * 2
         assert not _is_picklable(f)
 
     def test_local_function_not_picklable(self):

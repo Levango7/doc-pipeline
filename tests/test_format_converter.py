@@ -6,16 +6,12 @@
   - 每个测试方法聚焦一个行为
 """
 import sys
-import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.format_converter import FormatConverter
-
 
 # ─── 工具检测 ────────────────────────────
 
@@ -193,7 +189,7 @@ class TestMarkdownToWord:
         # mock python-docx
         mock_doc = MagicMock()
         with patch.dict("sys.modules", {"docx": MagicMock(Document=MagicMock(return_value=mock_doc))}):
-            result = conv.markdown_to_word(str(md_file), str(docx_file))
+            conv.markdown_to_word(str(md_file), str(docx_file))
         # 应调用 add_heading 和 add_paragraph
         mock_doc.add_heading.assert_called()
         mock_doc.save.assert_called_with(str(docx_file))
@@ -224,19 +220,19 @@ class TestMermaidRender:
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stderr = "error"
-        with patch("subprocess.run", return_value=mock_result):
-            with patch.object(conv, "_kroki_render", return_value=False):
-                with patch.object(conv, "_mermaid_ink_render", return_value=False):
-                    result = conv.mermaid_to_png("graph LR; A-->B", str(tmp_path / "out.png"))
+        with patch("subprocess.run", return_value=mock_result), \
+                patch.object(conv, "_kroki_render", return_value=False), \
+                patch.object(conv, "_mermaid_ink_render", return_value=False):
+            result = conv.mermaid_to_png("graph LR; A-->B", str(tmp_path / "out.png"))
         assert result is False
 
     def test_no_render_tools_returns_false(self, tmp_path):
         """无渲染工具时返回 False"""
         conv = FormatConverter()
         conv._mmdc_path = None
-        with patch.object(conv, "_kroki_render", return_value=False):
-            with patch.object(conv, "_mermaid_ink_render", return_value=False):
-                result = conv.mermaid_to_png("graph LR", str(tmp_path / "out.png"))
+        with patch.object(conv, "_kroki_render", return_value=False), \
+                patch.object(conv, "_mermaid_ink_render", return_value=False):
+            result = conv.mermaid_to_png("graph LR", str(tmp_path / "out.png"))
         assert result is False
 
 

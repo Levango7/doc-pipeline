@@ -1,6 +1,5 @@
 """CircuitBreaker — OPEN/CLOSED/HALF_OPEN, backoff, registry"""
 import time
-import pytest
 
 
 class TestCircuitBreakerBasics:
@@ -13,7 +12,7 @@ class TestCircuitBreakerBasics:
     def test_open_after_threshold(self, circuit_breakers):
         cb = circuit_breakers.get_or_create("open_cb", failure_threshold=3, recovery_timeout=60)
 
-        for i in range(3):
+        for _i in range(3):
             cb.record_failure()
 
         assert cb.state.name == "OPEN", f"should open after 3 failures, got {cb.state}"

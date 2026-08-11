@@ -1,7 +1,6 @@
 """MessageBus v3 — pub/sub, backpressure, DLQ, health"""
 import time
-import json
-import pytest
+
 from pipeline_core.message_bus_v3 import MessageBus
 
 

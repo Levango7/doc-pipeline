@@ -1,14 +1,12 @@
 """测试新增 API 端点：/api/config, /api/health/deep, /api/cache, /api/agents/<name>, /api/events/hooks"""
-import json
 import sys
-import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
-from pipeline_core.event_hook import EventHookManager, get_hook_manager, emit_event
 
+from pipeline_core.event_hook import EventHookManager, emit_event, get_hook_manager
 
 # ── EventHook 系统测试 ──────────────────────────
 
@@ -34,7 +32,7 @@ class TestEventHook:
     def test_emit_callback(self):
         mgr = EventHookManager()
         results = []
-        hid = mgr.register("task.created", callback=lambda evt, pl: results.append((evt, pl)))
+        mgr.register("task.created", callback=lambda evt, pl: results.append((evt, pl)))
         count = mgr.emit("task.created", {"task_id": "t1"})
         assert count == 1
         assert len(results) == 1
@@ -76,7 +74,7 @@ class TestEventHook:
 
     def test_call_count_tracking(self):
         mgr = EventHookManager()
-        hid = mgr.register("task.created", callback=lambda evt, pl: None)
+        mgr.register("task.created", callback=lambda evt, pl: None)
         mgr.emit("task.created", {})
         mgr.emit("task.created", {})
         hooks = mgr.list_hooks()
@@ -84,7 +82,7 @@ class TestEventHook:
 
     def test_hook_to_dict_excludes_callback(self):
         mgr = EventHookManager()
-        hid = mgr.register("task.created", callback=lambda evt, pl: None)
+        mgr.register("task.created", callback=lambda evt, pl: None)
         hooks = mgr.list_hooks()
         assert "callback" not in hooks[0]
 
@@ -118,8 +116,9 @@ class TestAdminAPIEndpoints:
 
     @pytest.fixture
     def orch(self):
-        from pipeline_core import PipelineOrchestrator
         from pathlib import Path
+
+        from pipeline_core import PipelineOrchestrator
         agents_dir = str(Path(__file__).parent.parent / "agents")
         ckpt_dir = str(Path(__file__).parent.parent / ".test_checkpoints")
         o = PipelineOrchestrator(agents_dir=agents_dir, checkpoint_dir=ckpt_dir)
@@ -169,7 +168,7 @@ class TestAdminAPIEndpoints:
 
     def test_cache_clear(self, orch):
         """POST /api/cache/clear 清空缓存"""
-        from pipeline_core.cache_manager import clear_all_caches, all_stats
+        from pipeline_core.cache_manager import all_stats, clear_all_caches
         clear_all_caches()
         stats = all_stats()
         assert isinstance(stats, dict)
@@ -200,7 +199,7 @@ class TestAdminAPIEndpoints:
         """POST /api/events/hooks 注册钩子"""
         mgr = get_hook_manager()
         mgr.clear()
-        hid = mgr.register("task.completed", url="http://test.example.com/hook")
+        mgr.register("task.completed", url="http://test.example.com/hook")
         hooks = mgr.list_hooks()
         assert len(hooks) == 1
         assert hooks[0]["url"] == "http://test.example.com/hook"

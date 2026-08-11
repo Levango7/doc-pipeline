@@ -1,7 +1,8 @@
 """测试 PipelineOrchestrator.run_plan_async —— async 编排验证"""
 import inspect
-import pytest
 from pathlib import Path
+
+import pytest
 
 from pipeline_core.pipeline import PipelineOrchestrator, TaskStatus
 

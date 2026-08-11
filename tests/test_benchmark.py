@@ -6,11 +6,8 @@
   - 每个测试方法聚焦一个行为
 """
 import sys
-import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -32,8 +29,8 @@ class TestCheckRegression:
     def test_regression_higher_better(self):
         """越高越好指标下降超阈值检测"""
         from benchmark import (
-            _check_regression,
             METRIC_HIGHER_BETTER,
+            _check_regression,
         )
         # 用实际注册的指标名
         metric = "set_ops_per_sec"
@@ -48,8 +45,8 @@ class TestCheckRegression:
     def test_regression_lower_better(self):
         """越低越好指标上升超阈值检测"""
         from benchmark import (
-            _check_regression,
             METRIC_LOWER_BETTER,
+            _check_regression,
         )
         metric = "set_ms_per_op"
         assert metric in METRIC_LOWER_BETTER
@@ -149,9 +146,8 @@ class TestBenchmarkFunctions:
     def test_bench_html_extraction_returns_dict(self):
         """bench_html_extraction 返回字典"""
         from benchmark import bench_html_extraction
-        with patch("benchmark.ITERATIONS", 2):
-            with patch("benchmark.LARGE_HTML_SIZE", 1000):
-                result = bench_html_extraction()
+        with patch("benchmark.ITERATIONS", 2), patch("benchmark.LARGE_HTML_SIZE", 1000):
+            result = bench_html_extraction()
         assert isinstance(result, dict)
         assert "regex" in result  # regex 总是可用
 
@@ -159,10 +155,10 @@ class TestBenchmarkFunctions:
         """selectolax 不可用时结果为 None"""
         from benchmark import bench_html_extraction
         # 模拟 selectolax 不可用
-        with patch.dict("sys.modules", {"selectolax": None}):
-            with patch("benchmark.ITERATIONS", 2):
-                with patch("benchmark.LARGE_HTML_SIZE", 1000):
-                    result = bench_html_extraction()
+        with patch.dict("sys.modules", {"selectolax": None}), \
+                patch("benchmark.ITERATIONS", 2), \
+                patch("benchmark.LARGE_HTML_SIZE", 1000):
+            result = bench_html_extraction()
         # selectolax 可能可用也可能不可用，取决于环境
         assert isinstance(result, dict)
 

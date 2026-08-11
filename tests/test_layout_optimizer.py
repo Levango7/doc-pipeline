@@ -7,24 +7,21 @@
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.layout_optimizer import (
     LayoutOptimizer,
     char_vis,
-    vis_str,
-    vis_bytes,
-    leading_spaces,
-    is_fence,
-    is_outer_border,
-    has_cjk_content,
-    is_md_table_sep,
-    rebuild_border,
     fix_border_line,
+    has_cjk_content,
+    is_fence,
+    is_md_table_sep,
+    is_outer_border,
+    leading_spaces,
+    rebuild_border,
+    vis_bytes,
+    vis_str,
 )
-
 
 # ─── 视觉宽度计算 ────────────────────────────
 
@@ -64,11 +61,11 @@ class TestVisualWidth:
 
     def test_vis_bytes_cjk(self):
         """CJK 字节流宽度"""
-        assert vis_bytes("中文".encode("utf-8")) == 4
+        assert vis_bytes("中文".encode()) == 4
 
     def test_vis_bytes_mixed(self):
         """混合字节流宽度"""
-        assert vis_bytes("abc中".encode("utf-8")) == 5
+        assert vis_bytes("abc中".encode()) == 5
 
     def test_vis_bytes_empty(self):
         """空字节流宽度 0"""
@@ -100,11 +97,11 @@ class TestHelperFunctions:
         assert is_outer_border(b"+----------+") is True
         assert is_outer_border(b"|---|") is False  # 含 | 不是外框
         assert is_outer_border(b"---") is False    # 无 +
-        assert is_outer_border("+中文+".encode("utf-8")) is False  # 含中文
+        assert is_outer_border("+中文+".encode()) is False  # 含中文
 
     def test_has_cjk_content(self):
         """CJK 内容检测"""
-        assert has_cjk_content("这是中文".encode("utf-8")) is True
+        assert has_cjk_content("这是中文".encode()) is True
         assert has_cjk_content(b"english only") is False
         assert has_cjk_content(b"") is False
         assert has_cjk_content(b"---") is False  # 纯横线

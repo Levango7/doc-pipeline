@@ -1,9 +1,7 @@
 """TaskQueue — 持久化任务队列测试"""
-import os
-import tempfile
 import threading
+
 import pytest
-from pathlib import Path
 
 from pipeline_core.task_queue import TaskQueue
 

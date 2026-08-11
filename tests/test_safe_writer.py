@@ -4,32 +4,23 @@
   - 使用 tmp_path 隔离测试文件
   - 每个测试方法聚焦一个行为
 """
-import sys
-import os
-import json
-import time
 import datetime
+import sys
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.safe_writer import (
-    safe_write,
-    file_info,
-    file_checksum,
-    load_manifest,
-    save_manifest,
-    diff_preview,
-    cleanup_tiered,
-    now_ts,
     MANIFEST_FILE,
-    TIER_FULL,
-    TIER_LATEST,
+    cleanup_tiered,
+    diff_preview,
+    file_checksum,
+    file_info,
+    load_manifest,
+    now_ts,
+    safe_write,
+    save_manifest,
 )
-
 
 # ─── 工具函数 ────────────────────────────
 

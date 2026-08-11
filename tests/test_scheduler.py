@@ -1,6 +1,4 @@
 """Scheduler — plan parsing, execution nodes, pooling"""
-import pytest
-from pipeline_core.scheduler import Scheduler
 
 
 class TestSchedulerParsing:
@@ -24,7 +22,7 @@ class TestSchedulerParsing:
         assert hasattr(node, "dependencies")
         assert hasattr(node, "timeout")
         assert hasattr(node, "max_retries")
-        assert hasattr(node, "agent_config"), f"node missing agent_config"
+        assert hasattr(node, "agent_config"), "node missing agent_config"
 
     def test_researcher_has_pool_size(self, docgen_plan):
         """researcher agent 应有 pool_size=2"""

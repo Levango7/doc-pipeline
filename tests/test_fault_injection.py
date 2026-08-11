@@ -5,13 +5,13 @@
 2. 熔断器状态机 —— 连续失败 OPEN、成功重置、HALF_OPEN 恢复
 3. Orchestrator 集成 —— 故障 agent 连续失败触发熔断，成功执行不误熔断
 """
-import sys, os, time
+import os
+import time
 from pathlib import Path
 
-from pipeline_core.message_bus_v3 import MessageBus
+from pipeline_core.base_agent import AgentMeta, BaseAgent
 from pipeline_core.circuit_breaker import CircuitBreaker, CircuitState
-from pipeline_core.base_agent import BaseAgent, AgentMeta, AgentStatus
-
+from pipeline_core.message_bus_v3 import MessageBus
 
 # ── 1. DLQ 真实重放 ──────────────────────────────
 
@@ -138,15 +138,16 @@ class _FaultyAgent(BaseAgent):
 class TestOrchestratorCircuitBreaker:
     def test_success_does_not_trip_breaker(self):
         """连续成功执行不应误触发熔断（验证修复前 bug）"""
-        from pipeline_core import PipelineOrchestrator
         from types import SimpleNamespace
+
+        from pipeline_core import PipelineOrchestrator
 
         o = PipelineOrchestrator(checkpoint_dir=str(Path(__file__).parent / ".test_checkpoints"))
         node = SimpleNamespace(
             agent_name="mock_ok",
             agent_config=SimpleNamespace(circuit_breaker={"enabled": True, "failure_threshold": 2, "recovery_timeout": 1}),
         )
-        task = SimpleNamespace()
+        SimpleNamespace()
 
         # 连续 5 次成功 → 不应熔断
         for _ in range(5):
@@ -157,8 +158,9 @@ class TestOrchestratorCircuitBreaker:
 
     def test_consecutive_failures_trip_breaker(self):
         """连续失败达到阈值 → 熔断返回 True"""
-        from pipeline_core import PipelineOrchestrator
         from types import SimpleNamespace
+
+        from pipeline_core import PipelineOrchestrator
 
         o = PipelineOrchestrator(checkpoint_dir=str(Path(__file__).parent / ".test_checkpoints"))
         node = SimpleNamespace(
@@ -196,9 +198,10 @@ class _ReplayMockAgent(BaseAgent):
 class TestDLQSelfHeal:
     def test_request_replay_re_executes_and_backfills(self):
         """REQUEST 死信 → orchestrator.replay_dlq → 真实重执行 node → 回填 task.result"""
+        from types import SimpleNamespace
+
         from pipeline_core import PipelineOrchestrator
         from pipeline_core.message_bus_v3 import MessageBus
-        from types import SimpleNamespace
 
         o = PipelineOrchestrator(checkpoint_dir=str(Path(__file__).parent / ".test_checkpoints"))
         # 用真实总线（带持久化 store）

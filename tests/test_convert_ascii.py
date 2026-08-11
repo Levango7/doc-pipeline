@@ -7,23 +7,12 @@
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.convert_ascii import (
-    AsciiConverter,
     AsciiBlock,
-    BOX_CHARS,
-    ASCII_BOX_CHARS,
-    TREE_CHARS,
-    ARROW_CHARS,
-    TABLE_LINE_PATTERN,
-    BANNER_PATTERN,
-    ASCII_TREE_PATTERN,
-    ASCII_ARROW_PATTERN,
+    AsciiConverter,
 )
-
 
 # ─── AsciiBlock 数据类 ────────────────────────────
 

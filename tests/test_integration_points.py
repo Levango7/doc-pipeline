@@ -3,16 +3,17 @@
 这些测试不测功能正确性，只验证"A 确实调了 B"。
 如果有人删掉集成调用，这些测试会红。
 """
+import contextlib
 from unittest.mock import MagicMock, patch
+
 import pytest
 
-from pipeline_core.circuit_breaker import CircuitBreaker, CircuitState
-from pipeline_core.llm_router import LLMRouter, LLMProvider
-from pipeline_core.message_bus_v3 import MessageBus, Message, MessageType
-from pipeline_core.base_agent import AgentMeta
 from agents.quality_gate import QualityGateAgent
 from agents.writer import WriterAgent
-
+from pipeline_core.base_agent import AgentMeta
+from pipeline_core.circuit_breaker import CircuitBreaker, CircuitState
+from pipeline_core.llm_router import LLMProvider, LLMRouter
+from pipeline_core.message_bus_v3 import Message, MessageBus, MessageType
 
 # ════════════════════════════════════════════════
 # circuit_breaker → alert_manager
@@ -153,13 +154,11 @@ class TestWriterFeedbackIntegration:
 
         with patch("pipeline_core.quality_feedback.get_quality_feedback") as mock_gqf:
             mock_gqf.return_value.get_recommendations = MagicMock(return_value=["加强引用"])
-            try:
+            with contextlib.suppress(Exception):
                 writer._restructure_document(
                     content="Some content",
                     articles=[{"title": "a", "url": "http://x", "text": "t"}],
                     query="test",
                     title="Test",
                 )
-            except Exception:
-                pass
             mock_gqf.return_value.get_recommendations.assert_called_once()

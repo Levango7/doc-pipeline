@@ -1,19 +1,22 @@
 """Doc-Pipeline 集成测试共享 fixtures"""
-import sys, os, json, time, threading, uuid, shutil, tempfile
+import os
+import shutil
+import sys
+import tempfile
 from pathlib import Path
-from typing import Generator, Callable
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
-from pipeline_core.message_bus_v3 import MessageBus
+import contextlib
+
+from pipeline_core import PipelineOrchestrator
 from pipeline_core.circuit_breaker import CircuitBreakerRegistry
+from pipeline_core.message_bus_v3 import MessageBus
 from pipeline_core.rate_limiter import RateLimiterRegistry
 from pipeline_core.scheduler import Scheduler
-from pipeline_core import PipelineOrchestrator
-from pipeline_core.base_agent import BaseAgent, AgentMeta, AgentStatus, Message
-
 
 # ── 共享路径 ──
 HERE = Path(__file__).parent
@@ -37,10 +40,8 @@ def tmp_path():
     d.mkdir(parents=True, exist_ok=True)
     yield d
     # 清理：best-effort
-    try:
+    with contextlib.suppress(Exception):
         shutil.rmtree(str(d), ignore_errors=True)
-    except Exception:
-        pass
 
 
 @pytest.fixture(autouse=True)
@@ -48,10 +49,8 @@ def clean_checkpoints():
     """每个测试前清理检查点和输出"""
     for d in [CHECKPOINT_DIR, OUTPUT_DIR]:
         if d.exists():
-            try:
-                shutil.rmtree(str(d))
-            except OSError:
-                pass  # Windows 文件锁
+            with contextlib.suppress(OSError):
+                shutil.rmtree(str(d))  # Windows 文件锁时忽略
         d.mkdir(parents=True, exist_ok=True)
     yield
 

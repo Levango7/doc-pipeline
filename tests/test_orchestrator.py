@@ -1,8 +1,7 @@
 """Orchestrator — registration, run_plan, checkpoint, pause/resume"""
-import time
 import json
+import time
 from pathlib import Path
-import pytest
 from types import SimpleNamespace
 
 
@@ -50,7 +49,7 @@ class TestOrchestratorRun:
         task = orch.run_plan(docgen_plan, input_file=input_file, task_id="test_dag")
 
         assert len(task.dag_nodes) > 0
-        for name, node in task.dag_nodes.items():
+        for _name, node in task.dag_nodes.items():
             assert node.status in ("success", "failed")
 
 
@@ -59,7 +58,7 @@ class TestOrchestratorCheckpoint:
 
     def test_save_checkpoint_creates_file(self, orch, docgen_plan):
         input_file = str(Path(__file__).parent.parent / "test_input.md")
-        task = orch.run_plan(docgen_plan, input_file=input_file, task_id="test_ckpt")
+        orch.run_plan(docgen_plan, input_file=input_file, task_id="test_ckpt")
 
         # checkpoint 文件在 pipeline 过程中被创建
         ckpt_dir = Path(orch.checkpoint_dir)
@@ -147,7 +146,6 @@ class TestRateLimitIntegration:
             assert ok, f"burst 内第 {i+1} 次应放行"
 
         # 第 6 次：桶已空，block=False 应失败
-        from pipeline_core.rate_limiter import RateLimiter
         limiter = o._rate_limiters.get_or_create("bursty")
         ok = limiter.acquire(1, block=False)
         assert ok is False, "burst 耗尽后非阻塞 acquire 应返回 False"
@@ -155,7 +153,6 @@ class TestRateLimitIntegration:
     def test_rate_limit_in_execute_skipped_when_not_configured(self):
         """_execute_node 中未配置限流时不报错（回归保护）"""
         from pipeline_core import PipelineOrchestrator
-        from pipeline_core.scheduler import AgentConfig
 
         o = PipelineOrchestrator()
         node = SimpleNamespace(
@@ -175,7 +172,8 @@ class TestRateLimitIntegration:
         )
         plan = SimpleNamespace(pipeline_name="test", raw={"pipeline": {"output": "out.md"}})
 
-        import tempfile, os
+        import os
+        import tempfile
         tdir = tempfile.mkdtemp()
         input_file = os.path.join(tdir, "input.md")
         with open(input_file, "w") as f:
@@ -189,8 +187,9 @@ class TestRateLimitIntegration:
 
     def test_scheduler_parses_rate_limit(self, tmp_path):
         """scheduler 从 YAML 解析 rate_limit → AgentConfig"""
-        from pipeline_core.scheduler import Scheduler
         import yaml
+
+        from pipeline_core.scheduler import Scheduler
 
         raw = {
             "pipeline": {"name": "test"},

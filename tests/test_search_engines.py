@@ -4,34 +4,31 @@
   - 用 unittest.mock 模拟 HTTP 调用，不实际请求网络
   - 每个测试方法聚焦一个行为
 """
-import sys
 import asyncio
+import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline_core.search_engines import (
-    SearchItem,
+    _ENGINE_REGISTRY,
+    BaiduEngine,
+    BingEngine,
+    BochaEngine,
+    DuckDuckGoEngine,
+    FirecrawlExtractor,
+    MetasoEngine,
+    ProSearchEngine,
     SearchEngineBase,
     SearchEngineManager,
-    BochaEngine,
-    TavilyEngine,
+    SearchItem,
     SerperEngine,
-    MetasoEngine,
-    DuckDuckGoEngine,
-    BingEngine,
-    BaiduEngine,
-    SogouEngine,
     So360Engine,
-    ProSearchEngine,
-    FirecrawlExtractor,
+    SogouEngine,
+    TavilyEngine,
     create_engine,
-    _ENGINE_REGISTRY,
 )
-
 
 # ─── SearchItem 数据类 ────────────────────────────
 
@@ -127,11 +124,11 @@ class TestBochaSearch:
         """mock 响应解析正确"""
         eng = BochaEngine(api_key="test")
         mock_body = (
-            '{"data":{"webPages":{"value":['
-            '{"name":"Kafka","url":"http://kafka.org","summary":"stream","score":0.9},'
-            '{"name":"Spark","url":"http://spark.org","summary":"compute","score":0.8}'
-            ']}}}'
-        ).encode("utf-8")
+            b'{"data":{"webPages":{"value":['
+            b'{"name":"Kafka","url":"http://kafka.org","summary":"stream","score":0.9},'
+            b'{"name":"Spark","url":"http://spark.org","summary":"compute","score":0.8}'
+            b']}}}'
+        )
         mock_resp = MagicMock()
         mock_resp.read.return_value = mock_body
         mock_resp.__enter__ = lambda self: mock_resp

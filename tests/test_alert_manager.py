@@ -1,7 +1,9 @@
 """AlertManager — 告警机制测试"""
 import time
+
 import pytest
-from pipeline_core.alert_manager import alert, get_alerts, clear_alerts
+
+from pipeline_core.alert_manager import alert, clear_alerts, get_alerts
 
 
 @pytest.fixture(autouse=True)

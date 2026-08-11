@@ -311,7 +311,7 @@ docker run -p 8910:8910 -v $(pwd)/checkpoints:/app/checkpoints doc-pipeline
 python -m pytest tests/ -v
 ```
 
-**255 个测试全部通过**（6 个 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
+**525 个测试全部通过**（6 个 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
 
 ```bash
 # 运行真实端到端测试（需要网络 + LLM API Key）
@@ -381,7 +381,7 @@ doc-pipeline/
 │       ├── technical-doc.yaml
 │       └── tutorial.yaml
 ├── dashboard/           # 前端仪表盘
-├── tests/               # 255 个测试（+ 6 个 e2e）
+├── tests/               # 525 个测试（+ 6 个 e2e）
 ├── checkpoints/         # 断点 + 日志（自动轮转）
 ├── versions/            # 文档版本存储
 ├── run.py               # CLI 入口
@@ -405,7 +405,7 @@ doc-pipeline/
 | LLM 额度消耗 | 0（质量门控跳过，规则兜底） | mock |
 | 消息总线吞吐 | 批量 drain 50 条/轮 | — |
 | 缓存命中 | 125 万 ops/s | — |
-| 测试覆盖 | 255 tests (+ 6 e2e) | — |
+| 测试覆盖 | 525 tests (+ 6 e2e) | — |
 
 ### 生产模式预期耗时（config.production.json）
 

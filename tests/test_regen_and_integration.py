@@ -6,14 +6,14 @@
 
 依赖真实组件（QualityGateAgent、MessageBus、PipelineOrchestrator）。
 """
-import sys, os, time, tempfile
+import os
+import tempfile
 from pathlib import Path
 
-from pipeline_core.message_bus_v3 import MessageBus, Message, MessageType
-from pipeline_core.base_agent import BaseAgent, AgentMeta
 from agents.quality_gate import QualityGateAgent
 from pipeline_core import PipelineOrchestrator
-
+from pipeline_core.base_agent import AgentMeta, BaseAgent
+from pipeline_core.message_bus_v3 import Message, MessageBus, MessageType
 
 # ── 测试数据 ────────────────────────────────
 

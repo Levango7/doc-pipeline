@@ -1,7 +1,5 @@
 """RateLimiter — burst, acquire, timeout, sliding window"""
 import time
-import pytest
-from threading import Thread, Event
 
 
 class TestRateLimiterBasics:
@@ -61,7 +59,7 @@ class TestRateLimiterRegistry:
         assert "rl_b" in names
 
     def test_health_summary(self, rate_limiters):
-        rl = rate_limiters.get_or_create("rl_hlth", rate=10, burst=5)
+        rate_limiters.get_or_create("rl_hlth", rate=10, burst=5)
         h = rate_limiters.all()
         assert "rl_hlth" in h
         assert "available_tokens" in h["rl_hlth"]

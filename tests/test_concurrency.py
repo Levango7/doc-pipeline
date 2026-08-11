@@ -6,12 +6,14 @@
 3. SQLite 多线程读写 → 无数据损坏
 4. 编排器 5 个任务并发 → 全部完成
 """
-import sys, os, time, threading, tempfile
-from pathlib import Path
+import os
+import tempfile
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from pipeline_core.message_bus_v3 import MessageBus
-
 
 # ════════════════════════════════════════════════
 # P2-A: 总线 EVENT 背压
@@ -203,10 +205,11 @@ class TestOrchestratorConcurrency:
     def test_5_concurrent_tasks(self):
         """5 个并发流水线任务 → 全部完成"""
         import tempfile
+
         from pipeline_core import PipelineOrchestrator
-        from pipeline_core.scheduler import ExecutionPlan
+        from pipeline_core.base_agent import AgentMeta, BaseAgent
         from pipeline_core.pipeline import TaskStatus
-        from pipeline_core.base_agent import BaseAgent, AgentMeta
+        from pipeline_core.scheduler import ExecutionPlan
 
         bus = MessageBus(enable_persistence=False)
         orch = PipelineOrchestrator(
@@ -279,8 +282,7 @@ class TestSQLiteConcurrency:
 
     def test_sqlite_multithread_writes(self):
         """10 线程并发写入，验证无死锁、记录数正确"""
-        import sqlite3
-        from pipeline_core.message_bus_v3 import PersistentStore, DEFAULT_DB_PATH
+        from pipeline_core.message_bus_v3 import PersistentStore
 
         store = PersistentStore(db_path="tests/.test_store.db")
 
@@ -298,8 +300,10 @@ class TestSQLiteConcurrency:
                 conn.close()
 
         ts = [threading.Thread(target=writer, args=(i,)) for i in range(10)]
-        for t in ts: t.start()
-        for t in ts: t.join()
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
 
         conn = store._get_conn()
         count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -328,8 +332,10 @@ class TestSQLiteConcurrency:
                 time.sleep(0.001)
 
         ts = [threading.Thread(target=publisher, args=(i,)) for i in range(5)]
-        for t in ts: t.start()
-        for t in ts: t.join()
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
 
         time.sleep(0.5)
         assert len(received) >= 140, f"期望 ≥140，实际 {len(received)}"

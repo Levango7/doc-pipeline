@@ -1,5 +1,6 @@
 """QualityFeedback — 质量闭环学习测试"""
 import pytest
+
 from pipeline_core.quality_feedback import QualityFeedback
 
 

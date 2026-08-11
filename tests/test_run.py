@@ -5,10 +5,10 @@
   - 不实际启动流水线
   - 每个测试方法聚焦一个行为
 """
+import contextlib
 import sys
-import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,14 +22,12 @@ class TestSigtermHandler:
 
     def test_handler_not_registered_on_import(self):
         """import run 不应注册 SIGTERM handler（避免副作用）"""
-        import importlib
         import signal
         # 记录当前 handler
         original = signal.getsignal(signal.SIGTERM)
         # 重新 import run
         if "run" in sys.modules:
             del sys.modules["run"]
-        import run
         # import 后 handler 应未改变（不是 _sigterm_handler）
         current = signal.getsignal(signal.SIGTERM)
         assert current is original or current == signal.SIG_DFL
@@ -40,6 +38,7 @@ class TestSigtermHandler:
     def test_install_sigterm_handler_registers(self):
         """_install_sigterm_handler 在主线程注册成功"""
         import signal
+
         from run import _install_sigterm_handler, _sigterm_handler
         original = signal.getsignal(signal.SIGTERM)
         try:
@@ -84,57 +83,49 @@ class TestCLIArgumentParsing:
     def test_input_argument_optional_with_check(self):
         """--check 模式不需要 input"""
         from run import main
-        with patch("sys.argv", ["run.py", "--check"]):
-            with patch("pipeline_core.bootstrap.run_startup_check") as mock_check:
-                mock_report = MagicMock()
-                mock_report.has_errors = False
-                mock_report.summary.return_value = "OK"
-                mock_check.return_value = mock_report
-                with patch("builtins.print"):
-                    with pytest.raises(SystemExit) as exc_info:
-                        main()
-                assert exc_info.value.code == 0
+        with patch("sys.argv", ["run.py", "--check"]), \
+                patch("pipeline_core.bootstrap.run_startup_check") as mock_check:
+            mock_report = MagicMock()
+            mock_report.has_errors = False
+            mock_report.summary.return_value = "OK"
+            mock_check.return_value = mock_report
+            with patch("builtins.print"), pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
 
     def test_input_required_without_check(self):
         """无 input 且非 --check 时报错"""
         from run import main
-        with patch("sys.argv", ["run.py"]):
-            with pytest.raises(SystemExit):
-                main()
+        with patch("sys.argv", ["run.py"]), pytest.raises(SystemExit):
+            main()
 
     def test_list_agents_flag(self):
         """--list-agents 标志解析"""
         from run import main
-        with patch("sys.argv", ["run.py", "input.md", "--list-agents"]):
-            with patch("run.PipelineOrchestrator") as mock_orch_cls:
-                mock_orch = MagicMock()
-                mock_orch.register_agents.return_value = ["agent1", "agent2"]
-                mock_orch.registry.get.return_value = {"version": "1.0", "description": "test"}
-                mock_orch.registry.get_status.return_value = MagicMock(value="READY")
-                mock_orch_cls.return_value = mock_orch
-                with patch("builtins.print"):
-                    try:
-                        main()
-                    except SystemExit:
-                        pass
+        with patch("sys.argv", ["run.py", "input.md", "--list-agents"]), \
+                patch("run.PipelineOrchestrator") as mock_orch_cls:
+            mock_orch = MagicMock()
+            mock_orch.register_agents.return_value = ["agent1", "agent2"]
+            mock_orch.registry.get.return_value = {"version": "1.0", "description": "test"}
+            mock_orch.registry.get_status.return_value = MagicMock(value="READY")
+            mock_orch_cls.return_value = mock_orch
+            with patch("builtins.print"), contextlib.suppress(SystemExit):
+                main()
 
     def test_dry_run_flag(self):
         """--dry-run 标志解析"""
         from run import main
-        with patch("sys.argv", ["run.py", "input.md", "--dry-run"]):
-            with patch("run.PipelineOrchestrator") as mock_orch_cls:
-                mock_orch = MagicMock()
-                mock_orch.register_agents.return_value = ["agent1"]
-                mock_task = MagicMock()
-                mock_task.status = MagicMock()
-                mock_task.status.name = "PENDING"
-                mock_orch.run.return_value = mock_task
-                mock_orch_cls.return_value = mock_orch
-                with patch("builtins.print"):
-                    try:
-                        main()
-                    except SystemExit:
-                        pass
+        with patch("sys.argv", ["run.py", "input.md", "--dry-run"]), \
+                patch("run.PipelineOrchestrator") as mock_orch_cls:
+            mock_orch = MagicMock()
+            mock_orch.register_agents.return_value = ["agent1"]
+            mock_task = MagicMock()
+            mock_task.status = MagicMock()
+            mock_task.status.name = "PENDING"
+            mock_orch.run.return_value = mock_task
+            mock_orch_cls.return_value = mock_orch
+            with patch("builtins.print"), contextlib.suppress(SystemExit):
+                main()
 
 
 # ─── YAML 加载失败处理（P0 修复验证）────────────────────────────
@@ -148,18 +139,16 @@ class TestYamlLoadFailure:
         input_file = tmp_path / "input.md"
         input_file.write_text("# Test")
 
-        with patch("sys.argv", ["run.py", str(input_file)]):
-            with patch("run.PipelineOrchestrator") as mock_orch_cls:
-                mock_orch = MagicMock()
-                mock_orch.register_agents.return_value = ["agent1"]
-                mock_orch_cls.return_value = mock_orch
-                # pipelines 目录为空（无 YAML）
-                with patch("pathlib.Path.exists", return_value=False):
-                    with patch("builtins.print"):
-                        with pytest.raises(SystemExit) as exc_info:
-                            main()
-                # 应退出码 1，而非 AttributeError
-                assert exc_info.value.code == 1
+        with patch("sys.argv", ["run.py", str(input_file)]), patch("run.PipelineOrchestrator") as mock_orch_cls:
+            mock_orch = MagicMock()
+            mock_orch.register_agents.return_value = ["agent1"]
+            mock_orch_cls.return_value = mock_orch
+            # pipelines 目录为空（无 YAML）
+            with patch("pathlib.Path.exists", return_value=False), patch("builtins.print"), \
+                    pytest.raises(SystemExit) as exc_info:
+                main()
+            # 应退出码 1，而非 AttributeError
+            assert exc_info.value.code == 1
 
     def test_corrupt_yaml_friendly_exit(self, tmp_path):
         """YAML 损坏时友好退出"""
@@ -169,15 +158,14 @@ class TestYamlLoadFailure:
         bad_yaml = tmp_path / "bad.yaml"
         bad_yaml.write_text(": invalid: yaml: :")
 
-        with patch("sys.argv", ["run.py", str(input_file), "--pipeline-file", str(bad_yaml)]):
-            with patch("run.PipelineOrchestrator") as mock_orch_cls:
-                mock_orch = MagicMock()
-                mock_orch.register_agents.return_value = ["agent1"]
-                mock_orch_cls.return_value = mock_orch
-                with patch("builtins.print"):
-                    with pytest.raises(SystemExit) as exc_info:
-                        main()
-                assert exc_info.value.code == 1
+        with patch("sys.argv", ["run.py", str(input_file), "--pipeline-file", str(bad_yaml)]), \
+                patch("run.PipelineOrchestrator") as mock_orch_cls:
+            mock_orch = MagicMock()
+            mock_orch.register_agents.return_value = ["agent1"]
+            mock_orch_cls.return_value = mock_orch
+            with patch("builtins.print"), pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
 
 
 # ─── 路由分支 ────────────────────────────
@@ -191,19 +179,16 @@ class TestRoutingBranches:
         input_file = tmp_path / "input.md"
         input_file.write_text("# Test")
 
-        with patch("sys.argv", ["run.py", str(input_file), "--legacy", "--dry-run"]):
-            with patch("run.PipelineOrchestrator") as mock_orch_cls:
-                mock_orch = MagicMock()
-                mock_orch.register_agents.return_value = ["agent1"]
-                mock_task = MagicMock()
-                mock_task.status.name = "PENDING"
-                mock_orch.run.return_value = mock_task
-                mock_orch_cls.return_value = mock_orch
-                with patch("builtins.print"):
-                    try:
-                        main()
-                    except SystemExit:
-                        pass
+        with patch("sys.argv", ["run.py", str(input_file), "--legacy", "--dry-run"]), \
+                patch("run.PipelineOrchestrator") as mock_orch_cls:
+            mock_orch = MagicMock()
+            mock_orch.register_agents.return_value = ["agent1"]
+            mock_task = MagicMock()
+            mock_task.status.name = "PENDING"
+            mock_orch.run.return_value = mock_task
+            mock_orch_cls.return_value = mock_orch
+            with patch("builtins.print"), contextlib.suppress(SystemExit):
+                main()
                 # legacy 路径调用 orch.run 而非 orch.run_plan
                 mock_orch.run.assert_called_once()
 
@@ -213,22 +198,19 @@ class TestRoutingBranches:
         input_file = tmp_path / "input.md"
         input_file.write_text("Kafka architecture")
 
-        with patch("sys.argv", ["run.py", str(input_file), "--three-pass"]):
-            with patch("pipeline_core.three_pass_pipeline.ThreePassPipeline") as mock_tp_cls:
-                mock_tp = MagicMock()
-                mock_tp.generate.return_value = {
-                    "status": "ok", "duration": 1.0,
-                    "phases": {"p1": {"status": "ok", "duration": 0.3}},
-                    "output_path": "out.md", "section_count": 5,
-                    "content_length": 1000,
-                }
-                mock_tp_cls.return_value = mock_tp
-                with patch("builtins.print"):
-                    try:
-                        main()
-                    except SystemExit:
-                        pass
-                mock_tp.generate.assert_called_once()
+        with patch("sys.argv", ["run.py", str(input_file), "--three-pass"]), \
+                patch("pipeline_core.three_pass_pipeline.ThreePassPipeline") as mock_tp_cls:
+            mock_tp = MagicMock()
+            mock_tp.generate.return_value = {
+                "status": "ok", "duration": 1.0,
+                "phases": {"p1": {"status": "ok", "duration": 0.3}},
+                "output_path": "out.md", "section_count": 5,
+                "content_length": 1000,
+            }
+            mock_tp_cls.return_value = mock_tp
+            with patch("builtins.print"), contextlib.suppress(SystemExit):
+                main()
+            mock_tp.generate.assert_called_once()
 
 
 # ─── output_json_result ────────────────────────────
@@ -238,8 +220,8 @@ class TestOutputJsonResult:
 
     def test_done_status_exit_code_0(self):
         """DONE 状态 exit_code=0"""
-        from run import output_json_result
         from pipeline_core import TaskStatus
+        from run import output_json_result
         task = MagicMock()
         task.status = TaskStatus.DONE
         task.error = None
@@ -253,8 +235,8 @@ class TestOutputJsonResult:
 
     def test_failed_status_exit_code_1(self):
         """FAILED 状态 exit_code=1"""
-        from run import output_json_result
         from pipeline_core import TaskStatus
+        from run import output_json_result
         task = MagicMock()
         task.status = TaskStatus.FAILED
         task.error = "something went wrong"

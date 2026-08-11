@@ -1,8 +1,10 @@
 """MCPServer — JSON-RPC 协议测试"""
 import json
-import pytest
 from unittest.mock import MagicMock
-from pipeline_core.mcp_server import MCPServer, PROTOCOL_VERSION, SERVER_NAME
+
+import pytest
+
+from pipeline_core.mcp_server import PROTOCOL_VERSION, SERVER_NAME, MCPServer
 
 
 @pytest.fixture

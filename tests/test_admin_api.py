@@ -1,5 +1,6 @@
 """Admin API handler — cancel/pause/resume 路由测试"""
 from unittest.mock import MagicMock, patch
+
 import pytest
 
 from pipeline_core.admin_api import AdminHandler

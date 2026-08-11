@@ -1,13 +1,14 @@
 """SSE 流式输出与重连测试。"""
-import time
 import threading
-
-import pytest
+import time
 
 from pipeline_core.streaming import (
-    StreamEvent, StreamCallback, StreamMetrics,
-    register_callback, get_callback, unregister_callback,
-    _callback_registry, _registry_lock,
+    StreamCallback,
+    StreamEvent,
+    StreamMetrics,
+    get_callback,
+    register_callback,
+    unregister_callback,
 )
 
 
@@ -31,7 +32,7 @@ class TestStreamEvent:
         sse = e.to_sse()
         # orjson 产出紧凑 JSON（无空格），标准 json 带空格，两种均合法
         import json as _json
-        data_line = [l for l in sse.strip().split("\n") if l.startswith("data: ")][0]
+        data_line = [ln for ln in sse.strip().split("\n") if ln.startswith("data: ")][0]
         payload = _json.loads(data_line[6:])
         assert payload["type"] == "chunk"
         assert payload["data"]["text"] == "abc"

@@ -1,5 +1,6 @@
 """OpenAPI Spec — 结构有效性测试"""
 import pytest
+
 from pipeline_core.openapi_spec import generate_spec
 
 
@@ -53,9 +54,8 @@ class TestOpenAPISpec:
     def test_post_endpoints_have_request_body(self, spec):
         for path, methods in spec["paths"].items():
             for method, detail in methods.items():
-                if method == "post":
-                    if path in ("/api/tasks", "/api/config", "/api/cost/budget", "/api/events/hooks"):
-                        assert "requestBody" in detail, f"POST {path} 应有 requestBody"
+                if method == "post" and path in ("/api/tasks", "/api/config", "/api/cost/budget", "/api/events/hooks"):
+                    assert "requestBody" in detail, f"POST {path} 应有 requestBody"
 
     def test_task_id_path_param(self, spec):
         path = spec["paths"]["/tasks/{task_id}"]["get"]

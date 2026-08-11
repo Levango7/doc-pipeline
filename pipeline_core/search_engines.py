@@ -1151,4 +1151,13 @@ class SearchEngineManager:
         if eng and eng.is_available():
             engines["prosearch"] = eng
 
+        # 无 API Key 降级告警：API 引擎均未配置时，实际只有 HTML 抓取引擎可用，
+        # 提醒用户配置 Key 以获得更高质量的检索结果（生产部署必读 docs/deployment.md）
+        api_engine_names = {"bocha", "tavily", "serper", "metaso"}
+        if not api_engine_names & engines.keys():
+            logger.warning(
+                "未配置搜索引擎 API Key (BOCHA_API_KEY/TAVILY_API_KEY/SERPER_API_KEY)，"
+                "检索将使用 HTML 抓取兜底引擎 (bing/baidu/sogou/360)，结果质量可能较低"
+            )
+
         return cls(engines)

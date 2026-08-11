@@ -5,24 +5,18 @@
   - 不依赖外部文件
 """
 import sys
-import os
-import tempfile
 from pathlib import Path
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.markdown_checker import (
+    DEFAULT_RULES,
     Checker,
+    IncrementalChecker,
     Issue,
     RuleConfig,
-    IncrementalChecker,
     check_file,
-    get_rules,
-    DEFAULT_RULES,
 )
-
 
 # ─── P0 检查 ────────────────────────────
 

@@ -11,11 +11,11 @@
 
 CI 默认跳过（pyproject.toml 中 addopts = "-m 'not e2e'"）
 """
-import os
 import sys
 import time
-import pytest
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -39,10 +39,7 @@ def _has_llm():
     if not ENV_FILE.exists():
         return False
     text = ENV_FILE.read_text(encoding="utf-8")
-    for line in text.splitlines():
-        if line.startswith("LLM_API_KEY=") and "your_" not in line:
-            return True
-    return False
+    return any(line.startswith("LLM_API_KEY=") and "your_" not in line for line in text.splitlines())
 
 
 skip_no_env = pytest.mark.skipif(
@@ -165,6 +162,7 @@ def test_submit_task_api_real():
     """POST /api/tasks 真实提交 — 启动 AdminAPI HTTP 服务器验证端到端"""
     import json
     import urllib.request
+
     from pipeline_core import PipelineOrchestrator
     from pipeline_core.admin_api import AdminAPI
 

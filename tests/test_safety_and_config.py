@@ -1,9 +1,9 @@
 """Agent 沙箱安全检查 + 配置热更新测试"""
-import pytest
-import tempfile
-from pathlib import Path
 from unittest.mock import MagicMock
-from pipeline_core.agent_loader import _check_safety, SecurityError, AgentLoader
+
+import pytest
+
+from pipeline_core.agent_loader import AgentLoader, SecurityError, _check_safety
 
 
 class TestSafetyCheck:
@@ -80,13 +80,12 @@ class TestResearcherConfigUpdate:
         from agents.researcher import ResearcherAgent
         from pipeline_core.base_agent import AgentMeta
 
-        meta = AgentMeta(name="researcher", version="2.0", description="test", priority=10)
+        AgentMeta(name="researcher", version="2.0", description="test", priority=10)
         agent = ResearcherAgent.__new__(ResearcherAgent)
         agent._search_manager = MagicMock()
         agent._search_engines = ["bocha"]
         agent._logger = MagicMock()
 
-        original_manager = agent._search_manager
         agent.on_config_update(changed_keys=["search_engines"])
 
         assert agent._search_manager is None

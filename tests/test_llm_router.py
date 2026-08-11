@@ -7,7 +7,7 @@
 import sys
 import time
 from pathlib import Path
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -21,7 +21,6 @@ from pipeline_core.llm_router import (
     get_router,
     reset_router,
 )
-
 
 # ─── LLMProvider 单元测试 ────────────────────────────
 
@@ -173,9 +172,9 @@ class TestLLMRouterFallback:
     def test_chat_raises_when_all_fail(self):
         """所有供应商都失败时抛 RuntimeError"""
         router = self._make_router()
-        with patch("pipeline_core.llm_router._call_llm", side_effect=Exception("all down")):
-            with pytest.raises(RuntimeError, match="所有 LLM 供应商调用失败"):
-                router.chat([{"role": "user", "content": "hi"}])
+        with patch("pipeline_core.llm_router._call_llm", side_effect=Exception("all down")), \
+                pytest.raises(RuntimeError, match="所有 LLM 供应商调用失败"):
+            router.chat([{"role": "user", "content": "hi"}])
 
     def test_chat_raises_when_no_providers(self):
         """无供应商时抛 RuntimeError"""
@@ -362,6 +361,6 @@ class TestCallLLM:
         mock_resp.read.return_value = b'{"choices":[{"message":{"content":""}}]}'
         mock_resp.__enter__ = lambda self: mock_resp
         mock_resp.__exit__ = lambda *a: False
-        with patch("urllib.request.urlopen", return_value=mock_resp):
-            with pytest.raises(ValueError, match="返回空内容"):
-                _call_llm(provider, [{"role": "user", "content": "hi"}])
+        with patch("urllib.request.urlopen", return_value=mock_resp), \
+                pytest.raises(ValueError, match="返回空内容"):
+            _call_llm(provider, [{"role": "user", "content": "hi"}])
