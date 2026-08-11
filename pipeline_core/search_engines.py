@@ -94,6 +94,25 @@ class SearchEngineBase:
         return True
 
 
+# ─── Mock 引擎（测试 / 离线演示用）──────────────────────
+
+class MockEngine(SearchEngineBase):
+    """模拟搜索引擎 — 离线返回一条占位结果，供测试与默认配置开箱即用"""
+
+    name = "mock"
+
+    def is_available(self) -> bool:
+        return True
+
+    def search(self, query: str, max_results: int = 10) -> list[SearchItem]:
+        return [SearchItem(
+            title=f"mock 搜索结果: {query}",
+            url=f"https://example.com/search?q={query}",
+            snippet="这是 mock 引擎的占位摘要（离线模式，无网络请求）。",
+            source=self.name, query=query,
+        )]
+
+
 # ─── Metaso API ──────────────────────────────────
 
 class MetasoEngine(SearchEngineBase):
@@ -820,6 +839,7 @@ class ProSearchEngine(SearchEngineBase):
 # ─── 搜索引擎注册表 ──────────────────────────────
 
 _ENGINE_REGISTRY = {
+    "mock": MockEngine,
     "bocha": BochaEngine,
     "tavily": TavilyEngine,
     "serper": SerperEngine,

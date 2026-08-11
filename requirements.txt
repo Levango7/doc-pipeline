@@ -13,6 +13,9 @@ aiohttp>=3.8.0
 # 网页正文提取（three_pass_pipeline 优先使用）
 trafilatura>=2.0.0
 
+# HTML 解析（Fetcher 正文提取）
+selectolax>=0.3.0
+
 
 # 开发/CI 依赖（不在运行时 requirements 中安装，CI 单独 pip install）：
 # ruff>=0.4.0       # lint + format

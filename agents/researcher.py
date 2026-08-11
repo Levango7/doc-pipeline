@@ -98,6 +98,10 @@ class ResearcherAgent(BaseAgent):
         self._max_workers = config.get("max_workers", 3)
 
         self._search_engines = config.get("search_engines", ["bing", "sogou", "360"])
+        # 处理嵌套配置：若 config 是完整的流水线配置（含 researcher 子键），提取该子配置
+        if "researcher" in config and isinstance(config["researcher"], dict):
+            research_cfg = config["researcher"]
+            self._search_engines = research_cfg.get("search_engines", self._search_engines)
 
         from pipeline_core.rate_limiter import RateLimiterRegistry
         self._rate_limiters = RateLimiterRegistry()
@@ -149,7 +153,8 @@ class ResearcherAgent(BaseAgent):
         cfg = payload.get("config", {})
         engines_used = self._search_engines
         if isinstance(cfg, dict):
-            if "search_engines" in cfg:
+            # mock 模式下 agent 已显式配置仅 mock，忽略 payload 携带的真实引擎列表
+            if "search_engines" in cfg and not all(e == "mock" for e in self._search_engines):
                 engines_used = cfg["search_engines"]
             if "max_results" in cfg:
                 max_results = cfg["max_results"]
@@ -184,9 +189,7 @@ class ResearcherAgent(BaseAgent):
                     self.log_error(f"搜索失败 {query}: {e}")
 
         results = self._score_and_filter(results)
-
         results = self._deduplicate(results)
-
         results = results[:max_results]
 
         self._record_history(task_id, queries, len(results))
@@ -248,6 +251,13 @@ class ResearcherAgent(BaseAgent):
             return [SearchResult(**r) for r in cached]
 
         all_results = []
+
+        # 离线演示 / 测试路径：配置仅 mock 引擎时，直接短路返回，完全跳过
+        # SearchEngineManager（from_env 会无条件注册 bing 等真实引擎并触发网络抓取）
+        if engines and all(e == "mock" for e in engines):
+            results = self._mock_search(query, "mock")
+            self._cache.set(cache_key, [r.to_dict() for r in results])
+            return results
 
         # 优先尝试 SearchEngineManager（多引擎统一接口 + Metaso API）
         # 性能优化：缓存 manager 实例，避免每次查询都重建（含引擎初始化、环境变量读取）

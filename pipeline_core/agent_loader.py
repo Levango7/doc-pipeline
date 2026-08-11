@@ -192,16 +192,17 @@ class AgentLoader:
                         # 提取元信息
                         meta = self._extract_meta(attr)
 
-                        # 实例化
+                        # 实例化：优先注入按 agent 名提取的子配置，同时保留顶层全局配置
+                        agent_config = (config or {}).get(meta.name, config or {})
                         agent = attr(
                             name=meta.name,
                             meta=meta,
-                            config=config or {},
+                            config=agent_config,
                             message_bus=self.bus,
                             registry=self.registry
                         )
                         # 保存实例配置到 meta，用于 respawn 恢复
-                        meta.config = config or {}
+                        meta.config = agent_config
 
                         self.registry.register(meta, agent)
                         if self._logger:

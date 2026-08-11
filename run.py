@@ -284,10 +284,12 @@ def main():
             _run_export(output, args.export, args.export_output)
         return
 
-    # 加载配置
+    # 加载配置：优先 --config/-c 指定文件；未指定时自动加载项目根目录 config.json
+    # （README 快速体验命令不传 -c，若此处不加载，agent 将使用代码内默认值而非 config.json）
     config = {}
-    if args.config and Path(args.config).exists():
-        with open(args.config, encoding="utf-8") as f:
+    config_path = args.config or (Path(__file__).parent / "config.json")
+    if Path(config_path).exists():
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
 
     # 初始化编排器
@@ -299,7 +301,7 @@ def main():
 
     # 发现并注册 Agent
     agent_names = args.agent or None
-    loaded = orch.register_agents(agent_names)
+    loaded = orch.register_agents(agent_names, config=config)
 
     if args.list_agents:
         print(f"\n已注册 {len(loaded)} 个 Agent:")
