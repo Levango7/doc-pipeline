@@ -254,10 +254,15 @@ class DAGExecutor:
                         else:
                             dep_results[base].append({key: val})
 
+        # 三层配置合并：agent 构造配置（config.json，来自 meta.config）为基底，
+        # 流水线 YAML 节点 config 覆盖其上；agent 内仍可在运行时读取 payload 做最终覆盖
+        ctor_config = getattr(meta2, "config", None) or {}
+        merged_config = {**ctor_config, **node.agent_config.config}
+
         msg_payload = {
             "task_id": task.id,
             "input_file": input_file,
-            "config": node.agent_config.config,
+            "config": merged_config,
             "pipeline": plan.pipeline_name,
             "node": node.agent_name,
             "dependencies_results": dep_results_raw,
