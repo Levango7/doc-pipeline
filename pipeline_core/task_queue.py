@@ -17,15 +17,16 @@
 """
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import sqlite3
 import threading
 import time
-import logging
 from pathlib import Path
-from typing import Optional, Any
 
-from .fast_json import dumps as _fast_dumps, loads as _fast_loads
+from .fast_json import dumps as _fast_dumps
+from .fast_json import loads as _fast_loads
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ class TaskQueue:
             except sqlite3.IntegrityError:
                 return False
 
-    def acquire(self, worker_id: str = "") -> Optional[dict]:
+    def acquire(self, worker_id: str = "") -> dict | None:
         """原子出队：取一条 pending 任务，标记为 running。
 
         多 worker 安全：SQLite 事务保证同一任务不会被两个 worker acquire。
@@ -196,7 +197,7 @@ class TaskQueue:
             logger.info(f"恢复 {len(recovered)} 个中断任务")
             return recovered
 
-    def get(self, task_id: str) -> Optional[dict]:
+    def get(self, task_id: str) -> dict | None:
         """查询单个任务"""
         with self._get_conn() as conn:
             row = conn.execute(
@@ -270,8 +271,6 @@ class TaskQueue:
         """显式关闭当前线程缓存的连接（修复 P0：原为空实现，连接永不关闭）。"""
         conn = getattr(self._local, "conn", None)
         if conn is not None:
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
             self._local.conn = None

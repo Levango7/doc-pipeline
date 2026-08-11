@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Optional
 
 _logger = logging.getLogger(__name__)
 
@@ -48,7 +47,7 @@ class RateLimiter:
         self._total_wait_ms = 0.0
 
     def acquire(self, tokens: float = 1.0, block: bool = True,
-                timeout: Optional[float] = None) -> bool:
+                timeout: float | None = None) -> bool:
         """获取令牌
 
         Args:
@@ -145,7 +144,7 @@ class RateLimiterRegistry:
                 self._limiters[name] = RateLimiter(rate=rate, burst=burst, name=name)
             return self._limiters[name]
 
-    def get(self, name: str) -> Optional[RateLimiter]:
+    def get(self, name: str) -> RateLimiter | None:
         with self._lock:
             return self._limiters.get(name)
 

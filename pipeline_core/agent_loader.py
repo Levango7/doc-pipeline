@@ -1,11 +1,15 @@
 """Agent 加载器 —— 负责 Agent 发现、注册和生命周期管理"""
 from __future__ import annotations
-import sys
+
 import ast
 import importlib.util
 import logging
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .registry import AgentMeta
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +76,7 @@ def _check_safety(file_path: Path, strict: bool = False) -> list[str]:
                 n = func
                 while isinstance(n, ast.Attribute):
                     parts.append(n.attr)
-                    n = n.value
+                    n = n.value  # type: ignore[assignment]
                 if isinstance(n, ast.Name):
                     parts.append(n.id)
                 full_name = ".".join(reversed(parts))
@@ -145,7 +149,7 @@ class AgentLoader:
 
     def discover(self) -> list[str]:
         """自动发现 agents 目录下的插件"""
-        discovered = []
+        discovered = []  # type: ignore[var-annotated]
         if not self.agents_dir.exists():
             return discovered
 
@@ -155,10 +159,9 @@ class AgentLoader:
             discovered.append(f.stem)
         return discovered
 
-    def register(self, agent_names: Optional[list[str]] = None, config: Optional[dict] = None) -> list[str]:
+    def register(self, agent_names: list[str] | None = None, config: dict | None = None) -> list[str]:
         """注册 Agent 插件"""
         from .base_agent import BaseAgent
-        from .registry import AgentMeta
 
         names = agent_names or self.discover()
         loaded = []
@@ -170,14 +173,14 @@ class AgentLoader:
                     f"agents.{name}",
                     self.agents_dir / f"{name}.py"
                 )
-                mod = importlib.util.module_from_spec(spec)
+                mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
                 # 必须先注册到 sys.modules，这样 _extract_meta 才能找到模块属性
                 sys.modules[f"agents.{name}"] = mod
 
                 if name not in self._TRUSTED_AGENTS:
                     _check_safety(self.agents_dir / f"{name}.py", strict=self._strict_safety)
 
-                spec.loader.exec_module(mod)
+                spec.loader.exec_module(mod)  # type: ignore[union-attr]
 
                 # 找 Agent 类
                 for attr_name in dir(mod):
@@ -212,7 +215,7 @@ class AgentLoader:
 
         return loaded
 
-    def _extract_meta(self, cls) -> "AgentMeta":
+    def _extract_meta(self, cls) -> AgentMeta:
         """从类属性提取 AgentMeta"""
         from .registry import AgentMeta
 

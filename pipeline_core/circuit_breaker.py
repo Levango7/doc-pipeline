@@ -8,8 +8,7 @@ from __future__ import annotations
 import random
 import threading
 import time
-from enum import Enum, auto
-from typing import Optional
+from enum import Enum
 
 
 class CircuitState(Enum):
@@ -60,10 +59,7 @@ class CircuitBreaker:
             self.failure_count += 1
             self.last_failure_time = time.time()
 
-            if self.state == CircuitState.HALF_OPEN:
-                transition = self._transition_to(CircuitState.OPEN)
-                current = CircuitState.OPEN
-            elif self.state == CircuitState.CLOSED and self.failure_count >= self.failure_threshold:
+            if self.state == CircuitState.HALF_OPEN or self.state == CircuitState.CLOSED and self.failure_count >= self.failure_threshold:
                 transition = self._transition_to(CircuitState.OPEN)
                 current = CircuitState.OPEN
             else:
@@ -102,7 +98,7 @@ class CircuitBreaker:
             self._fire_state_change_callbacks(*transition)
         return allowed
 
-    def _transition_to(self, new_state: CircuitState) -> Optional[tuple]:
+    def _transition_to(self, new_state: CircuitState) -> tuple | None:
         """状态转换（必须在 self._lock 内调用）。
 
         仅做状态变更和内部计数器重置，**不触发外部回调**。
@@ -182,7 +178,7 @@ class CircuitBreakerRegistry:
                 self._breakers[name] = CircuitBreaker(name=name, **kwargs)
             return self._breakers[name]
 
-    def get(self, name: str) -> Optional[CircuitBreaker]:
+    def get(self, name: str) -> CircuitBreaker | None:
         with self._lock:
             return self._breakers.get(name)
 

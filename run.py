@@ -8,12 +8,13 @@ run.py - 文档生成流水线入口 v3.1
   - 完整审计日志 + 事务 checkpoint + 临时文件自动清理
 """
 import argparse
-import sys
-import os
+import contextlib
 import json
-import uuid
-import time
+import os
 import signal
+import sys
+import time
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -27,11 +28,9 @@ def _sigterm_handler(signum, frame):
 
 def _install_sigterm_handler():
     """注册 SIGTERM 处理器（仅在 main 中调用，避免 import 副作用）"""
-    try:
+    # 非主线程或非主解释器（如 worker 进程）无法注册信号，忽略
+    with contextlib.suppress(ValueError, OSError):
         signal.signal(signal.SIGTERM, _sigterm_handler)
-    except (ValueError, OSError):
-        # 非主线程或非主解释器（如 worker 进程）无法注册信号，忽略
-        pass
 
 
 def _load_dotenv():
@@ -52,8 +51,8 @@ def _load_dotenv():
 
 _load_dotenv()
 
-from pipeline_core import PipelineOrchestrator, TaskStatus, __version__
-from pipeline_core.scheduler import Scheduler
+from pipeline_core import PipelineOrchestrator, TaskStatus, __version__  # noqa: E402
+from pipeline_core.scheduler import Scheduler  # noqa: E402
 
 
 def print_banner():
@@ -89,7 +88,7 @@ def _run_ascii_fix(output_path: str):
             Path(output_path).write_text(converted, encoding="utf-8")
             print(f"\n[ascii] ASCII 图已转换为 Mermaid，保存至: {output_path}")
         else:
-            print(f"\n[ascii] 未检测到 ASCII 图")
+            print("\n[ascii] 未检测到 ASCII 图")
     except Exception as e:
         print(f"\n[ascii] ASCII 转换失败: {e}")
 
@@ -288,7 +287,7 @@ def main():
     # 加载配置
     config = {}
     if args.config and Path(args.config).exists():
-        with open(args.config, "r", encoding="utf-8") as f:
+        with open(args.config, encoding="utf-8") as f:
             config = json.load(f)
 
     # 初始化编排器
@@ -371,7 +370,7 @@ def main():
     if args.queries:
         print(f"查询: {args.queries}")
     if args.resume:
-        print(f"模式: 断点续传")
+        print("模式: 断点续传")
     print(f"{'='*60}\n")
 
     # 构建配置
@@ -397,8 +396,8 @@ def main():
         # P0 修复：plan 可能为 None（所有 YAML 加载失败），友好退出而非 AttributeError
         if plan is None:
             print(f"[run] ✗ 无法加载流水线配置（pipeline={args.pipeline}）")
-            print(f"[run] 请检查 pipelines/ 目录或 --pipeline-file 指定的 YAML 文件")
-            print(f"[run] 或使用 --legacy 模式绕过 YAML 配置")
+            print("[run] 请检查 pipelines/ 目录或 --pipeline-file 指定的 YAML 文件")
+            print("[run] 或使用 --legacy 模式绕过 YAML 配置")
             sys.exit(1)
         # 将 CLI --output 注入 pipeline 配置，供 safe_writer 使用
         if args.output:
@@ -423,9 +422,9 @@ def main():
             serve_static=args.dashboard,
             dashboard_dir=dashboard_dir,
         )
-        print(f"[run] 管理 API: http://127.0.0.1:8910")
+        print("[run] 管理 API: http://127.0.0.1:8910")
         if args.dashboard:
-            print(f"[run] 仪表盘:  http://127.0.0.1:8910/index.html")
+            print("[run] 仪表盘:  http://127.0.0.1:8910/index.html")
 
     # 等待结果
     import time as time_module
@@ -436,7 +435,7 @@ def main():
     except KeyboardInterrupt:
         print("\n\n[run] 收到中断信号，正在暂停任务...")
         orch.pause(task_id)
-        print(f"[run] 任务已暂停，可使用 --resume 续传")
+        print("[run] 任务已暂停，可使用 --resume 续传")
         # 守护进程模式：暂停后不退出，继续提供 API 服务
         if args.daemon:
             print("\n[run] 守护进程模式激活，按 Ctrl+C 再次退出")
@@ -483,7 +482,7 @@ def main():
             print(f"耗时: {duration:.1f}s")
 
         if task.steps:
-            print(f"\n执行步骤:")
+            print("\n执行步骤:")
             for step in task.steps:
                 status_icon = "✅" if step.status == "success" else ("❌" if step.status == "failed" else "⏭️")
                 print(f"  {status_icon} {step.agent_name:20s} {step.duration_ms:8.1f}ms")
@@ -512,7 +511,7 @@ def main():
         if not use_admin:
             # 自动启动 admin API（无 dashboard）
             orch.start_admin_api(port=8910)
-            print(f"[run] 管理 API: http://127.0.0.1:8910")
+            print("[run] 管理 API: http://127.0.0.1:8910")
         print("\n[run] 守护进程模式 — 按 Ctrl+C 退出")
         try:
             while True:

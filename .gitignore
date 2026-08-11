@@ -16,6 +16,17 @@ venv/
 dist/
 build/
 
+# 缓存目录
+.mypy_cache/
+.ruff_cache/
+
+# 覆盖率报告
+.coverage
+.coverage.*
+htmlcov/
+coverage_output.txt
+coverage.xml
+
 # 运行产物
 *.lock
 # pipeline lockfile 应纳入版本控制
@@ -25,6 +36,7 @@ build/
 bus_data/
 logs/
 .doc_baseline.json
+versions/
 
 # 测试临时文件
 out_*.md

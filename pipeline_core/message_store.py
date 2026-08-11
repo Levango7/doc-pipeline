@@ -9,20 +9,17 @@ MessageStore - 持久化消息存储
 """
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
-from enum import Enum, auto
+from dataclasses import asdict, dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Optional, Any, Callable
 
-from .fast_json import dumps as _fast_dumps, loads as _fast_loads
-
+from .fast_json import dumps as _fast_dumps
+from .fast_json import loads as _fast_loads
 
 # ─── 常量 ─────────────────────────────────────
 
@@ -157,7 +154,7 @@ class PersistentStore:
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn.execute("PRAGMA synchronous=NORMAL")
             self._local.conn.execute("PRAGMA busy_timeout=5000")
-        return self._local.conn
+        return self._local.conn  # type: ignore[no-any-return]
 
     def _init_db(self):
         """建表"""
@@ -258,7 +255,7 @@ class PersistentStore:
             )
             conn.execute("UPDATE messages SET delivered=1, error=? WHERE msg_id=?", (error, msg.msg_id))
 
-    def replay_dlq(self, dlq_id: int) -> Optional[dict]:
+    def replay_dlq(self, dlq_id: int) -> dict | None:
         """取一条死信数据并更新重放计数（真实重投由调用方完成）"""
         conn = self._get_conn()
         row = conn.execute(
@@ -277,7 +274,7 @@ class PersistentStore:
             "replay_count": row[4] + 1,
         }
 
-    def get_dlq_entry(self, dlq_id: int) -> Optional[dict]:
+    def get_dlq_entry(self, dlq_id: int) -> dict | None:
         """仅取一条死信数据，不更新计数、不重投（供 orchestrator 解析）"""
         conn = self._get_conn()
         row = conn.execute(

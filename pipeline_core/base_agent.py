@@ -9,20 +9,18 @@ BaseAgent v3.1 - 增强型 Agent 基类
   - 优雅关闭
   - 统一消息类型（使用 message_bus_v3.Message）
 """
-import os
 import json
-import time
-import hashlib
 import logging
+import os
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from .registry import AgentMeta, AgentStatus
-from .message_bus_v3 import Message
 from .cache_manager import CacheManager
-
+from .message_bus_v3 import Message
+from .registry import AgentMeta, AgentStatus
 
 # ─── AgentResult ──────────────────────────────
 
@@ -64,7 +62,7 @@ class AgentResult:
         if self.error:
             d["error"] = self.error
         if self.meta:
-            d["meta"] = self.meta
+            d["meta"] = self.meta  # type: ignore[assignment]
         return d
 
     @classmethod
@@ -85,7 +83,7 @@ class AgentResult:
 class AgentLogger:
     """Agent 专用日志记录器"""
 
-    def __init__(self, agent_name: str, log_dir: Optional[str] = None, quiet: bool = False):
+    def __init__(self, agent_name: str, log_dir: str | None = None, quiet: bool = False):
         self.agent_name = agent_name
         self.log_dir = Path(log_dir) if log_dir else Path("logs")
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -148,9 +146,9 @@ class BaseAgent(ABC):
     AGENT_DESC = ""
     AGENT_AUTHOR = ""
     AGENT_PRIORITY = 50
-    INPUT_TOPICS = []
-    OUTPUT_TOPICS = []
-    DEPENDENCIES = []
+    INPUT_TOPICS = []  # type: ignore[var-annotated]
+    OUTPUT_TOPICS = []  # type: ignore[var-annotated]
+    DEPENDENCIES = []  # type: ignore[var-annotated]
     CACHE_TTL = 0
     RESPAWN = False
     RESPAWN_MAX = 3
@@ -290,7 +288,7 @@ class BaseAgent(ABC):
         mtime = os.path.getmtime(self._config_file)
         if mtime > self._config_mtime:
             try:
-                with open(self._config_file, "r", encoding="utf-8") as f:
+                with open(self._config_file, encoding="utf-8") as f:
                     new_config = json.load(f)
                 self.config.update(new_config)
                 self._config_mtime = mtime
@@ -305,7 +303,7 @@ class BaseAgent(ABC):
         """发送消息到指定 Agent"""
         if not self.bus:
             return None
-        return self.bus.request(topic, self.name, to_agent, payload, timeout)
+        return self.bus.request(topic, self.name, to_agent, payload, timeout)  # type: ignore[no-any-return]
 
     def publish(self, topic: str, payload: dict):
         """发布广播消息"""

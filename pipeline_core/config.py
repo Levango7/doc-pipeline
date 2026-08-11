@@ -49,7 +49,7 @@ class ConfigCenter:
     def _merge_file(self, path: Path):
         """合并 YAML/JSON 配置文件"""
         import json
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             if path.suffix in (".yaml", ".yml"):
                 try:
                     import yaml
@@ -58,7 +58,7 @@ class ConfigCenter:
                     raise ImportError(
                         f"PyYAML is required to load {path} but is not installed. "
                         "Install with: pip install pyyaml"
-                    )
+                    ) from None
             else:
                 file_data = json.load(f) or {}
         self._deep_merge(self._data, file_data)
@@ -117,7 +117,7 @@ class ConfigCenter:
             target = self._data
             for part in parts:
                 if isinstance(target, dict):
-                    target = target.get(part)
+                    target = target.get(part)  # type: ignore[assignment]
                 else:
                     return default
             return target if target is not None else default

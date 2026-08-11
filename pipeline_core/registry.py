@@ -13,12 +13,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 import threading
+import time
+from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
-from enum import Enum, auto
-from typing import Callable, Optional, Any
+from typing import Any
 
 _logger = logging.getLogger(__name__)
 
@@ -77,8 +77,8 @@ class AgentStats:
     error_count: int = 0
     respawn_count: int = 0
     total_runtime_ms: float = 0.0
-    last_start: Optional[float] = None
-    last_error: Optional[float] = None
+    last_start: float | None = None
+    last_error: float | None = None
     last_error_msg: str = ""
     avg_processing_time_ms: float = 0.0
     _processing_times: list[float] = field(default_factory=list)
@@ -118,7 +118,7 @@ class AgentStats:
 class Registry:
     """增强型 Agent 注册中心"""
 
-    def __init__(self, registry_file: Optional[str] = None, enable_health_check: bool = True):
+    def __init__(self, registry_file: str | None = None, enable_health_check: bool = True):
         self._agents: dict[str, dict] = {}
         self._agent_metas: dict[str, AgentMeta] = {}
         self._instances: dict[str, Any] = {}
@@ -127,7 +127,7 @@ class Registry:
         self._registry_file = registry_file
         self._lock = threading.RLock()
         self._health_check_enabled = enable_health_check
-        self._health_check_thread: Optional[threading.Thread] = None
+        self._health_check_thread: threading.Thread | None = None
         self._running = True
         self._shutdown_event = threading.Event()
 
@@ -170,7 +170,7 @@ class Registry:
 
     # ─── 查询 ───────────────────────────────────
 
-    def get(self, name: str) -> Optional[dict]:
+    def get(self, name: str) -> dict | None:
         with self._lock:
             return self._agents.get(name)
 
@@ -178,13 +178,13 @@ class Registry:
         with self._lock:
             return self._instances.get(name)
 
-    def get_meta(self, name: str) -> Optional[AgentMeta]:
+    def get_meta(self, name: str) -> AgentMeta | None:
         """返回完整的 AgentMeta 对象（用于 respawn 等）"""
         with self._lock:
             return self._agent_metas.get(name)
 
-    def list(self, status: Optional[AgentStatus] = None,
-             tag: Optional[str] = None) -> list[dict]:
+    def list(self, status: AgentStatus | None = None,
+             tag: str | None = None) -> list[dict]:
         with self._lock:
             results = []
             for name, meta in self._agents.items():
@@ -198,12 +198,12 @@ class Registry:
                 results.append(result)
             return results
 
-    def list_agent_names(self) -> list[str]:
+    def list_agent_names(self) -> list[str]:  # type: ignore[valid-type]
         """返回所有已注册 agent 的名称列表"""
         with self._lock:
             return list(self._agents.keys())
 
-    def find(self, role: str) -> list[dict]:
+    def find(self, role: str) -> list[dict]:  # type: ignore[valid-type]
         """按角色/主题查找 Agent"""
         with self._lock:
             results = []
@@ -212,14 +212,14 @@ class Registry:
                     results.append(a)
             return results
 
-    def deps_order(self) -> list[str]:
+    def deps_order(self) -> list[str]:  # type: ignore[valid-type]
         """按依赖顺序排序（拓扑排序）"""
         with self._lock:
             sorted_names = []
             remaining = set(self._agents.keys())
             visited = set()
             temp_mark = set()
-            cycle_path = []
+            cycle_path = []  # type: ignore[var-annotated]
 
             def visit(name: str, path: list[str]):
                 if name in temp_mark:
@@ -383,7 +383,7 @@ class Registry:
 
     # ─── 持久化 ─────────────────────────────────
 
-    def save(self, path: Optional[str] = None):
+    def save(self, path: str | None = None):
         with self._lock:
             path = path or self._registry_file
             if not path:
@@ -398,13 +398,13 @@ class Registry:
                     "stats": {k: v.to_dict() for k, v in self._stats.items()},
                 }, f, ensure_ascii=False, indent=2)
 
-    def load(self, path: Optional[str] = None):
+    def load(self, path: str | None = None):
         with self._lock:
             path = path or self._registry_file
             if not path or not os.path.exists(path):
                 return
             try:
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     data = json.load(f)
                 for a in data.get("agents", []):
                     name = a["name"]

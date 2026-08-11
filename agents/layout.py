@@ -1,8 +1,7 @@
 """Layout Agent v3.1 - 排版优化插件"""
-import time
 from pathlib import Path
-import sys
-from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
+
+from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "layout"
 AGENT_VERSION = "3.1"
@@ -61,7 +60,7 @@ class LayoutAgent(BaseAgent):
             if not os.path.exists(target):
                 return {"status": "error", "message": f"文件不存在: {target}"}
             try:
-                with open(target, "r", encoding="utf-8", errors="replace") as f:
+                with open(target, encoding="utf-8", errors="replace") as f:
                     content = f.read()
             except Exception as e:
                 return {"status": "error", "message": f"读取文件失败: {e}"}
@@ -95,5 +94,5 @@ class LayoutAgent(BaseAgent):
                 if target:
                     result["target"] = target
             else:
-                result = self._optimize_file(target)
+                result = self._optimize_file(target)  # type: ignore[arg-type]
             self.publish("layout.done", result)

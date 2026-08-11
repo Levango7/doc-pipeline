@@ -16,15 +16,12 @@ Bootstrap — 启动自检 + 零配置降级
         print(report.summary())
         sys.exit(1)
 """
-import os
+import importlib
+import logging
 import sys
 import time
-import json
-import logging
-import importlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +224,7 @@ def _check_pipeline_config(report: StartupReport, project_root: Path):
         return
     try:
         import yaml
-        with open(docgen, "r", encoding="utf-8") as f:
+        with open(docgen, encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         agents = cfg.get("agents", [])
         topology = cfg.get("topology", {})
@@ -306,21 +303,18 @@ def run_startup_check(project_root: str = None,
     Returns:
         StartupReport
     """
-    if project_root is None:
-        project_root = Path(__file__).parent.parent
-    else:
-        project_root = Path(project_root)
+    project_root = Path(__file__).parent.parent if project_root is None else Path(project_root)  # type: ignore[assignment]
 
     report = StartupReport()
 
     # 基础检查
     _check_python_version(report)
     _check_dependencies(report)
-    _check_project_structure(report, project_root)
-    _check_pipeline_config(report, project_root)
-    _check_output_dirs(report, project_root)
-    _check_git(report, project_root)
-    _check_env_security(report, project_root)
+    _check_project_structure(report, project_root)  # type: ignore[arg-type]
+    _check_pipeline_config(report, project_root)  # type: ignore[arg-type]
+    _check_output_dirs(report, project_root)  # type: ignore[arg-type]
+    _check_git(report, project_root)  # type: ignore[arg-type]
+    _check_env_security(report, project_root)  # type: ignore[arg-type]
 
     # 模块检查
     _check_llm_router(report)

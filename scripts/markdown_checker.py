@@ -12,16 +12,13 @@ MarkdownChecker v3 - 结构检查器（改进版）
   python markdown_checker.py --file README.md [--detail] [--fix] [--format md]
 """
 
+import argparse
+import hashlib
+import json
 import os
 import re
 import sys
-import json
-import hashlib
-import argparse
-import urllib.request
-import urllib.error
 from pathlib import Path
-from typing import Optional
 
 try:
     import yaml
@@ -77,23 +74,23 @@ class RuleConfig:
         # 尝试加载 YAML
         if HAS_YAML and os.path.exists(self.path):
             try:
-                with open(self.path, "r", encoding="utf-8") as f:
+                with open(self.path, encoding="utf-8") as f:
                     loaded = yaml.safe_load(f)
                 if loaded:
-                    return loaded
+                    return loaded  # type: ignore[no-any-return]
             except Exception as e:
                 print(f"[RuleConfig] YAML 加载失败: {e}，使用默认规则")
 
-        return DEFAULT_RULES
+        return DEFAULT_RULES  # type: ignore[no-any-return]
 
     def is_enabled(self, category: str) -> bool:
-        return self._index.get(category, {}).get("enabled", True)
+        return self._index.get(category, {}).get("enabled", True)  # type: ignore[no-any-return]
 
     def get_param(self, category: str, key: str, default=None):
         return self._index.get(category, {}).get("params", {}).get(key, default)
 
     def get_level(self, category: str) -> str:
-        return self._index.get(category, {}).get("level", "P2")
+        return self._index.get(category, {}).get("level", "P2")  # type: ignore[no-any-return]
 
     def reload(self):
         """热重载规则文件"""
@@ -102,7 +99,7 @@ class RuleConfig:
                        for k, r in self.data.get("rules", {}).items()}
 
 
-_rules_cache: Optional[RuleConfig] = None
+_rules_cache: RuleConfig | None = None
 
 
 def get_rules(path: str | None = None) -> RuleConfig:
@@ -161,15 +158,15 @@ class IncrementalChecker:
         for i, line in enumerate(lines):
             if re.match(r"^#{1,3}\s+\S", line.strip()):
                 if current.get("content"):
-                    current["hash"] = self._hash("\n".join(current["content"]))
-                    sections.append(current)
+                    current["hash"] = self._hash("\n".join(current["content"]))  # type: ignore[arg-type]
+                    sections.append(current)  # type: ignore[attr-defined]
                 current = {"title": line.strip(), "content": [line], "line_start": i + 1}
             else:
-                current.setdefault("content", []).append(line)
+                current.setdefault("content", []).append(line)  # type: ignore[attr-defined]
 
         if current.get("content"):
-            current["hash"] = self._hash("\n".join(current["content"]))
-            sections.append(current)
+            current["hash"] = self._hash("\n".join(current["content"]))  # type: ignore[arg-type]
+            sections.append(current)  # type: ignore[attr-defined]
 
         return sections
 
@@ -183,7 +180,7 @@ class IncrementalChecker:
         path = ".doc_baseline.json"
         if os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     self.prev = json.load(f)
             except Exception:
                 pass
@@ -317,7 +314,7 @@ class Checker:
             # 过滤：JSON 内容
             stripped = text.strip()
             if stripped.startswith("{") or any(
-                l.strip().startswith("{") for l in stripped.split("\n")[:5]
+                line.strip().startswith("{") for line in stripped.split("\n")[:5]
             ):
                 continue
 
@@ -330,14 +327,15 @@ class Checker:
                 list(yaml.safe_load_all(text))
             except yaml.YAMLError as e:
                 err = str(e)
-                if "mapping values are not allowed" in err and "#" in text[:200]:
-                    if re.search(r":\s*\w.*#", text[:300]):
-                        offset = self.content[: m.start(1)].count("\n") + 1
-                        self.issues.append(Issue(
-                            "P3", "yaml_comment",
-                            f"YAML 行内注释可能导致解析警告", line=offset
-                        ))
-                        continue
+                if "mapping values are not allowed" in err and "#" in text[:200] and re.search(
+                    r":\s*\w.*#", text[:300]
+                ):
+                    offset = self.content[: m.start(1)].count("\n") + 1
+                    self.issues.append(Issue(
+                        "P3", "yaml_comment",
+                        "YAML 行内注释可能导致解析警告", line=offset
+                    ))
+                    continue
 
                 offset = self.content[: m.start(1)].count("\n") + 1
                 self.issues.append(Issue(
@@ -515,7 +513,7 @@ def check_file(filepath: str, rules_path: str | None = None,
         return {"status": "error", "message": f"文件不存在: {filepath}"}
 
     try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        with open(filepath, encoding="utf-8", errors="replace") as f:
             content = f.read()
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -562,7 +560,7 @@ def main():
         print(f"[Checker] 文件不存在: {filepath}")
         sys.exit(1)
 
-    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+    with open(filepath, encoding="utf-8", errors="replace") as f:
         content = f.read()
 
     checker = Checker(content, filepath, fix=args.fix, rules=rules)
@@ -620,8 +618,8 @@ def _print_md(result: dict, filepath: str):
     status = "✅ 通过" if result["status"] == "pass" else "❌ 失败"
     print(f"# 检查报告: `{os.path.basename(filepath)}`")
     print(f"\n**状态**: {status}")
-    print(f"\n| 级别 | 数量 |")
-    print(f"|------|------|")
+    print("\n| 级别 | 数量 |")
+    print("|------|------|")
     print(f"| P0 阻断 | {summary['P0_blocking']} |")
     print(f"| P1 严重 | {summary['P1_severe']} |")
     print(f"| P2 警告 | {summary['P2_warning']} |")

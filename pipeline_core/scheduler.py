@@ -7,10 +7,10 @@ Scheduler - 读取 pipeline.yaml 并生成可执行计划
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import hashlib
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+
 import yaml
 
 
@@ -138,7 +138,7 @@ class Scheduler:
         path = self.pipeline_dir / f"{pipeline_name}.yaml"
         if not path.exists():
             raise FileNotFoundError(f"pipeline 未找到: {path}")
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         if not raw:
             raise ValueError(f"pipeline 为空: {path}")
@@ -152,7 +152,7 @@ class Scheduler:
         path = Path(filepath)
         if not path.exists():
             raise FileNotFoundError(f"pipeline 文件未找到: {filepath}")
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         pipeline_name = path.stem
         return self._build_plan(raw, pipeline_name)
@@ -167,8 +167,8 @@ class Scheduler:
         return result
 
     def _build_plan(self, raw: dict, pipeline_name: str) -> ExecutionPlan:
-        import uuid
         import logging
+        import uuid
         logger = logging.getLogger(__name__)
         plan_id = str(uuid.uuid4())[:8]
 
@@ -221,7 +221,7 @@ class Scheduler:
                 raise ValueError(f"Agent 未定义: {name}（在 topology 中引用）")
 
         appeared: set[str] = set()
-        for lvl_idx, level in enumerate(levels_raw):
+        for _lvl_idx, level in enumerate(levels_raw):
             for name in level:
                 cfg = agent_map[name]
                 deps = [d for d in cfg.dependencies if d in agent_map]
@@ -238,7 +238,7 @@ class Scheduler:
         appeared.clear()
         levels: list[list[ExecutionNode]] = []
 
-        for lvl_idx, level in enumerate(levels_raw):
+        for _lvl_idx, level in enumerate(levels_raw):
             nodes: list[ExecutionNode] = []
             for name in level:
                 cfg = agent_map[name]
@@ -290,7 +290,7 @@ class Scheduler:
             schema = AGENT_SCHEMAS.get(base_name, {})
             if not schema:
                 continue
-            for key, (expected_type, default) in schema.items():
+            for key, (expected_type, default) in schema.items():  # type: ignore[attr-defined]
                 if key not in cfg.config:
                     cfg.config[key] = default
                     continue
@@ -307,7 +307,8 @@ class Scheduler:
 
     def generate_lockfile(self, plan: ExecutionPlan, output_dir: str = "pipelines") -> str:
         """生成 pipeline lockfile（版本锁定）"""
-        import json, time
+        import json
+        import time
         lock = {
             "pipeline": plan.pipeline_name,
             "plan_id": plan.plan_id,
@@ -321,7 +322,7 @@ class Scheduler:
                 config_hash = hashlib.sha256(
                     json.dumps(cfg.config, sort_keys=True).encode()
                 ).hexdigest()[:12]
-                lock["agents"][node.agent_name] = {
+                lock["agents"][node.agent_name] = {  # type: ignore[index]
                     "version": cfg.version,
                     "dependencies": cfg.dependencies,
                     "pool_size": cfg.pool_size,
@@ -340,7 +341,7 @@ class Scheduler:
         if not lock_path.exists():
             return [f"Lockfile 不存在: {lockfile}"]
 
-        with open(lock_path, "r", encoding="utf-8") as f:
+        with open(lock_path, encoding="utf-8") as f:
             lock = yaml.safe_load(f) or {}
 
         issues = []
@@ -390,8 +391,8 @@ class Scheduler:
                 spec = importlib.util.spec_from_file_location(
                     f"_validate_{node.agent_name}", agent_file
                 )
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
+                mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+                spec.loader.exec_module(mod)  # type: ignore[union-attr]
 
                 mod_deps = list(getattr(mod, "DEPENDENCIES", []))
                 yaml_deps = list(node.agent_config.dependencies)

@@ -1,13 +1,15 @@
 """SafeWriter Agent v2 - 安全写入插件"""
-import time
+import contextlib
 import hashlib
 import json
 import os
 import shutil
 import threading
-from pathlib import Path
+import time
 from datetime import datetime
-from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
+from pathlib import Path
+
+from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "safe_writer"
 AGENT_VERSION = "2.0"
@@ -52,8 +54,7 @@ class SafeWriterAgent(BaseAgent):
         return result
 
     def _safe_write(self, target: str, content: str, backup_dir: str, reason: str, task_id: str) -> dict:
-        import os, shutil, hashlib, json
-        from datetime import datetime
+        import os
         target = str(Path(target).resolve())
         backup_dir = str(Path(backup_dir).resolve())
         manifest_path = Path(backup_dir) / "manifest.json"
@@ -97,7 +98,7 @@ class SafeWriterAgent(BaseAgent):
                 return {"status": "error", "issues": issues, "backup": backup_path}
             try:
                 os.replace(tmp_path, target)
-                tmp_path = None
+                tmp_path = None  # type: ignore[assignment]
                 with self._manifest_lock:
                     man = self._load_manifest(manifest_path)
                     rel = target
@@ -142,10 +143,8 @@ class SafeWriterAgent(BaseAgent):
                 return {"status": "error", "message": str(e)}
         finally:
             if tmp_path and os.path.exists(tmp_path):
-                try:
+                with contextlib.suppress(Exception):
                     os.remove(tmp_path)
-                except Exception:
-                    pass
 
     def _get_info(self, path):
         if not Path(path).exists():
@@ -166,7 +165,7 @@ class SafeWriterAgent(BaseAgent):
     def _load_manifest(self, path):
         if not Path(path).exists():
             return {"files": {}, "version": "2.0"}
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
 
     def _save_manifest(self, path, data):

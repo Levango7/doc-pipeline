@@ -1,16 +1,16 @@
 """DAG 执行器 —— 负责 DAG 构建、节点调度、熔断器、限流、指标"""
 from __future__ import annotations
-import re
-import copy
-import time
+
 import asyncio
+import copy
+import re
 import threading
+import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional, Callable
 
-from .circuit_breaker import backoff_with_jitter
 from .cache_manager import CacheManager
-
+from .circuit_breaker import backoff_with_jitter
 
 # ─── 模块级函数：支持 ProcessPoolExecutor pickle ──────────────────
 
@@ -36,9 +36,9 @@ class DAGExecutor:
     """DAG 构建和执行"""
 
     def __init__(self, registry, bus, cb_registry, rate_limiters, metrics, logger=None,
-                 stop_event: Optional[threading.Event] = None,
-                 checkpoint_save_fn: Optional[Callable] = None,
-                 audit_log_fn: Optional[Callable] = None):
+                 stop_event: threading.Event | None = None,
+                 checkpoint_save_fn: Callable | None = None,
+                 audit_log_fn: Callable | None = None):
         self.registry = registry
         self.bus = bus
         self._cb_registry = cb_registry
@@ -90,7 +90,7 @@ class DAGExecutor:
         if self._logger:
             self._logger.log(level, msg, **kw)
 
-    def _acquire_rate_limit(self, agent_name: str, rate_limit_cfg: Optional[dict] = None,
+    def _acquire_rate_limit(self, agent_name: str, rate_limit_cfg: dict | None = None,
                              timeout: float = 30.0) -> bool:
         """获取限流令牌。未配置限流时直接放行。"""
         cfg = rate_limit_cfg or {}
@@ -99,11 +99,11 @@ class DAGExecutor:
             return True  # 不限流
         burst = int(cfg.get("burst", rate * 2))
         limiter = self._rate_limiters.get_or_create(agent_name, rate=rate, burst=burst)
-        return limiter.acquire(1, block=True, timeout=timeout)
+        return limiter.acquire(1, block=True, timeout=timeout)  # type: ignore[no-any-return]
 
     # ─── DAG 构建 ─────────────────────────────
 
-    def build_dag(self, agent_order: list[str], config: Optional[dict] = None) -> tuple[dict, list[list[str]]]:
+    def build_dag(self, agent_order: list[str], config: dict | None = None) -> tuple[dict, list[list[str]]]:
         """从 agent_order 构建 DAG 节点和拓扑层级"""
         from .pipeline import TaskNode
 
@@ -238,7 +238,7 @@ class DAGExecutor:
         writer_content = self._get_latest_content(task, node.dependencies)
 
         # 保留 _raw 结构供需要完整 dict 的场景，同时正确填充 dep_results[base]
-        dep_results = {}
+        dep_results = {}  # type: ignore[var-annotated]
         for dep in node.dependencies:
             if dep in task.dag_nodes:
                 dep_node = task.dag_nodes[dep]
@@ -411,7 +411,7 @@ class DAGExecutor:
                     sem_status = result.get("status")
                     if sem_status in ("blocked", "fail"):
                         is_business_fail = True
-                        last_error = result.get("message", result.get("error", f"Agent returned {sem_status}"))
+                        last_error = result.get("message", result.get("error", f"Agent returned {sem_status}"))  # type: ignore[assignment]
 
                 if is_business_fail:
                     raise Exception(last_error or "Agent returned failure status")
@@ -539,9 +539,7 @@ class DAGExecutor:
                     labels={"pipeline": getattr(plan, "pipeline_name", "")},
                 )
 
-        if task.status == TaskStatus.FAILED:
-            return False
-        return True
+        return task.status != TaskStatus.FAILED  # type: ignore[no-any-return]
 
     async def execute_level_async(self, task, level: list, input_file: str,
                                   plan) -> bool:
@@ -585,7 +583,7 @@ class DAGExecutor:
         results = await asyncio.gather(*coros, return_exceptions=True)
 
         # 处理结果（与 execute_level 相同的逻辑）
-        for (node, dag_node, step_result), result in zip(node_meta, results):
+        for (node, dag_node, step_result), result in zip(node_meta, results, strict=False):
             last_error = ""
             try:
                 if isinstance(result, Exception):
@@ -605,7 +603,7 @@ class DAGExecutor:
                 dag_node.status = "success"
                 dag_node.finished_at = time.time()
                 step_result.status = "success"
-                step_result.result = result
+                step_result.result = result  # type: ignore[assignment]
                 self._set_task_output(task, node.agent_name, result)
                 self._circuit_breaker_success(node)
 
@@ -712,9 +710,7 @@ class DAGExecutor:
                     labels={"pipeline": getattr(plan, "pipeline_name", "")},
                 )
 
-        if task.status == TaskStatus.FAILED:
-            return False
-        return True
+        return task.status != TaskStatus.FAILED  # type: ignore[no-any-return]
 
     # ─── 查询词提取 ─────────────────────────────
 
@@ -724,8 +720,8 @@ class DAGExecutor:
         cache_key = input_file
         cached = self._query_cache.get(cache_key)
         if cached is not None:
-            return cached
-        with open(input_file, "r", encoding="utf-8") as f:
+            return cached  # type: ignore[no-any-return]
+        with open(input_file, encoding="utf-8") as f:
             content = f.read()
         noise = [r"^这是一个测试", r"^用于验证", r"验证流水线", r"是否正常工作",
                  r"^test\b", r"^测试\b", r"请生成", r"帮我写"]
@@ -809,7 +805,7 @@ class DAGExecutor:
                 if isinstance(result, dict):
                     c = result.get("content") or result.get("optimized")
                     if c:
-                        return c
+                        return c  # type: ignore[no-any-return]
             return ""
 
         for source in reversed(content_priority):

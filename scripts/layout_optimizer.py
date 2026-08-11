@@ -15,12 +15,10 @@ LayoutOptimizer v3 - ASCII 图表对齐优化器（改进版）
   5. 内嵌小框（缩进 > 10）不修
 """
 
-import os
+import argparse
 import re
 import sys
-import argparse
 from pathlib import Path
-
 
 # =============================================================================
 # 视觉宽度计算（核心）
@@ -43,7 +41,7 @@ def vis_str(s: str) -> int:
 def vis_bytes(data: bytes) -> int:
     """
     UTF-8 字节流视觉宽度
-    
+
     v2 修复：
     - continuation byte (0x80-0xBF) 不计宽度（已在首字节计入）
     """
@@ -126,9 +124,7 @@ def has_cjk_content(line: bytes) -> bool:
         if not any("\u4e00" <= c <= "\u9fff" or "\uff00" <= c <= "\uffef" for c in s):
             return False
         # 排除纯横线和纯加号行
-        if re.match(r"^[\-\s]+$", s) or re.match(r"^[\+\s]+$", s):
-            return False
-        return True
+        return not (re.match(r"^[\-\s]+$", s) or re.match(r"^[\+\s]+$", s))
     except Exception:
         return False
 
@@ -238,7 +234,7 @@ class LayoutOptimizer:
                 else:
                     in_code = False
                     if block_fixed > 0:
-                        self.stats["block_details"].append({
+                        self.stats["block_details"].append({  # type: ignore[attr-defined]
                             "start_line": block_start + 1,
                             "end_line": i + 1,
                             "fixed": block_fixed,
@@ -303,7 +299,7 @@ class LayoutOptimizer:
 
             i += 1
 
-        self.stats["blocks_scanned"] = sum(1 for l in lines if is_fence(l)) // 2
+        self.stats["blocks_scanned"] = sum(1 for line in lines if is_fence(line)) // 2
 
         # 重建内容（保持原始换行符风格）
         orig_bytes = self.original.encode("utf-8")
@@ -332,7 +328,7 @@ def main():
     parser.add_argument("--stats", "-s", action="store_true", help="输出详细统计")
     args = parser.parse_args()
 
-    with open(args.input, "r", encoding="utf-8", errors="replace") as f:
+    with open(args.input, encoding="utf-8", errors="replace") as f:
         content = f.read()
 
     print(f"[Layout] 输入: {args.input} ({len(content):,} 字符)")
@@ -341,26 +337,26 @@ def main():
     result = opt.run()
     stats = result["stats"]
 
-    print(f"\n[Layout] 统计:")
+    print("\n[Layout] 统计:")
     print(f"  扫描行数:   {stats['lines_examined']}")
     print(f"  代码块数:   {stats['blocks_scanned']}")
     print(f"  修复边框数: {stats['borders_fixed']}")
 
     if args.stats and stats.get("block_details"):
-        print(f"\n[Layout] 修复详情:")
+        print("\n[Layout] 修复详情:")
         for d in stats["block_details"]:
             print(f"  代码块 行{d['start_line']}-{d['end_line']}: 修复 {d['fixed']} 处")
 
     if args.check or args.dry_run:
         if stats["borders_fixed"] == 0:
-            print(f"\n[Layout] 无需修复")
+            print("\n[Layout] 无需修复")
         else:
             print(f"\n[Layout] 发现 {stats['borders_fixed']} 处需修复（{'dry-run' if args.dry_run else '仅检查'}，未写入）")
         return
 
     new_content = opt.get_result()
     if new_content == content:
-        print(f"\n[Layout] 内容无变化，退出")
+        print("\n[Layout] 内容无变化，退出")
         return
 
     out_path = args.output or args.input

@@ -17,15 +17,12 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
 import time
-import logging
 from pathlib import Path
-from typing import Optional
-
-from .fast_json import dumps as _fast_dumps, loads as _fast_loads
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +189,7 @@ class CostTracker:
             conn.execute("DELETE FROM cost_log WHERE timestamp < ?", (cutoff,))
 
 
-_tracker_instance: Optional[CostTracker] = None
+_tracker_instance: CostTracker | None = None
 _tracker_lock = threading.Lock()
 
 

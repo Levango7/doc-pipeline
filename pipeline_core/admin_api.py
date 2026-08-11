@@ -30,30 +30,31 @@ Admin API v1 - 轻量级 REST API（零外部依赖）
 """
 from __future__ import annotations
 
+import contextlib
 import hmac
+import ipaddress
 import json
 import logging
-import os
-import time
 import mimetypes
+import os
+import re
 import threading
+import time
 import traceback
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any, Optional
+from socketserver import ThreadingMixIn
+from typing import Any
+from urllib.parse import urlparse
 
-from .fast_json import dumps as _fast_dumps, loads as _fast_loads
+from .fast_json import dumps as _fast_dumps
+from .fast_json import loads as _fast_loads
 
 _logger = logging.getLogger(__name__)
 
 
 # ─── 安全防护辅助 ─────────────────────────────
 # 安全修复 (P0): 集中定义 SSRF 防护与路径白名单校验，供各端点复用
-
-import re
-import ipaddress
-from urllib.parse import urlparse
 
 # task_id 仅允许字母、数字、下划线、连字符（防止路径遍历 ../../）
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -106,7 +107,7 @@ def _validate_webhook_url(url: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _validate_output_path(path_str: str, base_dir: Optional[str] = None) -> tuple[bool, str]:
+def _validate_output_path(path_str: str, base_dir: str | None = None) -> tuple[bool, str]:
     """校验输出路径必须落在 base_dir（默认 cwd）范围内（防止任意文件写入）。
 
     Returns:
@@ -145,8 +146,8 @@ class AdminHandler(BaseHTTPRequestHandler):
     """REST API 请求处理"""
 
     orch: Any = None  # 由 AdminAPI 注入
-    dashboard_dir: Optional[str] = None  # 静态文件目录
-    api_key: Optional[str] = None  # 由 AdminAPI 注入
+    dashboard_dir: str | None = None  # 静态文件目录
+    api_key: str | None = None  # 由 AdminAPI 注入
 
     def _json(self, data: dict, status: int = 200):
         self.send_response(status)
@@ -538,7 +539,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             if not ok:
                 return self._json({"error": f"output 路径校验失败: {reason}"}, 400)
 
-        import tempfile, uuid
+        import tempfile
+        import uuid
         task_id = str(uuid.uuid4())[:8]
         input_file = Path(tempfile.gettempdir()) / f"task_{task_id}.md"
         input_file.write_text(f"# {title}\n\n## 查询\n\n{query}\n", encoding="utf-8")
@@ -574,17 +576,13 @@ class AdminHandler(BaseHTTPRequestHandler):
                     path = val.get("output_path") or val.get("path") or val.get("file")
                     if path and Path(path).exists():
                         response["output_path"] = path
-                        try:
+                        with contextlib.suppress(Exception):
                             response["output_content"] = Path(path).read_text(encoding="utf-8")
-                        except Exception:
-                            pass
                         break
                 elif isinstance(val, str) and val.endswith(".md") and Path(val).exists():
                     response["output_path"] = val
-                    try:
+                    with contextlib.suppress(Exception):
                         response["output_content"] = Path(val).read_text(encoding="utf-8")
-                    except Exception:
-                        pass
                     break
         else:
             response["message"] = "task started, poll GET /tasks/{task_id} for status"
@@ -705,7 +703,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         agent = self.orch.registry._agents.get(agent_name)
         if not agent:
             return self._json({"error": f"agent '{agent_name}' not found"}, 404)
-        detail = {
+        detail = {  # type: ignore[var-annotated]
             "name": agent_name,
             "status": agent.status.value if hasattr(agent.status, "value") else str(agent.status),
             "meta": {},
@@ -715,7 +713,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             for attr in ("version", "description", "priority", "input_topics",
                          "output_topics", "dependencies", "cache_ttl", "respawn",
                          "health_check_interval", "tags"):
-                detail["meta"][attr] = getattr(meta, attr, None)
+                detail["meta"][attr] = getattr(meta, attr, None)  # type: ignore[index]
         stats = getattr(agent, "stats", None)
         if stats:
             detail["stats"] = {
@@ -887,7 +885,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def _handle_alerts(self):
         """告警列表"""
-        from urllib.parse import urlparse, parse_qs
+        from urllib.parse import parse_qs, urlparse
         params = parse_qs(urlparse(self.path).query)
         level = params.get("level", [None])[0]
         category = params.get("category", [None])[0]
@@ -900,7 +898,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 
         ?level=error&agent=writer&since=3600&limit=50
         """
-        from urllib.parse import urlparse, parse_qs
+        from urllib.parse import parse_qs, urlparse
         params = parse_qs(urlparse(self.path).query)
         level_filter = params.get("level", [None])[0]
         agent_filter = params.get("agent", [None])[0]
@@ -990,7 +988,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         指标: GET /stream/metrics 获取流式指标快照。
         返回: text/event-stream 格式，每个事件含 id/type/data/section/total 字段。
         """
-        from urllib.parse import urlparse, parse_qs
+        from urllib.parse import parse_qs, urlparse
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
 
@@ -1009,10 +1007,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         last_event_id = 0
         last_event_id_header = self.headers.get("Last-Event-ID")
         if last_event_id_header:
-            try:
+            with contextlib.suppress(ValueError):
                 last_event_id = int(last_event_id_header)
-            except ValueError:
-                pass
 
         if not query:
             self._json({"error": "missing 'query' parameter"}, 400)
@@ -1036,7 +1032,10 @@ class AdminHandler(BaseHTTPRequestHandler):
                 pass
 
         from pipeline_core.streaming import (
-            StreamCallback, register_callback, get_callback, unregister_callback,
+            StreamCallback,
+            get_callback,
+            register_callback,
+            unregister_callback,
         )
 
         # SSE 重连: 查找已注册的 callback（同一 task_id 的活跃流）
@@ -1103,6 +1102,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             # 使 fetcher/researcher/writer 三阶段均在 async 路径下执行
             def _run():
                 import asyncio as _aio
+
                 from pipeline_core.scheduler import Scheduler
                 try:
                     sched = Scheduler()
@@ -1126,10 +1126,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                     callback.on_error(str(e))
                 finally:
                     writer_agent._active_stream_callback = None
-                    try:
+                    with contextlib.suppress(OSError):
                         input_file.unlink()
-                    except OSError:
-                        pass
 
             worker = threading.Thread(target=_run, daemon=True)
             worker.start()
@@ -1155,16 +1153,16 @@ class AdminAPI:
     """管理 API 服务器"""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 8910,
-                 serve_static: bool = False, dashboard_dir: Optional[str] = None,
-                 api_key: Optional[str] = None):
+                 serve_static: bool = False, dashboard_dir: str | None = None,
+                 api_key: str | None = None):
         self.host = host
         self.port = port
         self.serve_static = serve_static
         self.dashboard_dir = dashboard_dir
         # 从环境变量或参数获取 API key
         self.api_key = api_key or os.environ.get("ADMIN_API_KEY", "")
-        self._server: Optional[HTTPServer] = None
-        self._thread: Optional[threading.Thread] = None
+        self._server: HTTPServer | None = None
+        self._thread: threading.Thread | None = None
 
     def start(self, orch) -> bool:
         """在后台线程启动 API 服务器"""

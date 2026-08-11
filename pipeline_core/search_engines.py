@@ -22,20 +22,19 @@ Search Engines — 统一搜索引擎接口
   9. 360        — 360 搜索 HTML 抓取
   10. prosearch — 元宝搜索（本地 Node.js 脚本）
 """
-import json
-import os
-import time
-import re
-import logging
-import threading
 import asyncio
-import urllib.request
-import urllib.parse
+import logging
+import os
+import re
+import threading
+import time
 import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
-from typing import Optional
 
-from .fast_json import dumps as _fast_dumps, loads as _fast_loads
+from .fast_json import dumps as _fast_dumps
+from .fast_json import loads as _fast_loads
 
 logger = logging.getLogger(__name__)
 
@@ -155,9 +154,11 @@ class MetasoEngine(SearchEngineBase):
             payload = {"q": query, "size": max_results, "type": "web"}
             headers = {"Content-Type": "application/json",
                        "Authorization": f"Bearer {self._api_key}"}
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
-                async with session.post(self._api_url, json=payload, headers=headers) as resp:
-                    body = await resp.json()
+            async with (
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session,
+                session.post(self._api_url, json=payload, headers=headers) as resp,
+            ):
+                body = await resp.json()
             results = []
             items = body.get("data", {}).get("webpages", [])
             if isinstance(items, dict):
@@ -233,7 +234,7 @@ class HtmlSearchEngine(SearchEngineBase):
         headers = {"User-Agent": self._ua, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
         req = urllib.request.Request(url, data=data, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.read().decode("utf-8", errors="ignore")
+            return resp.read().decode("utf-8", errors="ignore")  # type: ignore[no-any-return]
 
     def _extract_results(self, html: str, query: str,
                          max_results: int, source: str) -> list[SearchItem]:
@@ -472,9 +473,11 @@ class BochaEngine(SearchEngineBase):
                        "summary": True, "freshness": "noLimit"}
             headers = {"Content-Type": "application/json",
                        "Authorization": f"Bearer {self._api_key}"}
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
-                async with session.post(self._api_url, json=payload, headers=headers) as resp:
-                    body = await resp.json()
+            async with (
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session,
+                session.post(self._api_url, json=payload, headers=headers) as resp,
+            ):
+                body = await resp.json()
             results = []
             data = body.get("data", body)
             web_pages = data.get("webPages", data)
@@ -570,9 +573,11 @@ class TavilyEngine(SearchEngineBase):
                        "include_raw_content": False}
             headers = {"Content-Type": "application/json",
                        "Authorization": f"Bearer {self._api_key}"}
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
-                async with session.post(self._api_url, json=payload, headers=headers) as resp:
-                    body = await resp.json()
+            async with (
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session,
+                session.post(self._api_url, json=payload, headers=headers) as resp,
+            ):
+                body = await resp.json()
             results = []
             for item in body.get("results", [])[:max_results]:
                 results.append(SearchItem(
@@ -670,9 +675,11 @@ class SerperEngine(SearchEngineBase):
             payload = {"q": query, "num": min(max_results, 20)}
             headers = {"Content-Type": "application/json",
                        "X-API-KEY": self._api_key}
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
-                async with session.post(self._api_url, json=payload, headers=headers) as resp:
-                    body = await resp.json()
+            async with (
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session,
+                session.post(self._api_url, json=payload, headers=headers) as resp,
+            ):
+                body = await resp.json()
             results = []
             for item in body.get("organic", [])[:max_results]:
                 results.append(SearchItem(
@@ -826,14 +833,14 @@ _ENGINE_REGISTRY = {
 }
 
 
-def create_engine(name: str, **kwargs) -> Optional[SearchEngineBase]:
+def create_engine(name: str, **kwargs) -> SearchEngineBase | None:
     """创建搜索引擎实例"""
     cls = _ENGINE_REGISTRY.get(name)
     if cls is None:
         logger.warning(f"未知搜索引擎: {name}")
         return None
     try:
-        return cls(**kwargs)
+        return cls(**kwargs)  # type: ignore[no-any-return]
     except Exception as e:
         logger.warning(f"创建引擎 {name} 失败: {e}")
         return None
@@ -987,8 +994,8 @@ class SearchEngineManager:
 
         # 站点搜索并行
         if sites is None:
-            sites = self.SITE_TARGETS
-        site_queries = [(f"site:{domain} {query}", name) for domain, name in sites]
+            sites = self.SITE_TARGETS  # type: ignore[assignment]
+        site_queries = [(f"site:{domain} {query}", name) for domain, name in sites]  # type: ignore[str-unpack,union-attr]
 
         tasks = [
             self.search_async(sq, max_results=3, engines=engines)
@@ -1050,9 +1057,9 @@ class SearchEngineManager:
 
         # 站点搜索（每个站点至少拿 2 条）
         if sites is None:
-            sites = self.SITE_TARGETS
+            sites = self.SITE_TARGETS  # type: ignore[assignment]
         site_queries = []
-        for site_domain, site_name in sites:
+        for site_domain, site_name in sites:  # type: ignore[str-unpack,union-attr]
             site_query = f"site:{site_domain} {query}"
             site_queries.append((site_query, site_name))
 

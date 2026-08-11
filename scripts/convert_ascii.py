@@ -21,10 +21,9 @@ Convert ASCII — ASCII 图识别与转换
     converter = AsciiConverter()
     result = converter.detect_and_convert(text)
 """
-import re
 import logging
-from dataclasses import dataclass, field
-from typing import Optional
+import re
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -97,14 +96,14 @@ class AsciiConverter:
             return ("box_drawing", confidence, is_fragment)
 
         # 2. Tree
-        tree_lines = sum(1 for l in lines if ASCII_TREE_PATTERN.match(l))
+        tree_lines = sum(1 for line in lines if ASCII_TREE_PATTERN.match(line))
         if tree_lines >= self.min_lines and tree_lines / max(len(lines), 1) > 0.5:
             confidence = min(tree_lines / 10, 1.0)
             is_fragment = self._check_tree_fragment(lines)
             return ("tree", confidence, is_fragment)
 
         # 3. Table
-        table_lines = sum(1 for l in lines if TABLE_LINE_PATTERN.match(l))
+        table_lines = sum(1 for line in lines if TABLE_LINE_PATTERN.match(line))
         if table_lines >= 2:
             confidence = min(table_lines / 5, 1.0)
             is_fragment = table_lines < 3
@@ -112,7 +111,7 @@ class AsciiConverter:
 
         # 4. Flowchart
         arrow_count = sum(1 for c in text if c in ARROW_CHARS)
-        ascii_arrow_lines = sum(1 for l in lines if ASCII_ARROW_PATTERN.search(l))
+        ascii_arrow_lines = sum(1 for line in lines if ASCII_ARROW_PATTERN.search(line))
         if arrow_count >= 2 or ascii_arrow_lines >= 2:
             confidence = min((arrow_count + ascii_arrow_lines) / 10, 1.0)
             is_fragment = arrow_count < 2
@@ -122,19 +121,19 @@ class AsciiConverter:
         ascii_box_count = sum(1 for c in all_chars if c in ASCII_BOX_CHARS)
         if ascii_box_count >= 5 and ascii_box_count / max(len(all_chars), 1) > 0.4:
             # 检查是否有 + 在行首/行尾（盒子角）
-            corner_lines = sum(1 for l in lines if l.strip().startswith("+") and l.strip().endswith("+"))
+            corner_lines = sum(1 for line in lines if line.strip().startswith("+") and line.strip().endswith("+"))
             if corner_lines >= 2:
                 confidence = min(corner_lines / 5, 1.0)
                 return ("box_drawing", confidence, corner_lines < 2)
 
         # 6. Banner
-        banner_lines = sum(1 for l in lines if BANNER_PATTERN.match(l.strip()))
+        banner_lines = sum(1 for line in lines if BANNER_PATTERN.match(line.strip()))
         if banner_lines >= 3:
             confidence = min(banner_lines / 8, 1.0)
             return ("banner", confidence, banner_lines < 3)
 
         # 7. Code Block (缩进对齐)
-        indented_lines = sum(1 for l in lines if l.startswith("    ") or l.startswith("\t"))
+        indented_lines = sum(1 for line in lines if line.startswith("    ") or line.startswith("\t"))
         if indented_lines >= self.min_lines and indented_lines / max(len(lines), 1) > 0.7:
             confidence = min(indented_lines / 10, 1.0)
             return ("code_block", confidence, False)
@@ -159,8 +158,8 @@ class AsciiConverter:
     def _check_tree_fragment(self, lines: list[str]) -> bool:
         """检查树形图是否不完整"""
         # 完整树应有根节点和叶子节点
-        has_root = any("└" in l or "├" in l for l in lines[:1])
-        has_leaf = any("└" in l for l in lines[-2:])
+        has_root = any("└" in line or "├" in line for line in lines[:1])
+        has_leaf = any("└" in line for line in lines[-2:])
         return not (has_root or has_leaf)
 
     # ─── 转换 ────────────────────────────────────

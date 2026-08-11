@@ -20,11 +20,10 @@ CI 模式:
 """
 from __future__ import annotations
 
-import time
 import json
-import sys
-import hashlib
 import re
+import sys
+import time
 from pathlib import Path
 
 # 确保 import 路径
@@ -160,8 +159,8 @@ def _cpu_work(x):
 
 def bench_parallel_execution():
     """基准 3: 并行执行 —— ThreadPool vs ProcessPool vs 串行"""
-    from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-    from pipeline_core.executor_factory import create_executor
+    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+
 
     n = 8
     results = {}
@@ -199,7 +198,7 @@ def bench_streaming_overhead():
     chunk = "Hello World, this is a test chunk. "
 
     t0 = time.perf_counter()
-    for i in range(n):
+    for _i in range(n):
         callback.on_chunk(chunk, section_index=0)
     emit_time = time.perf_counter() - t0
 
@@ -405,7 +404,7 @@ def main():
         # CI 模式：对比 baseline，检测回归
         baseline_path = Path(__file__).parent / "benchmark_results.json"
         if baseline_path.exists():
-            with open(baseline_path, "r", encoding="utf-8") as f:
+            with open(baseline_path, encoding="utf-8") as f:
                 baseline = json.load(f)
             print(f"\n{'=' * 70}")
             print(f"CI 回归检测 (阈值: {REGRESSION_THRESHOLD:.0%})")

@@ -14,15 +14,13 @@ Three-Pass Pipeline — 三阶段文档生成
     pipeline = ThreePassPipeline()
     result = pipeline.generate("Apache Kafka 核心架构", output_path="output/kafka.md")
 """
-import os
-import time
 import json
 import logging
 import re
-from pathlib import Path
-from typing import Optional
-from dataclasses import dataclass, field
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +110,7 @@ class ThreePassPipeline:
         start = time.time()
         logger.info(f"[Phase 1] 开始研究: {query}")
 
-        search_results = []
+        search_results = []  # type: ignore[var-annotated]
         if self._search_mgr:
             search_results = self._search_mgr.search_with_sites(query, max_results=max_results)
             logger.info(f"[Phase 1] 搜索返回 {len(search_results)} 条结果")
@@ -278,7 +276,7 @@ class ThreePassPipeline:
     def _fill_section(self, section: dict, articles: list[dict], query: str) -> str:
         """用 TF-IDF 语义匹配从文章提取段落填充章节"""
         keywords = section.get("keywords", [])
-        section_title = section.get("title", "")
+        section.get("title", "")
 
         scored_paragraphs = []
         for article in articles:
@@ -301,7 +299,7 @@ class ThreePassPipeline:
 
         parts = []
         seen = set()
-        for score, para, article in top:
+        for _score, para, _article in top:
             para_hash = hash(para[:200])
             if para_hash in seen:
                 continue
@@ -374,8 +372,8 @@ class ThreePassPipeline:
              f"要求: {prompt}\n\n请输出精修后的 Markdown 内容（仅内容，不要标题）:"},
         ]
 
-        result, provider = self._llm_router.chat(messages, max_tokens=2048, temperature=0.3)
-        return result
+        result, provider = self._llm_router.chat(messages, max_tokens=2048, temperature=0.3)  # type: ignore[attr-defined]
+        return result  # type: ignore[no-any-return]
 
     # ─── 主入口 ──────────────────────────────────
 
@@ -413,16 +411,16 @@ class ThreePassPipeline:
 
         # Phase 3
         plan = p2.data.get("plan")
-        p3 = self.phase3_refine(plan)
+        p3 = self.phase3_refine(plan)  # type: ignore[arg-type]
         results["phase3"] = p3
 
         # 生成最终文档
-        content = plan.to_markdown()
+        content = plan.to_markdown()  # type: ignore[union-attr]
 
         # 写文件
         if output_path:
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path = Path(output_path)  # type: ignore[assignment]
+            output_path.parent.mkdir(parents=True, exist_ok=True)  # type: ignore[attr-defined]
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(content)
             logger.info(f"文档已写入: {output_path}")
@@ -440,5 +438,5 @@ class ThreePassPipeline:
             },
             "output_path": str(output_path) if output_path else None,
             "content_length": len(content),
-            "section_count": len(plan.sections),
+            "section_count": len(plan.sections),  # type: ignore[union-attr]
         }

@@ -21,17 +21,15 @@ Format Converter — 格式转换器
     converter.markdown_to_html("doc.md", "doc.html")
     converter.markdown_to_word("doc.md", "doc.docx")
 """
+import logging
 import os
 import re
-import json
-import time
-import logging
 import subprocess
 import tempfile
-import urllib.request
+import time
 import urllib.parse
+import urllib.request
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +44,7 @@ class FormatConverter:
 
     # ─── 工具检测 ──────────────────────────────────
 
-    def _find_mmdc(self) -> Optional[str]:
+    def _find_mmdc(self) -> str | None:
         """查找 mermaid-cli"""
         for cmd in ["mmdc", "npx mmdc"]:
             try:
@@ -60,7 +58,7 @@ class FormatConverter:
                 pass
         return None
 
-    def _find_pandoc(self) -> Optional[str]:
+    def _find_pandoc(self) -> str | None:
         """查找 pandoc"""
         try:
             result = subprocess.run(
@@ -114,10 +112,7 @@ class FormatConverter:
         if self._mmdc_path:
             return self._mmdc_render(mermaid_code, output_path, 0, theme, fmt="svg")
 
-        if self._kroki_render(mermaid_code, output_path, "svg"):
-            return True
-
-        return False
+        return bool(self._kroki_render(mermaid_code, output_path, "svg"))
 
     def _mmdc_render(self, code: str, output: Path, width: int,
                      theme: str, fmt: str = "png") -> bool:
@@ -157,7 +152,6 @@ class FormatConverter:
             import zlib
 
             # Kroki API: POST https://kroki.io/mermaid/{format}
-            url = f"https://kroki.io/mermaid/{fmt}"
             data = zlib.compress(code.encode("utf-8"), 9)
             encoded = base64.urlsafe_b64encode(data).decode("ascii")
 
@@ -210,7 +204,7 @@ class FormatConverter:
         Returns: HTML 内容字符串
         """
         md_path = Path(md_path)
-        with open(md_path, "r", encoding="utf-8") as f:
+        with open(md_path, encoding="utf-8") as f:
             md_content = f.read()
 
         html_body = self._markdown_to_html_body(md_content)
@@ -249,7 +243,6 @@ class FormatConverter:
         in_code = False
         in_table = False
         in_list = False  # P1 修复：跟踪列表状态以正确包裹 <ul>
-        table_rows = []
 
         for line in lines:
             # 代码块
@@ -376,10 +369,7 @@ class FormatConverter:
         优先使用 pandoc（质量最好），回退到 python-docx。
         """
         md_path = Path(md_path)
-        if docx_path is None:
-            docx_path = md_path.with_suffix(".docx")
-        else:
-            docx_path = Path(docx_path)
+        docx_path = md_path.with_suffix(".docx") if docx_path is None else Path(docx_path)
 
         docx_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -403,7 +393,7 @@ class FormatConverter:
         try:
             from docx import Document
             doc = Document()
-            with open(md_path, "r", encoding="utf-8") as f:
+            with open(md_path, encoding="utf-8") as f:
                 md_content = f.read()
 
             for line in md_content.split("\n"):
@@ -432,13 +422,10 @@ class FormatConverter:
         将 ```mermaid 代码块替换为图片引用。
         """
         md_path = Path(md_path)
-        with open(md_path, "r", encoding="utf-8") as f:
+        with open(md_path, encoding="utf-8") as f:
             content = f.read()
 
-        if output_dir is None:
-            output_dir = md_path.parent / "images"
-        else:
-            output_dir = Path(output_dir)
+        output_dir = md_path.parent / "images" if output_dir is None else Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         def replace_mermaid(match):

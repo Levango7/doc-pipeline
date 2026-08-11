@@ -11,15 +11,12 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
 import time
-import logging
 from pathlib import Path
-from typing import Optional
-
-from .fast_json import dumps as _fast_dumps, loads as _fast_loads
 
 logger = logging.getLogger(__name__)
 _DEFAULT_DB = os.path.join(Path(__file__).parent.parent.absolute(), "bus_data", "quality.db")
@@ -129,7 +126,7 @@ class QualityFeedback:
             }
 
 
-_instance: Optional[QualityFeedback] = None
+_instance: QualityFeedback | None = None
 _lock = threading.Lock()
 
 

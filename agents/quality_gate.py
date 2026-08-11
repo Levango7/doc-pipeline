@@ -15,15 +15,11 @@ QualityGate Agent v2 - 质量门禁（Profile 模板驱动）
   - 扣分上限可配置
 """
 import re
-import os
-import sys
-import time
-import yaml
 from pathlib import Path
-from typing import Optional
 
-from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
+import yaml
 
+from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "quality_gate"
 AGENT_VERSION = "2.0"
@@ -61,7 +57,7 @@ def load_profile(profile_name: str) -> dict:
             _log.warning("QualityGate: 未找到 profile 文件")
             return {}
 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except Exception as e:
         _log.warning(f"QualityGate: 加载 profile 失败: {e}")
@@ -154,8 +150,7 @@ class QualityGateAgent(BaseAgent):
         citation_report = {"total_refs": 0, "issues": []}
         if self._citation_cfg.get("enabled", True):
             citation_report = self._check_citations(content)
-            citation_penalty = len(citation_report.get("issues", [])) * \
-                               self._citation_cfg.get("penalty_per_issue", 5)
+            citation_penalty = len(citation_report.get("issues", [])) * self._citation_cfg.get("penalty_per_issue", 5)  # type: ignore[arg-type]
 
         # 总扣分
         total_penalty = min(style_penalty + citation_penalty, self._max_penalty)
@@ -220,7 +215,7 @@ class QualityGateAgent(BaseAgent):
             "citation": self._score_citations(content),
             "depth": self._score_depth(content),
             "substance": self._score_substance(content),
-            "topic_relevance": self._score_topic_relevance(content, queries),
+            "topic_relevance": self._score_topic_relevance(content, queries),  # type: ignore[arg-type]
         }
 
     def _score_topic_relevance(self, content: str, queries: list[str]) -> float:
@@ -308,7 +303,7 @@ class QualityGateAgent(BaseAgent):
         all_words = re.findall(r'[\w\u4e00-\u9fff]{2,}', content)
         if all_words:
             # 高频虚词（中英文停用词）占比高 = 信息密度低
-            stop = set("的 了 是 在 和 与 及 也 都 就 而 等 我们 可以 这个 那个 一种 以及 通过 对于 由于 因此 但是 因为 the a an of to and or in on for is are be".split())
+            stop = set(["的", "了", "是", "在", "和", "与", "及", "也", "都", "就", "而", "等", "我们", "可以", "这个", "那个", "一种", "以及", "通过", "对于", "由于", "因此", "但是", "因为", "the", "a", "an", "of", "to", "and", "or", "in", "on", "for", "is", "are", "be"])
             content_words = [w for w in all_words if w.lower() not in stop]
             density = len(content_words) / len(all_words)
             if density < 0.4:
@@ -370,7 +365,7 @@ class QualityGateAgent(BaseAgent):
     def _score_readability(self, content: str) -> float:
         score = 100.0
         lines = content.split("\n")
-        long_lines = sum(1 for l in lines if len(l) > 120)
+        long_lines = sum(1 for line in lines if len(line) > 120)
         score -= long_lines * 2
         if "```" not in content and "> " not in content:
             score -= 10
@@ -383,7 +378,7 @@ class QualityGateAgent(BaseAgent):
         refs = re.findall(r"\[([^\]]*)\]\(([^)]*)\)", content)
         if not refs:
             return 50
-        for title, url in refs:
+        for _title, url in refs:
             if not url or url.strip() == "":
                 score -= 15
             elif url.startswith("https://example.com"):
@@ -415,7 +410,7 @@ class QualityGateAgent(BaseAgent):
         if total_weight <= 0:
             return sum(scores.values()) / max(len(scores), 1)
         total = sum(scores.get(k, 0) * w for k, w in self._weights.items())
-        return total / total_weight
+        return total / total_weight  # type: ignore[no-any-return]
 
     def _score_breakdown(self, scores: dict[str, float]) -> str:
         parts = [f"{k}={v:.0f}" for k, v in sorted(scores.items())]
@@ -440,7 +435,7 @@ class QualityGateAgent(BaseAgent):
 
     def _check_citations(self, content: str) -> dict:
         refs = re.findall(r"\[([^\]]*)\]\(([^)]*)\)", content)
-        seen_urls = {}
+        seen_urls = {}  # type: ignore[var-annotated]
         issues = []
         for title, url in refs:
             if url in seen_urls:
@@ -449,12 +444,12 @@ class QualityGateAgent(BaseAgent):
                 seen_urls[url] = {"title": title, "count": 1}
             if not url:
                 continue
-            if self._citation_cfg.get("check_url_format", True):
-                if not url.startswith(("http://", "https://", "#", "/")):
-                    issues.append(f"非标准 URL: {url[:50]}")
-            if self._citation_cfg.get("check_empty_title", True):
-                if not title.strip():
-                    issues.append("存在无标题链接")
+            if self._citation_cfg.get("check_url_format", True) and not url.startswith(
+                ("http://", "https://", "#", "/")
+            ):
+                issues.append(f"非标准 URL: {url[:50]}")
+            if self._citation_cfg.get("check_empty_title", True) and not title.strip():
+                issues.append("存在无标题链接")
         return {
             "total_refs": len(refs),
             "unique_urls": len(seen_urls),

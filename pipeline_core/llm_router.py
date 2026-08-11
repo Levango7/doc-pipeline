@@ -21,26 +21,25 @@ LLM Router — 多供应商 LLM 路由器
   9. SiliconFlow
   10. 本地 Ollama（可选）
 """
-import json
+import asyncio
+import logging
 import os
 import re
 import sys
-import time
-import logging
 import threading
-import asyncio
-import urllib.request
+import time
 import urllib.error
-from dataclasses import dataclass, field
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
-from .fast_json import dumps as _fast_dumps, loads as _fast_loads
+from .fast_json import dumps as _fast_dumps
+from .fast_json import loads as _fast_loads
 
 logger = logging.getLogger(__name__)
 
 # ─── 共享 aiohttp Session（连接池复用）──────────────
-_shared_aiohttp_session: Optional[object] = None
+_shared_aiohttp_session: object | None = None
 _session_lock = threading.Lock()
 
 
@@ -123,7 +122,7 @@ class LLMProvider:
                 return False
         try:
             messages = [{"role": "user", "content": "1+1=?"}]
-            result = _call_llm(self, messages, max_tokens=10, timeout=15)
+            _call_llm(self, messages, max_tokens=10, timeout=15)
             self.mark_success()
             return True
         except Exception as e:
@@ -271,7 +270,7 @@ class LLMRouter:
         """获取所有启用的供应商（按优先级排序）"""
         return [p for p in self._providers if p.enabled and p.healthy]
 
-    def get_best_provider(self) -> Optional[LLMProvider]:
+    def get_best_provider(self) -> LLMProvider | None:
         """获取最佳供应商"""
         active = self.get_active_providers()
         return active[0] if active else None
@@ -521,7 +520,7 @@ def _load_env(env_path: str = None) -> dict:
         return dict(os.environ)
 
     try:
-        with open(env_path, "r", encoding="utf-8") as f:
+        with open(env_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -546,7 +545,7 @@ def _load_env(env_path: str = None) -> dict:
 
 # ─── 便捷函数 ──────────────────────────────────
 
-_router_instance: Optional[LLMRouter] = None
+_router_instance: LLMRouter | None = None
 _router_lock = threading.Lock()
 
 

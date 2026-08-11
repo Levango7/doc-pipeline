@@ -17,13 +17,12 @@
 """
 from __future__ import annotations
 
-import time
 import threading
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from typing import Union, Callable, Any
+from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 
-def create_executor(max_workers: int = 4, executor_type: str = "thread") -> Union[ThreadPoolExecutor, ProcessPoolExecutor]:
+def create_executor(max_workers: int = 4, executor_type: str = "thread") -> ThreadPoolExecutor | ProcessPoolExecutor:
     """根据类型创建执行器。
 
     Args:
@@ -36,7 +35,7 @@ def create_executor(max_workers: int = 4, executor_type: str = "thread") -> Unio
     if executor_type == "process":
         return ProcessPoolExecutor(max_workers=max_workers)
     if executor_type == "auto":
-        return SmartExecutor(max_workers=max_workers)
+        return SmartExecutor(max_workers=max_workers)  # type: ignore[return-value]
     return ThreadPoolExecutor(max_workers=max_workers)
 
 
@@ -122,7 +121,7 @@ class SmartExecutor:
         self._submitted_count = 0
         self._used_process = False
 
-    def _select_executor(self, func: Callable, n_tasks: int = 1) -> Union[ThreadPoolExecutor, ProcessPoolExecutor]:
+    def _select_executor(self, func: Callable, n_tasks: int = 1) -> ThreadPoolExecutor | ProcessPoolExecutor:
         """根据任务特性选择执行器。"""
         est_cost = _estimate_task_cost(func, (), {})
         total_est = est_cost * n_tasks

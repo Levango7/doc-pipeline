@@ -6,17 +6,22 @@ MessageBus v3 - 持久化消息总线
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
-import traceback
 import uuid
-from queue import Queue, Empty
-from typing import Optional, Any, Callable
+from collections.abc import Callable
+from queue import Empty, Queue
+from typing import Any
 
 from .message_store import (
-    DEFAULT_DB_PATH, MAX_PROCESSED_KEYS,
-    MessageType, MessagePriority, Message, MessageMetrics,
+    DEFAULT_DB_PATH as DEFAULT_DB_PATH,  # re-export for backward compat
+)
+from .message_store import (
+    Message,
+    MessageMetrics,
+    MessageType,
     PersistentStore,
 )
 
@@ -38,7 +43,7 @@ class MessageBus:
             max_queue_depth: 队列最大深度
             backpressure_watermark: 触发背压的水位线
         """
-        self._async_queue = Queue()
+        self._async_queue = Queue()  # type: ignore[var-annotated]
         self._store = PersistentStore(db_path) if enable_persistence else None
         self._subscribers: dict[str, list[tuple[Callable, int]]] = {}
         self._callbacks: dict[str, Callable] = {}
@@ -130,9 +135,8 @@ class MessageBus:
             payload = {}
 
         # 幂等检查（原子操作）
-        if idempotency_key and self._store:
-            if self._store.check_and_mark_idempotent(idempotency_key):
-                return None  # 已存在，重复请求
+        if idempotency_key and self._store and self._store.check_and_mark_idempotent(idempotency_key):
+            return None  # 已存在，重复请求
 
         msg = Message(
             topic=topic,
@@ -148,7 +152,7 @@ class MessageBus:
         result = [None]
 
         def handler(resp_msg: Message):
-            result[0] = resp_msg.payload
+            result[0] = resp_msg.payload  # type: ignore[call-overload]
             event.set()
 
         with self._lock:
@@ -199,7 +203,7 @@ class MessageBus:
         if depth >= self.backpressure_watermark:
             self._metrics.high_watermark_hits += 1
             msg = Message(topic=topic, payload=payload, msg_type=MessageType.EVENT, from_agent=from_a)
-            msg._backpressure_skipped = True
+            msg._backpressure_skipped = True  # type: ignore[attr-defined]
             return {"status": "busy", "queue_depth": depth}
 
         msg = Message(topic=topic, payload=payload, msg_type=MessageType.EVENT, from_agent=from_a)
@@ -295,7 +299,7 @@ class MessageBus:
 
         delivered_ok = True
         replied = False
-        for callback, priority in sorted(callbacks, key=lambda x: x[1]):
+        for callback, _priority in sorted(callbacks, key=lambda x: x[1]):
             try:
                 result = callback(msg)
                 self._metrics.record_received()
@@ -311,12 +315,11 @@ class MessageBus:
                     self._store.move_to_dlq(msg, str(e))
                     self._metrics.record_dlq()
 
-        if delivered_ok and self._store and msg.msg_id:
+        if delivered_ok and self._store and msg.msg_id and msg.msg_type != MessageType.EVENT:
             # EVENT 消息由 _process_loop 批量标记，此处仅处理非 EVENT（如 RESPONSE）
-            if msg.msg_type != MessageType.EVENT:
-                self._store.mark_delivered(msg.msg_id)
-                with self._backpressure_cv:
-                    self._backpressure_cv.notify_all()
+            self._store.mark_delivered(msg.msg_id)
+            with self._backpressure_cv:
+                self._backpressure_cv.notify_all()
 
     def _process_loop(self):
         """异步事件处理循环（批量 drain 优化：一次取多条，减少锁竞争和 SQLite 写入）"""
@@ -340,10 +343,8 @@ class MessageBus:
                         delivered_ids.append(m.msg_id)
                 # 批量标记已投递（一次 UPDATE 替代 N 次）
                 if delivered_ids and self._store:
-                    try:
-                        self._store.mark_delivered_batch(delivered_ids)
-                    except Exception:
-                        pass  # 标记失败不影响投递
+                    with contextlib.suppress(Exception):
+                        self._store.mark_delivered_batch(delivered_ids)  # 标记失败不影响投递
                 # 通知背压等待者
                 if delivered_ids:
                     with self._backpressure_cv:
@@ -369,7 +370,7 @@ class MessageBus:
     def list_dlq(self, limit: int = 50) -> list[dict]:
         return self._store.list_dlq(limit) if self._store else []
 
-    def replay_dlq(self, dlq_id: int) -> Optional[dict]:
+    def replay_dlq(self, dlq_id: int) -> dict | None:
         """重放一条死信：取出数据并真实重新投递到原 topic"""
         if not self._store:
             return None

@@ -11,37 +11,46 @@ pipeline_core v3 - 文档生成流水线核心框架
   - 临时文件自动清理
 """
 
-from .config import ConfigCenter
-from .registry import Registry, AgentMeta, AgentStatus, AgentStats, AgentPriority
-from .base_agent import BaseAgent, AgentLogger
-from .pipeline import PipelineOrchestrator, PipelineTask, TaskStatus, StepResult, NodeConfig
-from .message_bus_v3 import MessageBus, Message, MessageType, MessagePriority, MessageMetrics
-from .message_store import PersistentStore
-from .circuit_breaker import CircuitBreakerRegistry, backoff_with_jitter
-from .scheduler import Scheduler, ExecutionPlan, ExecutionNode, AgentConfig
 from .agent_loader import AgentLoader
-from .dag_executor import DAGExecutor
-from .checkpoint_manager import CheckpointManager
-from .llm_router import LLMRouter, get_router, reset_router
-from .search_engines import SearchEngineManager, SearchItem
-from .cache_manager import CacheManager, get_cache, clear_all_caches, all_stats
-from .streaming import (
-    StreamEvent, StreamCallback, StreamMetrics,
-    register_callback, get_callback, unregister_callback,
-)
-from .executor_factory import create_executor, is_process_executor, SmartExecutor
-from .three_pass_pipeline import ThreePassPipeline, DocumentPlan, PassResult
-from .document_enhancer import DocumentEnhancer
-from .bootstrap import run_startup_check, quick_check, StartupReport
-from .event_hook import EventHookManager, get_hook_manager, emit_event
+from .alert_manager import alert, clear_alerts, get_alerts
+from .base_agent import AgentLogger, BaseAgent
 from .batch_queue import BatchQueue, BatchTask, BatchTaskStatus
-from .version_manager import VersionManager, VersionEntry, get_version_manager
+from .bootstrap import StartupReport, quick_check, run_startup_check
+from .cache_manager import CacheManager, all_stats, clear_all_caches, get_cache
+from .checkpoint_manager import CheckpointManager
+from .circuit_breaker import CircuitBreakerRegistry, backoff_with_jitter
+from .config import ConfigCenter
+from .cost_tracker import CostTracker, calc_cost, estimate_tokens, get_cost_tracker
+from .dag_executor import DAGExecutor
+from .document_enhancer import DocumentEnhancer
+from .event_hook import EventHookManager, emit_event, get_hook_manager
+from .executor_factory import SmartExecutor, create_executor, is_process_executor
+from .llm_router import LLMRouter, get_router, reset_router
 from .mcp_server import MCPServer, run_mcp_server
-from .task_queue import TaskQueue
-from .cost_tracker import CostTracker, get_cost_tracker, estimate_tokens, calc_cost
-from .alert_manager import alert, get_alerts, clear_alerts
-from .quality_feedback import QualityFeedback, get_quality_feedback, record_quality
+from .message_bus_v3 import (
+    Message,
+    MessageBus,
+    MessageMetrics,
+    MessageType,
+)
+from .message_store import MessagePriority, PersistentStore
 from .openapi_spec import generate_spec
+from .pipeline import NodeConfig, PipelineOrchestrator, PipelineTask, StepResult, TaskStatus
+from .quality_feedback import QualityFeedback, get_quality_feedback, record_quality
+from .registry import AgentMeta, AgentPriority, AgentStats, AgentStatus, Registry
+from .scheduler import AgentConfig, ExecutionNode, ExecutionPlan, Scheduler
+from .search_engines import SearchEngineManager, SearchItem
+from .streaming import (
+    StreamCallback,
+    StreamEvent,
+    StreamMetrics,
+    get_callback,
+    register_callback,
+    unregister_callback,
+)
+from .task_queue import TaskQueue
+from .three_pass_pipeline import DocumentPlan, PassResult, ThreePassPipeline
+from .version_manager import VersionEntry, VersionManager, get_version_manager
 
 __all__ = [
     "ConfigCenter",
@@ -67,6 +76,10 @@ __all__ = [
     "MCPServer", "run_mcp_server",
     "TaskQueue",
     "CostTracker", "get_cost_tracker", "estimate_tokens", "calc_cost",
+    "alert", "clear_alerts", "get_alerts",
+    "CircuitBreakerRegistry", "backoff_with_jitter",
+    "generate_spec",
+    "QualityFeedback", "get_quality_feedback", "record_quality",
 ]
 
 __version__ = "3.2.0"

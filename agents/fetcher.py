@@ -8,24 +8,23 @@ Fetcher Agent v1 - 知识内容获取器
   - 内容质量识别：可用 vs 不可用
   - 返回处理后内容的元数据
 """
-import os
-import re
-import json
-import time
 import asyncio
 import hashlib
+import re
 import tempfile
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlparse
-from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
+
+from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 # Async I/O 支持（可选）
 try:
     import aiohttp
     USE_ASYNC = True
 except ImportError:
-    aiohttp = None
+    aiohttp = None  # type: ignore[assignment]
     USE_ASYNC = False
 
 AGENT_NAME = "fetcher"
@@ -85,7 +84,7 @@ class FetcherAgent(BaseAgent):
         self._stats = {"attempted": 0, "success": 0, "failed": 0, "filtered": 0}
         self._stats_lock = threading.Lock()
         # 持久化 aiohttp 连接池（复用 TCP 连接，减少握手开销）
-        self._aio_session: "aiohttp.ClientSession | None" = None
+        self._aio_session: aiohttp.ClientSession | None = None
         self._aio_session_lock = threading.Lock()
         try:
             from selectolax.parser import HTMLParser  # noqa: F401
@@ -215,7 +214,6 @@ class FetcherAgent(BaseAgent):
     def _fetch_all_sync(self, results: list, query: str, task_id: str, task_dir: Path) -> list:
         """同步模式：线程池并发下载"""
         from concurrent.futures import ThreadPoolExecutor
-        from functools import partial
 
         workers = self.config.get("download_workers", 5)
         articles = []
@@ -327,17 +325,16 @@ class FetcherAgent(BaseAgent):
             ua = self._ua_pool[(idx + attempt) % len(self._ua_pool)]
             try:
                 headers = {**self._base_headers, "User-Agent": ua}
-                async with semaphore:
-                    async with session.get(url, headers=headers, allow_redirects=True) as resp:
-                        if resp.status != 200:
-                            last_err = f"HTTP {resp.status}"
-                            if resp.status in (403, 429, 503):
-                                continue
-                            with self._stats_lock:
-                                self._stats["failed"] += 1
-                            self.log_debug(f"  {last_err}: {url[:60]}")
-                            return None
-                        html = await resp.text()
+                async with semaphore, session.get(url, headers=headers, allow_redirects=True) as resp:
+                    if resp.status != 200:
+                        last_err = f"HTTP {resp.status}"
+                        if resp.status in (403, 429, 503):
+                            continue
+                        with self._stats_lock:
+                            self._stats["failed"] += 1
+                        self.log_debug(f"  {last_err}: {url[:60]}")
+                        return None
+                    html = await resp.text()
 
                 plain_text = self._extract_text(html)
                 if not self._is_content_usable(plain_text, url, query):
@@ -351,7 +348,7 @@ class FetcherAgent(BaseAgent):
                     with self._stats_lock:
                         self._stats["success"] += 1
                     return article
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 last_err = "超时"
                 continue
             except Exception as e:

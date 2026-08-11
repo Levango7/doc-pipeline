@@ -8,21 +8,18 @@ Researcher Agent v2 - 增强型内容检索插件
   - 并行搜索控制（并发限制）
   - 搜索历史记录
 """
+import asyncio
 import json
 import os
-import time
-import hashlib
 import re
 import threading
-import asyncio
-from pathlib import Path
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
+from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 from pipeline_core.cache_manager import CacheManager
-
 
 AGENT_NAME = "researcher"
 AGENT_VERSION = "2.0"
@@ -31,7 +28,7 @@ AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 10
 INPUT_TOPICS = ["researcher.input", "researcher.search"]
 OUTPUT_TOPICS = ["researcher.done", "researcher.progress", "researcher.partial"]
-DEPENDENCIES = []
+DEPENDENCIES = []  # type: ignore[var-annotated]
 CACHE_TTL = 86400  # 24小时
 RESPAWN = True
 EXTRACTS_QUERIES = True
@@ -49,7 +46,7 @@ class SearchResult:
     score: float = 0.0  # 质量评分
     relevance: float = 0.0  # query 相关性评分
     fetched_at: float = field(default_factory=time.time)
-    
+
     def to_dict(self) -> dict:
         return {
             "title": self.title,
@@ -74,7 +71,7 @@ class ResearcherAgent(BaseAgent):
         "googlesyndication.com", "amazon-adsystem.com",
     }
 
-    DEFAULT_LOW_QUALITY_DOMAINS = set()
+    DEFAULT_LOW_QUALITY_DOMAINS = set()  # type: ignore[var-annotated]
 
     DEFAULT_PROSEARCH_PATHS = [
         r"F:\Program Files\QClaw\resources\openclaw\config\skills\online-search\scripts\prosearch.cjs",
@@ -83,28 +80,28 @@ class ResearcherAgent(BaseAgent):
 
     def __init__(self, name, meta, config, message_bus, registry):
         super().__init__(name, meta, config, message_bus, registry)
-        
+
         cache_size = config.get("cache_size", 1000)
         self._cache = CacheManager(
             name="researcher", max_size=cache_size,
             ttl=self.meta.cache_ttl or CACHE_TTL,
         )
         self._search_manager = None  # 缓存 SearchEngineManager 实例（避免每次查询重建）
-        
+
         self.dedup_set: set = set()
         self._dedup_lock = threading.Lock()
-        
+
         self._search_history: list[dict] = []
         self._history_lock = threading.Lock()
         self._max_history = config.get("max_history", 100)
-        
+
         self._max_workers = config.get("max_workers", 3)
-        
+
         self._search_engines = config.get("search_engines", ["bing", "sogou", "360"])
-        
+
         from pipeline_core.rate_limiter import RateLimiterRegistry
         self._rate_limiters = RateLimiterRegistry()
-        
+
         self._min_score = config.get("min_score", 0.25)
 
         self._spam_domains = set(config.get("spam_domains", [])) or self.DEFAULT_SPAM_DOMAINS
@@ -129,19 +126,19 @@ class ResearcherAgent(BaseAgent):
         self._prosearch_paths.extend(self.DEFAULT_PROSEARCH_PATHS)
 
         self._title_min_pattern = re.compile(r"[一-鿿]{2,}|[a-zA-Z]{3,}")
-        
+
         self.log_info(f"Researcher v{AGENT_VERSION} 初始化完成 (engines={self._search_engines})")
 
     def on_config_update(self, changed_keys: list[str]):
         """配置热更新：重新加载搜索引擎配置"""
         super().on_config_update(changed_keys)
         self._search_manager = None
-        self.log_info(f"搜索引擎配置已刷新，下次搜索将重新初始化")
+        self.log_info("搜索引擎配置已刷新，下次搜索将重新初始化")
 
     def handle(self, msg: Message) -> dict | None:
         """处理检索请求"""
         self.report(AgentStatus.RUNNING, "开始检索...")
-        
+
         payload = msg.payload
         task_id = payload.get("task_id", "")
         queries = payload.get("queries", [])
@@ -156,7 +153,7 @@ class ResearcherAgent(BaseAgent):
                 engines_used = cfg["search_engines"]
             if "max_results" in cfg:
                 max_results = cfg["max_results"]
-        
+
         if not queries:
             return {"status": "ok", "task_id": task_id, "total": 0,
                     "results": [], "query_count": 0, "engines_used": engines_used}
@@ -172,9 +169,9 @@ class ResearcherAgent(BaseAgent):
                     "results": [], "query_count": 0, "engines_used": engines_used}
 
         self.log_info(f"任务 {task_id}: {len(queries)} 个查询")
-        
+
         results = []
-        
+
         if parallel and len(queries) > 1:
             results = self._parallel_search(queries, task_id, max_results, engines_used)
         else:
@@ -185,18 +182,18 @@ class ResearcherAgent(BaseAgent):
                     results.extend(r)
                 except Exception as e:
                     self.log_error(f"搜索失败 {query}: {e}")
-        
+
         results = self._score_and_filter(results)
-        
+
         results = self._deduplicate(results)
-        
+
         results = results[:max_results]
-        
+
         self._record_history(task_id, queries, len(results))
-        
+
         self.report(AgentStatus.RUNNING, f"检索完成，共 {len(results)} 条结果")
         self.log_info(f"最终返回 {len(results)} 条搜索结果")
-        
+
         return {
             "status": "ok",
             "task_id": task_id,
@@ -210,22 +207,22 @@ class ResearcherAgent(BaseAgent):
         """并行搜索"""
         results = []
         completed = 0
-        
+
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             future_to_query = {
-                executor.submit(self._search, query, task_id, engines): query 
+                executor.submit(self._search, query, task_id, engines): query
                 for query in queries
             }
-            
+
             for future in as_completed(future_to_query):
                 query = future_to_query[future]
                 completed += 1
                 self.report(AgentStatus.RUNNING, f"[{completed}/{len(queries)}] 完成: {query[:40]}...")
-                
+
                 try:
                     r = future.result()
                     results.extend(r)
-                    
+
                     # 发送部分结果（流式）
                     if completed % 3 == 0:
                         self.publish("researcher.partial", {
@@ -234,10 +231,10 @@ class ResearcherAgent(BaseAgent):
                             "total": len(queries),
                             "partial_count": len(results),
                         })
-                        
+
                 except Exception as e:
                     self.log_error(f"并行搜索失败 {query}: {e}")
-        
+
         return results
 
     def _search(self, query: str, task_id: str, engines: list[str] = None) -> list[SearchResult]:
@@ -318,17 +315,17 @@ class ResearcherAgent(BaseAgent):
     def _prosearch(self, query: str) -> list[SearchResult]:
         """调用元宝搜索"""
         import subprocess
-        
+
         script = None
         for path in self._prosearch_paths:
             if Path(path).exists():
                 script = path
                 break
-        
+
         if not script:
             self.log_debug("prosearch.cjs 未找到，跳过 prosearch 引擎")
             return []
-        
+
         try:
             result = subprocess.run(
                 ["node", script, json.dumps({"keyword": query})],
@@ -339,14 +336,16 @@ class ResearcherAgent(BaseAgent):
                 return self._normalize_results(data, query)
         except Exception as e:
             self.log_error(f"prosearch 调用失败: {e}")
-        
+
         return []
 
     def _html_search(self, query: str, engine_name: str, url: str,
                      params: dict, skip_domains: list[str],
                      max_results: int = 10) -> list[SearchResult]:
         """通用 HTML 搜索引擎抓取（Bing/Sogou/360 共用）"""
-        import re, requests
+        import re
+
+        import requests
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -396,7 +395,9 @@ class ResearcherAgent(BaseAgent):
 
     def _bing_search(self, query: str, max_results: int = 10) -> list[SearchResult]:
         """调用 Bing 搜索 — 只从 b_algo 容器提取真实搜索结果"""
-        import re, requests
+        import re
+
+        import requests
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -515,18 +516,18 @@ class ResearcherAgent(BaseAgent):
     def _normalize_results(self, data: dict, query: str) -> list[SearchResult]:
         """标准化搜索结果"""
         results = []
-        items = data.get("results", []) or data if isinstance(data, list) else []
-        
+        items = data.get("results", []) or data if isinstance(data, list) else []  # type: ignore[var-annotated]
+
         for item in items[:20]:  # 最多20条
             if isinstance(item, dict):
                 results.append(SearchResult(
                     title=item.get("title", ""),
                     url=item.get("url", ""),
-                    snippet=item.get("snippet", item.get("content", "")),
+                    snippet=item.get("snippet", item.get("content", "")),  # type: ignore[arg-type]
                     source=item.get("source", ""),
                     query=query,
                 ))
-        
+
         return results
 
     def _clean_queries(self, queries: list[str]) -> list[str]:
@@ -577,10 +578,7 @@ class ResearcherAgent(BaseAgent):
             if domain in self._spam_domains:
                 return True
             # 后缀匹配
-            for spam in self._spam_domains:
-                if domain and domain.endswith("." + spam):
-                    return True
-            return False
+            return any(domain and domain.endswith("." + spam) for spam in self._spam_domains)
         except Exception:
             return False
 
@@ -606,7 +604,6 @@ class ResearcherAgent(BaseAgent):
 
     def _score_and_filter(self, results: list[SearchResult]) -> list[SearchResult]:
         """质量评分和过滤（含域名黑名单 + query 相关性 + 标题质量）"""
-        import re
         filtered = []
         for r in results:
             # 0a. 垃圾域名直接丢弃
@@ -741,7 +738,7 @@ class ResearcherAgent(BaseAgent):
                 "result_count": result_count,
                 "timestamp": time.time(),
             })
-            
+
             if len(self._search_history) > self._max_history:
                 self._search_history = self._search_history[-self._max_history:]
 
@@ -800,7 +797,7 @@ class ResearcherAgent(BaseAgent):
         if not http_engines:
             return None  # 无 HTTP 引擎，触发回退
 
-        all_results = []
+        all_results = []  # type: ignore[var-annotated]
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             for eng_name, eng in http_engines:

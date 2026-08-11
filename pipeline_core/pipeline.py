@@ -13,20 +13,25 @@ PipelineOrchestrator v3.1 - 增强型流水线编排器
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 import time
 import uuid
-import asyncio
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
-from dataclasses import dataclass, field, asdict
-from typing import Optional, Any, Callable
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from typing import TYPE_CHECKING
 
-from .observability import StructuredLogger, MetricsRegistry, get_logger, get_metrics
-from .executor_factory import create_executor, is_process_executor
 from .event_hook import emit_event
+from .executor_factory import create_executor
+from .observability import get_logger, get_metrics
+
+if TYPE_CHECKING:
+    from .registry import AgentMeta
+    from .scheduler import ExecutionNode, ExecutionPlan
 
 
 class TaskStatus(Enum):
@@ -83,7 +88,7 @@ class TaskNode:
     # 原 ExecutionNode 字段（统一后无需 SimpleNamespace 转换）
     backoff: str = "exponential"       # 退避策略: exponential | linear | fixed
     initial_delay: float = 1.0         # 初始退避延迟（秒）
-    agent_config: "NodeConfig" = field(default_factory=lambda: NodeConfig())
+    agent_config: NodeConfig = field(default_factory=lambda: NodeConfig())
 
     # 运行时状态
     status: str = "pending"            # pending/running/success/failed/skipped
@@ -109,7 +114,7 @@ class PipelineTask:
     started_at: float = 0
     finished_at: float = 0
     error: str = ""
-    checkpoint_file: Optional[str] = None  # 断点文件路径
+    checkpoint_file: str | None = None  # 断点文件路径
     # DAG 执行相关
     dag_nodes: dict[str, TaskNode] = field(default_factory=dict)  # name -> TaskNode
     execution_order: list[list[str]] = field(default_factory=list)  # 拓扑层级
@@ -177,13 +182,13 @@ class PipelineOrchestrator:
         )
 
         # 延迟导入避免循环依赖
-        from .message_bus_v3 import MessageBus
-        from .registry import Registry
         from .agent_loader import AgentLoader
-        from .dag_executor import DAGExecutor
         from .checkpoint_manager import CheckpointManager
         from .circuit_breaker import CircuitBreakerRegistry
+        from .dag_executor import DAGExecutor
+        from .message_bus_v3 import MessageBus
         from .rate_limiter import RateLimiterRegistry
+        from .registry import Registry
 
         self.bus = MessageBus()
         self.registry = Registry()
@@ -235,7 +240,7 @@ class PipelineOrchestrator:
 
     # ─── 委托：限流 ─────────────────────────────
 
-    def _acquire_rate_limit(self, agent_name: str, rate_limit_cfg: Optional[dict] = None,
+    def _acquire_rate_limit(self, agent_name: str, rate_limit_cfg: dict | None = None,
                              timeout: float = 30.0) -> bool:
         return self._executor._acquire_rate_limit(agent_name, rate_limit_cfg, timeout)
 
@@ -244,21 +249,21 @@ class PipelineOrchestrator:
     def discover_agents(self) -> list[str]:
         return self._loader.discover()
 
-    def register_agents(self, agent_names: Optional[list[str]] = None, config: Optional[dict] = None) -> list[str]:
+    def register_agents(self, agent_names: list[str] | None = None, config: dict | None = None) -> list[str]:
         return self._loader.register(agent_names, config)
 
-    def _extract_meta(self, cls) -> "AgentMeta":
+    def _extract_meta(self, cls) -> AgentMeta:
         return self._loader._extract_meta(cls)
 
     # ─── 执行计划 ─────────────────────────────
 
     def plan(self, pipeline_name: str, input_file: str,
-             config: Optional[dict] = None) -> list[dict]:
+             config: dict | None = None) -> list[dict]:
         """生成执行计划（预览）"""
         agent_order = self.registry.deps_order()
         plan = []
 
-        for i, name in enumerate(agent_order):
+        for i, name in enumerate(agent_order):  # type: ignore[var-annotated]
             meta = self.registry.get_meta(name)
             if meta:
                 desc = meta.description or ""
@@ -289,7 +294,7 @@ class PipelineOrchestrator:
     # ─── 委托：DAG 构建与执行（通过 _executor 直接访问） ─────────────────────────────
     # 注：内部方法通过 self._executor 直接调用，无需逐一包装
 
-    def _build_dag(self, agent_order: list[str], config: Optional[dict] = None) -> tuple[dict[str, TaskNode], list[list[str]]]:
+    def _build_dag(self, agent_order: list[str], config: dict | None = None) -> tuple[dict[str, TaskNode], list[list[str]]]:
         return self._executor.build_dag(agent_order, config)
 
     def _execute_level(self, task: PipelineTask, level: list, input_file: str,
@@ -311,11 +316,11 @@ class PipelineOrchestrator:
     def _execute_node(self, task: PipelineTask, node: TaskNode, input_file: str, config: dict) -> dict:
         return self._executor.execute_node(task, node, input_file, config)
 
-    def _execute_node_from_scheduler(self, task: PipelineTask, node: "ExecutionNode",
+    def _execute_node_from_scheduler(self, task: PipelineTask, node: ExecutionNode,
                                      input_file: str, plan: ExecutionPlan) -> dict:
         return self._executor.execute_node_from_scheduler(task, node, input_file, plan)
 
-    def _extract_queries(self, input_file: str, node: "ExecutionNode") -> list[str]:
+    def _extract_queries(self, input_file: str, node: ExecutionNode) -> list[str]:
         return self._executor._extract_queries(input_file, node)
 
     def _backoff_delay(self, backoff: str, initial_delay: float, attempt: int) -> float:
@@ -344,7 +349,7 @@ class PipelineOrchestrator:
         cb_cfg = config.get("circuit_breaker", {}) if config else {}
 
         # 为每个 TaskNode 填充 agent_config（统一模型，无需 SimpleNamespace）
-        for name, node in nodes.items():
+        for _name, node in nodes.items():
             node.agent_config = NodeConfig(
                 config=config or {},
                 pool_size=1,
@@ -354,9 +359,9 @@ class PipelineOrchestrator:
 
         # 使用执行器工厂：支持 thread（默认）或 process（多进程水平扩展）
         executor_type = (config or {}).get("executor_type", "thread")
-        max_workers = max(len(l) for l in execution_order) if execution_order else 1
+        max_workers = max(len(level) for level in execution_order) if execution_order else 1
         with create_executor(max_workers=max_workers, executor_type=executor_type) as executor:
-            for level_idx, level_names in enumerate(execution_order):
+            for _level_idx, level_names in enumerate(execution_order):
                 # 直接使用 TaskNode（已兼容 ExecutionNode 接口）
                 level_nodes = [nodes[name] for name in level_names if name in nodes]
 
@@ -367,7 +372,7 @@ class PipelineOrchestrator:
                     raw=config if isinstance(config, dict) else {},
                 )
 
-                if not self._execute_level(task, level_nodes, input_file, plan_ns, executor):
+                if not self._execute_level(task, level_nodes, input_file, plan_ns, executor):  # type: ignore[arg-type]
                     return False
 
                 completed += len(level_names)
@@ -378,11 +383,10 @@ class PipelineOrchestrator:
 
     # ─── 流水线执行 ─────────────────────────────
 
-    def run(self, task_id: Optional[str] = None, pipeline_name: str = "",
-            input_file: str = "", config: Optional[dict] = None,
+    def run(self, task_id: str | None = None, pipeline_name: str = "",
+            input_file: str = "", config: dict | None = None,
             wait: bool = True, resume: bool = False) -> PipelineTask:
         """执行流水线（支持 DAG 并行）"""
-        from .registry import AgentStatus
 
         task_id = task_id or str(uuid.uuid4())[:8]
 
@@ -422,7 +426,7 @@ class PipelineOrchestrator:
         def run_steps():
             try:
                 # 使用 DAG 并行执行
-                success = self._run_dag_parallel(task, input_file, config or {})
+                self._run_dag_parallel(task, input_file, config or {})
 
                 # 完成
                 if task.status != TaskStatus.FAILED and task.status != TaskStatus.CANCELLED:
@@ -512,7 +516,7 @@ class PipelineOrchestrator:
                 task.status = TaskStatus.PAUSED
                 self._save_checkpoint(task)
                 # 通知所有 agent 暂停
-                for name in self.registry.list_agent_names():
+                for name in self.registry.list_agent_names():  # type: ignore[attr-defined]
                     inst = self.registry.get_instance(name)
                     if inst:
                         try:
@@ -540,7 +544,7 @@ class PipelineOrchestrator:
             if task and task.status == TaskStatus.PAUSED:
                 task.status = TaskStatus.RUNNING
                 # 通知所有 agent 恢复
-                for name in self.registry.list_agent_names():
+                for name in self.registry.list_agent_names():  # type: ignore[attr-defined]
                     inst = self.registry.get_instance(name)
                     if inst:
                         try:
@@ -556,7 +560,7 @@ class PipelineOrchestrator:
     def _save_checkpoint(self, task: PipelineTask, full_state: bool = False):
         # 收集 agent 快照
         agent_snapshots = {}
-        for name in self.registry.list_agent_names():
+        for name in self.registry.list_agent_names():  # type: ignore[attr-defined]
             inst = self.registry.get_instance(name)
             if inst:
                 try:
@@ -565,7 +569,7 @@ class PipelineOrchestrator:
                     self._log("warning", f"agent {name} on_snapshot 失败", error=str(e))
         self._checkpoint.save(task, full_state, agent_snapshots)
 
-    def _load_checkpoint(self, task_id: str) -> Optional[PipelineTask]:
+    def _load_checkpoint(self, task_id: str) -> PipelineTask | None:
         task, agent_snapshots = self._checkpoint.load(task_id)
         if task is not None and agent_snapshots:
             # 恢复 agent 快照
@@ -576,7 +580,7 @@ class PipelineOrchestrator:
                         inst.on_restore(state)
                     except Exception as e:
                         self._log("warning", f"agent {name} on_restore 失败", error=str(e))
-        return task
+        return task  # type: ignore[no-any-return]
 
     def _remove_checkpoint(self, task_id: str):
         self._checkpoint.remove(task_id)
@@ -624,10 +628,10 @@ class PipelineOrchestrator:
     # ─── 报告和回调 ─────────────────────────────
 
     def run_plan(self, plan: ExecutionPlan, input_file: str = "",
-                task_id: Optional[str] = None, wait: bool = True) -> PipelineTask:
+                task_id: str | None = None, wait: bool = True) -> PipelineTask:
         """按 Scheduler 生成的 ExecutionPlan 执行流水线"""
-        self.last_plan = plan
-        self.last_input = input_file
+        self.last_plan = plan  # type: ignore[assignment]
+        self.last_input = input_file  # type: ignore[assignment]
 
         from .scheduler import ExecutionPlan as EP
         if not isinstance(plan, EP):
@@ -670,7 +674,7 @@ class PipelineOrchestrator:
                 completed = 0
 
                 # 逐层执行，保持 Scheduler 定义的并行度
-                for level_idx, level in enumerate(plan.levels):
+                for _level_idx, level in enumerate(plan.levels):
                     if task.stop_event.is_set() or self._stop_event.is_set():
                         task.status = TaskStatus.CANCELLED
                         return
@@ -685,7 +689,7 @@ class PipelineOrchestrator:
                         return
 
                     # ── 事务边界：快照当前状态 ──
-                    level_snapshot = self._snapshot_state(task)
+                    self._snapshot_state(task)
 
                     max_workers = max(
                         (node.agent_config.parallelism.get("max_workers", 1) for node in level),
@@ -817,7 +821,7 @@ class PipelineOrchestrator:
         return task
 
     async def run_plan_async(self, plan: ExecutionPlan, input_file: str = "",
-                             task_id: Optional[str] = None) -> PipelineTask:
+                             task_id: str | None = None) -> PipelineTask:
         """async 版 run_plan：在已有事件循环中直接 await，消除 asyncio.run 嵌套开销。
 
         与 run_plan(wait=True) 的区别：
@@ -825,8 +829,8 @@ class PipelineOrchestrator:
         - 可在 async 上下文（如 SSE handler）中直接 await，无需 asyncio.run()
         - 逐层执行逻辑、池化合并、断点续传、报告生成均与 run_plan 一致
         """
-        self.last_plan = plan
-        self.last_input = input_file
+        self.last_plan = plan  # type: ignore[assignment]
+        self.last_input = input_file  # type: ignore[assignment]
 
         from .scheduler import ExecutionPlan as EP
         if not isinstance(plan, EP):
@@ -862,7 +866,7 @@ class PipelineOrchestrator:
 
         try:
             completed = 0
-            for level_idx, level in enumerate(plan.levels):
+            for _level_idx, level in enumerate(plan.levels):
                 if task.stop_event.is_set() or self._stop_event.is_set():
                     task.status = TaskStatus.CANCELLED
                     break
@@ -875,7 +879,7 @@ class PipelineOrchestrator:
                 if task.status == TaskStatus.CANCELLED:
                     break
 
-                level_snapshot = self._snapshot_state(task)
+                self._snapshot_state(task)
 
                 for node in level:
                     dag_node = TaskNode(
@@ -914,12 +918,12 @@ class PipelineOrchestrator:
                                                  "query_count": 0, "engines_used": []}
                                     for pr in pooled_results:
                                         if isinstance(pr, dict):
-                                            combined["results"].extend(pr.get("results", []))
-                                            combined["total"] = len(combined["results"])
+                                            combined["results"].extend(pr.get("results", []))  # type: ignore[attr-defined]
+                                            combined["total"] = len(combined["results"])  # type: ignore[arg-type]
                                             combined["query_count"] += pr.get("query_count", 0)
                                             eng = pr.get("engines_used", [])
                                             combined["engines_used"] = list(
-                                                set(combined["engines_used"]) | set(eng)
+                                                set(combined["engines_used"]) | set(eng)  # type: ignore[call-overload]
                                             )
                                     self._set_task_output(task, base, combined)
                                 else:
@@ -1023,7 +1027,7 @@ class PipelineOrchestrator:
 
     # ─── 查询 ─────────────────────────────
 
-    def get_task(self, task_id: str) -> Optional[PipelineTask]:
+    def get_task(self, task_id: str) -> PipelineTask | None:
         return self._running_tasks.get(task_id)
 
     def recover_tasks(self) -> list[dict]:
@@ -1041,7 +1045,7 @@ class PipelineOrchestrator:
         """列出持久化队列中的任务"""
         return self.task_queue.list_all(status=status)
 
-    def replay_dlq(self, dlq_id: int) -> Optional[dict]:
+    def replay_dlq(self, dlq_id: int) -> dict | None:
         """重放一条死信：重新执行故障 node 并回填结果
 
         支持两种死信：
@@ -1107,7 +1111,7 @@ class PipelineOrchestrator:
         self.bus.publish(topic, from_agent, original_payload)
         return {"topic": topic, "replayed": True}
 
-    def list_tasks(self, status: Optional[TaskStatus] = None) -> list[PipelineTask]:
+    def list_tasks(self, status: TaskStatus | None = None) -> list[PipelineTask]:
         tasks = list(self._running_tasks.values())
         if status:
             tasks = [t for t in tasks if t.status == status]
@@ -1117,7 +1121,7 @@ class PipelineOrchestrator:
         return self._execution_stats
 
     def rerun(self, pipeline_name: str = "", input_file: str = "",
-              task_id: Optional[str] = None) -> PipelineTask:
+              task_id: str | None = None) -> PipelineTask:
         """用上一次执行的 plan + 输入重新跑一遍"""
         if self.last_plan is None:
             # 没有内存中的 plan，尝试从 pipeline_name 重建
@@ -1182,13 +1186,13 @@ class PipelineOrchestrator:
 
     def start_admin_api(self, host: str = "127.0.0.1", port: int = 8910,
                          serve_static: bool = False,
-                         dashboard_dir: Optional[str] = None) -> bool:
+                         dashboard_dir: str | None = None) -> bool:
         """启动管理 API"""
         from .admin_api import AdminAPI
-        self._admin_api = AdminAPI(host=host, port=port,
+        self._admin_api = AdminAPI(host=host, port=port,  # type: ignore[assignment]
                                    serve_static=serve_static,
                                    dashboard_dir=dashboard_dir)
-        return self._admin_api.start(self)
+        return self._admin_api.start(self)  # type: ignore[no-any-return,attr-defined]
 
     def stop_admin_api(self):
         if self._admin_api:

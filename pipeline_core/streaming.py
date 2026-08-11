@@ -13,11 +13,11 @@
 """
 from __future__ import annotations
 
-import json
-import time
-import threading
+import contextlib
 import queue
-from typing import Optional, Callable, Generator, Any
+import threading
+import time
+from typing import Any
 
 from .fast_json import dumps as _fast_dumps
 
@@ -77,8 +77,8 @@ class StreamMetrics:
         self.chunks_emitted = 0
         self.sections_emitted = 0
         self._start_time = time.time()
-        self._first_event_time: Optional[float] = None
-        self._last_event_time: Optional[float] = None
+        self._first_event_time: float | None = None
+        self._last_event_time: float | None = None
 
     def record_event(self, event_type: str):
         with self._lock:
@@ -240,10 +240,8 @@ class StreamCallback:
 
     def close(self):
         self._closed.set()
-        try:
+        with contextlib.suppress(queue.Full):
             self._queue.put_nowait(None)  # sentinel
-        except queue.Full:
-            pass
 
     def __iter__(self):
         """迭代事件流"""
@@ -288,7 +286,7 @@ def register_callback(task_id: str, callback: StreamCallback):
         _callback_registry[task_id] = callback
 
 
-def get_callback(task_id: str) -> Optional[StreamCallback]:
+def get_callback(task_id: str) -> StreamCallback | None:
     """获取已注册的 StreamCallback（重连时使用）"""
     with _registry_lock:
         return _callback_registry.get(task_id)

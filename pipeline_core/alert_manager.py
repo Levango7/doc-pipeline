@@ -13,11 +13,10 @@
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
-import logging
 from collections import deque
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +47,7 @@ def alert(level: str, category: str, message: str, extra: dict = None):
         _ALERT_BUFFER.append(entry)
 
     log_msg = f"[ALERT:{level}] {category}: {message}"
-    if level == "critical":
-        logger.error(log_msg)
-    elif level == "error":
+    if level == "critical" or level == "error":
         logger.error(log_msg)
     elif level == "warning":
         logger.warning(log_msg)

@@ -27,25 +27,27 @@ Webhook 异步架构：专用事件循环线程 + asyncio.Queue + aiohttp.Client
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
 import time
 import uuid
-from typing import Any, Callable, Optional
-from dataclasses import dataclass, field, asdict
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
+from typing import Any
 
 _logger = logging.getLogger(__name__)
 
 
 # ── 全异步 webhook 投递引擎 ────────────────────────────────────
 # 专用事件循环运行在后台线程中，emit() 通过 run_coroutine_threadsafe 投递任务
-_webhook_loop: Optional[asyncio.AbstractEventLoop] = None
-_webhook_thread: Optional[threading.Thread] = None
-_webhook_async_queue: Optional[asyncio.Queue] = None
-_webhook_session: Optional[Any] = None  # aiohttp.ClientSession
-_webhook_stop_event: Optional[asyncio.Event] = None
-_webhook_worker_future: Optional[Any] = None  # concurrent.futures.Future for worker task
+_webhook_loop: asyncio.AbstractEventLoop | None = None
+_webhook_thread: threading.Thread | None = None
+_webhook_async_queue: asyncio.Queue | None = None
+_webhook_session: Any | None = None  # aiohttp.ClientSession
+_webhook_stop_event: asyncio.Event | None = None
+_webhook_worker_future: Any | None = None  # concurrent.futures.Future for worker task
 _webhook_pending_tasks: set = set()  # track in-flight _deliver_one tasks for graceful shutdown
 _webhook_init_lock = threading.Lock()
 _webhook_engine_ready = False  # True only when queue + worker fully initialized
@@ -75,7 +77,7 @@ async def _async_webhook_worker():
         while True:
             try:
                 job = await asyncio.wait_for(_webhook_async_queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if _webhook_stop_event.is_set():
                     break
                 continue
@@ -96,10 +98,8 @@ async def _async_webhook_worker():
         # shutdown timeout (task.cancel() at asyncio.gather would otherwise skip
         # the close() call below, leaking the aiohttp ClientSession).
         if _webhook_session is not None and not _webhook_session.closed:
-            try:
+            with contextlib.suppress(Exception):
                 await _webhook_session.close()
-            except Exception:
-                pass
         _logger.info("[EventHook] aiohttp session closed (async webhook engine stopped)")
 
 
@@ -108,7 +108,7 @@ async def _deliver_one(semaphore: asyncio.Semaphore, job: tuple):
     hook_id, url, headers, body = job
     async with semaphore:
         try:
-            async with _webhook_session.post(
+            async with _webhook_session.post(  # type: ignore[union-attr]
                 url, data=body, headers=headers
             ) as resp:
                 if resp.status >= 400:
@@ -169,9 +169,9 @@ class Hook:
     """事件钩子定义"""
     id: str
     event: str                          # 订阅的事件类型（支持通配符 * ）
-    url: Optional[str] = None           # webhook URL（None 则为 callback 模式）
+    url: str | None = None           # webhook URL（None 则为 callback 模式）
     headers: dict = field(default_factory=dict)  # webhook 自定义 header
-    callback: Optional[Callable] = None # 进程内回调函数
+    callback: Callable | None = None # 进程内回调函数
     created_at: float = field(default_factory=time.time)
     call_count: int = 0                # 触发次数
     last_called: float = 0             # 最后触发时间
@@ -205,9 +205,9 @@ class EventHookManager:
     def register(
         self,
         event: str,
-        url: Optional[str] = None,
-        headers: Optional[dict] = None,
-        callback: Optional[Callable] = None,
+        url: str | None = None,
+        headers: dict | None = None,
+        callback: Callable | None = None,
     ) -> str:
         """注册事件钩子，返回 hook_id"""
         hook_id = str(uuid.uuid4())[:8]
@@ -294,8 +294,8 @@ class EventHookManager:
             # P1 修复: 删除冗余的二次 _ensure_webhook_engine 调用
             # （已在方法开头调用过，重复调用既无必要也增加锁竞争）
             # put_nowait is sync but must run on the loop thread
-            _webhook_loop.call_soon_threadsafe(
-                _safe_enqueue, _webhook_async_queue, (hook.id, hook.url, headers, body)
+            _webhook_loop.call_soon_threadsafe(  # type: ignore[union-attr]
+                _safe_enqueue, _webhook_async_queue, (hook.id, hook.url, headers, body)  # type: ignore[arg-type]
             )
         except Exception as e:
             _logger.error(f"[EventHook] failed to enqueue webhook: {e}")
@@ -321,10 +321,8 @@ def shutdown_webhook(timeout_s: float = 10.0):
     async def _signal_stop():
         _webhook_stop_event.set()
         if _webhook_async_queue is not None:
-            try:
+            with contextlib.suppress(asyncio.QueueFull):
                 _webhook_async_queue.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
 
     try:
         fut = asyncio.run_coroutine_threadsafe(_signal_stop(), _webhook_loop)
@@ -375,7 +373,7 @@ def shutdown_webhook(timeout_s: float = 10.0):
 
 # ── 全局单例 ──────────────────────────────────────
 
-_global_manager: Optional[EventHookManager] = None
+_global_manager: EventHookManager | None = None
 _singleton_lock = threading.Lock()
 
 

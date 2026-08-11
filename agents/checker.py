@@ -8,10 +8,9 @@ Checker Agent - 结构检查插件（改进版）
 """
 
 import os
-import sys
 from pathlib import Path
 
-from pipeline_core.base_agent import BaseAgent, Message, AgentStatus
+from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "checker"
 AGENT_VERSION = "1.1"
@@ -107,7 +106,7 @@ class CheckerAgent(BaseAgent):
         if not content and target:
             if not os.path.exists(target):
                 return {"status": "error", "message": f"文件不存在: {target}"}
-            with open(target, "r", encoding="utf-8", errors="replace") as f:
+            with open(target, encoding="utf-8", errors="replace") as f:
                 content = f.read()
 
         if not content:

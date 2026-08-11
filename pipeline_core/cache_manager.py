@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -22,8 +23,9 @@ import os
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +88,8 @@ class CacheManager:
         max_size: int = 1000,
         ttl: int = 0,
         backend: str = "memory",       # "memory" | "file" | "multi"
-        cache_dir: Optional[str] = None,
-        metrics_callback: Optional[Callable[[str, dict], None]] = None,
+        cache_dir: str | None = None,
+        metrics_callback: Callable[[str, dict], None] | None = None,
         cleanup_interval: int = 0,     # >0 时启动后台定期清理（秒）
     ):
         self.name = name
@@ -102,13 +104,13 @@ class CacheManager:
             self._cache_dir = Path(cache_dir or "cache") / name
             self._cache_dir.mkdir(parents=True, exist_ok=True)
         else:
-            self._cache_dir = None
+            self._cache_dir = None  # type: ignore[assignment]
 
         self._cache: OrderedDict[str, dict] = OrderedDict()
         self._lock = threading.Lock()
 
         # 后台定期清理
-        self._cleanup_thread: Optional[threading.Thread] = None
+        self._cleanup_thread: threading.Thread | None = None
         self._cleanup_stop = threading.Event()
         if cleanup_interval > 0 and self.ttl > 0:
             self._start_cleanup(cleanup_interval)
@@ -144,7 +146,7 @@ class CacheManager:
         if self.backend in ("file", "multi") and self._cache_dir:
             for f in self._cache_dir.glob("*.json"):
                 try:
-                    with open(f, "r", encoding="utf-8") as fh:
+                    with open(f, encoding="utf-8") as fh:
                         entry = json.load(fh)
                     if now - entry.get("ts", 0) > self.ttl:
                         os.remove(f)
@@ -233,13 +235,10 @@ class CacheManager:
 
     def clear(self):
         """清空全部缓存。"""
-        if self.backend in ("file", "multi"):
-            if self._cache_dir:
-                for f in self._cache_dir.glob("*.json"):
-                    try:
-                        os.remove(f)
-                    except OSError:
-                        pass
+        if self.backend in ("file", "multi") and self._cache_dir:
+            for f in self._cache_dir.glob("*.json"):
+                with contextlib.suppress(OSError):
+                    os.remove(f)
         if self.backend in ("memory", "multi"):
             with self._lock:
                 self._cache.clear()
@@ -296,7 +295,7 @@ class CacheManager:
         """异步批量读取 —— 并发获取所有 key。"""
         tasks = [self.aget(k) for k in keys]
         values = await asyncio.gather(*tasks)
-        return {k: v for k, v in zip(keys, values) if v is not None}
+        return {k: v for k, v in zip(keys, values, strict=False) if v is not None}
 
     # ── 生命周期 ──────────────────────────────
 
@@ -328,14 +327,12 @@ class CacheManager:
             self.stats.record_miss()
             return None, 0.0
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
+            with open(fpath, encoding="utf-8") as f:
                 entry = json.load(f)
             ts = entry.get("ts", 0.0)
             if self.ttl > 0 and time.time() - ts > self.ttl:
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(fpath)
-                except OSError:
-                    pass
                 self.stats.record_miss()
                 return None, 0.0
             self.stats.record_hit()

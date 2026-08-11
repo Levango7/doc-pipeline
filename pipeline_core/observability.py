@@ -10,13 +10,9 @@ Observability v1 - 结构化日志 + Prometheus 风格指标
 from __future__ import annotations
 
 import json
-import os
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
 
 # ─── 结构化日志 ─────────────────────
 
@@ -157,7 +153,7 @@ class MetricsRegistry:
         self._histograms: dict[str, list[float]] = {}
         self._lock = threading.RLock()
 
-    def counter(self, name: str, labels: Optional[dict] = None) -> str:
+    def counter(self, name: str, labels: dict | None = None) -> str:
         """自增计数器，返回完整 metric 名称"""
         full = f"{self.namespace}_{name}"
         key = full
@@ -168,7 +164,7 @@ class MetricsRegistry:
             self._counters[key] = self._counters.get(key, 0) + 1
         return key
 
-    def gauge(self, name: str, value: float, labels: Optional[dict] = None):
+    def gauge(self, name: str, value: float, labels: dict | None = None):
         """设置 gauge 值"""
         full = f"{self.namespace}_{name}"
         key = full
@@ -178,7 +174,7 @@ class MetricsRegistry:
         with self._lock:
             self._gauges[key] = value
 
-    def observe(self, name: str, value: float, labels: Optional[dict] = None):
+    def observe(self, name: str, value: float, labels: dict | None = None):
         """记录直方图观测值"""
         full = f"{self.namespace}_{name}"
         key = full
@@ -201,7 +197,7 @@ class MetricsRegistry:
                 lines.append(f"# TYPE {key.split('{')[0]} counter")
                 lines.append(f"{key} {value}")
 
-            for key, value in sorted(self._gauges.items()):
+            for key, value in sorted(self._gauges.items()):  # type: ignore[assignment]
                 lines.append(f"# TYPE {key.split('{')[0]} gauge")
                 lines.append(f"{key} {value}")
 
@@ -232,8 +228,8 @@ class MetricsRegistry:
 
 # ─── 全局实例 ─────────────────────
 
-_logger: Optional[StructuredLogger] = None
-_metrics: Optional[MetricsRegistry] = None
+_logger: StructuredLogger | None = None
+_metrics: MetricsRegistry | None = None
 _singleton_lock = threading.Lock()
 
 

@@ -10,17 +10,16 @@ SafeWriter v4 - 安全写入工具（改进版）
   - 支持 --newline 参数（lf/crlf/auto）
 """
 
-import os
-import sys
-import json
-import shutil
-import hashlib
 import argparse
-import difflib
-import tempfile
 import datetime
+import difflib
+import hashlib
+import json
+import os
+import shutil
+import sys
+import tempfile
 from pathlib import Path
-
 
 MANIFEST_FILE = "manifest.json"
 TIER_FULL = 30      # 0-30天：全部保留
@@ -56,7 +55,7 @@ def file_checksum(path: str) -> str | None:
     try:
         with open(path, "rb") as f:
             return hashlib.sha256(f.read()).hexdigest()
-    except (OSError, IOError):
+    except OSError:
         # P1 修复：权限错误等不应抛异常，返回 None
         return None
 
@@ -70,13 +69,13 @@ def load_manifest(path: str) -> dict:
     if not os.path.exists(path):
         return {"version": "4.0", "files": {}, "checksum": None}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
 
         # 校验和验证（P1 修复：使用排除 checksum 字段的验证）
         stored = data.get("checksum")
         if stored and not _verify_manifest_checksum(path):
-            print(f"[SafeWriter] ⚠  manifest 校验和不匹配，尝试从备份恢复...")
+            print("[SafeWriter] ⚠  manifest 校验和不匹配，尝试从备份恢复...")
             data = _restore_manifest(path, data)
 
         return data
@@ -116,7 +115,7 @@ def _verify_manifest_checksum(path: str) -> bool:
     使用与 save_manifest 相同的序列化格式（ensure_ascii=False, indent=2）。
     """
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         stored = data.get("checksum")
         if not stored:
@@ -136,13 +135,13 @@ def _restore_manifest(path: str, corrupted: dict) -> dict:
     bak = path + ".bak"
     if os.path.exists(bak):
         try:
-            with open(bak, "r", encoding="utf-8") as f:
+            with open(bak, encoding="utf-8") as f:
                 restored = json.load(f)
-            print(f"[SafeWriter] 已从 manifest.bak 恢复")
+            print("[SafeWriter] 已从 manifest.bak 恢复")
             return restored
         except Exception:
             pass
-    print(f"[SafeWriter] 无法恢复 manifest，使用空值")
+    print("[SafeWriter] 无法恢复 manifest，使用空值")
     return {"version": "4.0", "files": {}, "checksum": None}
 
 
@@ -164,8 +163,8 @@ def diff_preview(old: str, new: str, context: int = 3,
     if not diff:
         return "(无差异)"
 
-    adds = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
-    dels = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
+    adds = sum(1 for line in diff if line.startswith("+") and not line.startswith("+++"))
+    dels = sum(1 for line in diff if line.startswith("-") and not line.startswith("---"))
     summary = f"[+{adds} 行 / -{dels} 行]"
 
     if len(diff) > max_lines:
@@ -203,7 +202,7 @@ def cleanup_tiered(backup_dir: str,
     t_latest = tier_latest * 86400
     deleted = []
 
-    for rel, finfo in man.get("files", {}).items():
+    for _rel, finfo in man.get("files", {}).items():
         backups = finfo.get("backups", [])
         if not backups:
             continue
@@ -314,7 +313,7 @@ def safe_write(target: str, content: str,
 
     # Step 1: diff 预览
     if info["exists"] and show_diff and not dry_run:
-        with open(target, "r", encoding="utf-8", errors="replace") as f:
+        with open(target, encoding="utf-8", errors="replace") as f:
             old_content = f.read()
         diff = diff_preview(old_content, content)
         print(f"[SafeWriter] 变更预览:\n{'─'*50}")
@@ -394,16 +393,16 @@ def safe_write(target: str, content: str,
 
     if issues:
         os.unlink(tmp_path)
-        print(f"[SafeWriter] ✗ 验证失败:")
+        print("[SafeWriter] ✗ 验证失败:")
         for iss in issues:
             print(f"    {iss}")
         return {"status": "error", "issues": issues, "backup": backup_path}
 
-    print(f"[SafeWriter] ✓ 验证通过")
+    print("[SafeWriter] ✓ 验证通过")
 
     if dry_run:
         if info["exists"]:
-            with open(target, "r", encoding="utf-8", errors="replace") as f:
+            with open(target, encoding="utf-8", errors="replace") as f:
                 diff_txt = diff_preview(f.read(), content)
         else:
             diff_txt = None
@@ -473,7 +472,7 @@ def main():
         sys.exit(1)
 
     if args.content_file:
-        with open(args.content_file, "r", encoding="utf-8", errors="replace") as f:
+        with open(args.content_file, encoding="utf-8", errors="replace") as f:
             content = f.read()
     else:
         content = args.content

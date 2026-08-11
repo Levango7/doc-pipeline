@@ -1,12 +1,10 @@
 """检查点管理器 —— 负责断点续传、检查点保存/加载/清理"""
 from __future__ import annotations
-import json
-import time
-import os
-import re
-from pathlib import Path
-from typing import Optional
 
+import json
+import re
+import time
+from pathlib import Path
 
 # 安全修复 (P0): task_id 路径遍历防护 —— 仅允许字母/数字/下划线/连字符
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -82,7 +80,7 @@ class CheckpointManager:
             return None, None
 
         try:
-            with open(checkpoint_file, "r", encoding="utf-8") as f:
+            with open(checkpoint_file, encoding="utf-8") as f:
                 data = json.load(f)
 
             # 断点完整性校验

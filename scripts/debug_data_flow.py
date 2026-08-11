@@ -1,6 +1,8 @@
 # debug_data_flow.py
 """Debug the dependency resolution in the researcher→fetcher pipeline"""
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from pipeline_core import PipelineOrchestrator

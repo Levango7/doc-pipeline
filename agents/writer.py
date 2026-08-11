@@ -10,25 +10,25 @@ Writer Agent v2 - 增强型内容整合插件
   - 文档骨架规划 + 从完整文章填充内容（配合 fetcher）
   - TF-IDF 向量语义匹配（替代关键词计数）
 """
+import asyncio
+import contextlib
+import hashlib
 import json
 import os
-import time
-import asyncio
-from collections import OrderedDict
 import re
-import hashlib
 import threading
-import urllib.request
+import time
 import urllib.error
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Optional
+import urllib.request
 from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
 
-from pipeline_core.base_agent import BaseAgent, Message, AgentStatus, AgentMeta
+from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 from pipeline_core.cache_manager import CacheManager
+from pipeline_core.fast_json import dumps as _fast_dumps
+from pipeline_core.fast_json import loads as _fast_loads
 from pipeline_core.streaming import StreamCallback
-from pipeline_core.fast_json import dumps as _fast_dumps, loads as _fast_loads
 
 # ─── 章节级并行 LLM 润色 ──────────────────────────────
 # 当 LLM 可用时，多章节并行调用 LLM 润色（ThreadPoolExecutor），
@@ -186,7 +186,7 @@ class WriterAgent(BaseAgent):
             body = _fast_loads(resp.read())
         if is_cf:
             body = body.get("result", body)
-        return body["choices"][0]["message"]["content"]
+        return body["choices"][0]["message"]["content"]  # type: ignore[no-any-return]
 
     async def _llm_chat_async(self, messages: list[dict], max_tokens: int = 4096,
                               temperature: float = 0.3, timeout: int = 120) -> str:
@@ -215,12 +215,14 @@ class WriterAgent(BaseAgent):
                    "Authorization": f"Bearer {self._llm_api_key}"}
 
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-                async with session.post(self._llm_api_url, json=payload, headers=headers) as resp:
-                    body = await resp.json()
-                    if is_cf:
-                        body = body.get("result", body)
-                    return body["choices"][0]["message"]["content"]
+            async with (
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session,
+                session.post(self._llm_api_url, json=payload, headers=headers) as resp,
+            ):
+                body = await resp.json()
+                if is_cf:
+                    body = body.get("result", body)
+                return body["choices"][0]["message"]["content"]  # type: ignore[no-any-return]
         except Exception as e:
             self.log_warning(f"aiohttp LLM 调用失败，回退同步: {e}")
             loop = asyncio.get_event_loop()
@@ -255,25 +257,27 @@ class WriterAgent(BaseAgent):
                    "Accept": "text/event-stream"}
 
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-                async with session.post(self._llm_api_url, json=payload, headers=headers) as resp:
-                    async for line in resp.content:
-                        line_str = line.decode("utf-8").strip()
-                        if not line_str or not line_str.startswith("data:"):
-                            continue
-                        data_str = line_str[5:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            chunk_data = _fast_loads(data_str)
-                            if is_cf:
-                                chunk_data = chunk_data.get("result", chunk_data)
-                            delta = chunk_data.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yield content
-                        except json.JSONDecodeError:
-                            continue
+            async with (
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session,
+                session.post(self._llm_api_url, json=payload, headers=headers) as resp,
+            ):
+                async for line in resp.content:
+                    line_str = line.decode("utf-8").strip()
+                    if not line_str or not line_str.startswith("data:"):
+                        continue
+                    data_str = line_str[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk_data = _fast_loads(data_str)
+                        if is_cf:
+                            chunk_data = chunk_data.get("result", chunk_data)
+                        delta = chunk_data.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
+                    except json.JSONDecodeError:
+                        continue
         except Exception as e:
             self.log_warning(f"aiohttp 流式 LLM 失败，回退同步: {e}")
             for chunk in self._llm_chat_stream(messages, max_tokens, temperature, timeout):
@@ -301,7 +305,6 @@ class WriterAgent(BaseAgent):
 
         若 LLM 端点不支持 streaming，自动回退到非流式 _llm_chat。
         """
-        import socket
 
         # 构建流式请求 payload
         is_cf = "/ai/run" in self._llm_api_url
@@ -340,12 +343,12 @@ class WriterAgent(BaseAgent):
         try:
             # 设置 socket 级读取超时，防止服务端 hang
             try:
-                sock = resp.fp.raw._sock
+                sock = resp.fp.raw._sock  # type: ignore[union-attr]
                 sock.settimeout(read_timeout)
             except (AttributeError, OSError):
                 pass  # 无法设置 socket 超时，继续用默认行为
 
-            for raw_line in resp:
+            for raw_line in resp:  # type: ignore[union-attr]
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
@@ -378,7 +381,7 @@ class WriterAgent(BaseAgent):
                     buffer += delta
                     yield delta
 
-        except (socket.timeout, TimeoutError) as e:
+        except TimeoutError as e:
             # 读取超时：已 yield 的部分结果保留给调用方，不重试（避免重复内容）
             self.log_warning(f"SSE 读取超时，已收到 {len(buffer)} 字符: {e}")
         except (ConnectionError, OSError) as e:
@@ -386,10 +389,8 @@ class WriterAgent(BaseAgent):
             self.log_warning(f"SSE 连接中断，已收到 {len(buffer)} 字符: {e}")
         finally:
             if resp:
-                try:
+                with contextlib.suppress(Exception):
                     resp.close()
-                except Exception:
-                    pass
 
         # 若流式返回为空（未收到任何 chunk），回退到非流式
         if not buffer:
@@ -454,18 +455,18 @@ class WriterAgent(BaseAgent):
                     polished[idx] = result
                 except Exception:
                     idx = futures[fut]
-                    polished[idx] = sections[idx]
+                    polished[idx] = sections[idx]  # type: ignore[call-overload]
 
         # 填充未完成的（超时等异常情况）
         for i in range(len(polished)):
             if polished[i] is None:
-                polished[i] = sections[i]
+                polished[i] = sections[i]  # type: ignore[call-overload]
 
-        polished_count = sum(1 for p in polished if p.get("polished"))
+        polished_count = sum(1 for p in polished if p.get("polished"))  # type: ignore[misc,attr-defined]
         if polished_count:
             self.log_info(f"任务 {task_id}: 并行润色 {polished_count}/{len(sections)} 个章节")
 
-        return polished
+        return polished  # type: ignore[return-value]
 
     def _polish_with_llm(self, content: str, query: str) -> str:
         """用 LLM 润色文档段落衔接（含缓存+质量门控+分段+规则兜底）"""
@@ -477,7 +478,7 @@ class WriterAgent(BaseAgent):
         cached = self._polish_cache.get(cache_key)
         if cached is not None:
             self.log_info("LLM 润色缓存命中，跳过")
-            return cached
+            return cached  # type: ignore[no-any-return]
 
         # ── Layer 1: 质量门控 ──
         # 如果文档已完整（3+ 章节、有引用、500+ 字），跳过 LLM
@@ -528,7 +529,7 @@ class WriterAgent(BaseAgent):
                     max_tokens=1024, temperature=0.3, timeout=30)
                 polished_segments.append(polished)
                 self.log_debug(f"  段{i}: {len(seg)}→{len(polished)} 字, {time.time()-t0:.1f}s")
-            except Exception as e:
+            except Exception:
                 self.log_debug(f"  段{i} 润色失败, 保留原文")
                 polished_segments.append(seg)
 
@@ -570,7 +571,7 @@ class WriterAgent(BaseAgent):
             input_file = payload.get("input_file", "")
             if input_file and os.path.exists(input_file):
                 try:
-                    with open(input_file, "r", encoding="utf-8") as f:
+                    with open(input_file, encoding="utf-8") as f:
                         for line in f:
                             line = line.strip()
                             if line and not line.startswith("#"):
@@ -669,7 +670,7 @@ class WriterAgent(BaseAgent):
             local_path = art.get("local_path", "")
             if local_path and os.path.exists(local_path):
                 try:
-                    with open(local_path, "r", encoding="utf-8") as f:
+                    with open(local_path, encoding="utf-8") as f:
                         text = f.read()
                     article_contents.append({
                         "title": art.get("title", ""),
@@ -706,7 +707,7 @@ class WriterAgent(BaseAgent):
 
         # 每个章节填充内容（TF-IDF 语义匹配）
         all_refs = []
-        global_seen_paras = set()  # 全局段落去重，避免同一段落在多个章节中重复出现
+        global_seen_paras: set[str] = set()  # 全局段落去重，避免同一段落在多个章节中重复出现
         for sec in skeleton:
             content_parts.append(f"## {sec['heading']}")
             content_parts.append("")
@@ -765,7 +766,7 @@ class WriterAgent(BaseAgent):
         """从 pipelines/prompts/ 加载 YAML prompt 模板"""
         cached = self._prompt_template_cache.get(profile_name)
         if cached is not None:
-            return cached
+            return cached  # type: ignore[no-any-return]
 
         yaml_path = self._prompts_dir / f"{profile_name}.yaml"
         if not yaml_path.exists():
@@ -774,19 +775,19 @@ class WriterAgent(BaseAgent):
 
         try:
             import yaml
-            with open(yaml_path, "r", encoding="utf-8") as f:
+            with open(yaml_path, encoding="utf-8") as f:
                 template = yaml.safe_load(f)
             self._prompt_template_cache.set(profile_name, template)
             n_sections = len(template.get("sections", []))
             self.log_info(f"加载 prompt 模板: {profile_name} ({n_sections} sections)")
-            return template
+            return template  # type: ignore[no-any-return]
         except Exception as e:
             self.log_error(f"加载 prompt 模板失败: {e}")
             return {}
 
     def _restructure_document(self, content: str, articles: list[dict],
                                query: str, title: str,
-                               stream_callback: Optional[StreamCallback] = None) -> str | None:
+                               stream_callback: StreamCallback | None = None) -> str | None:
         """多轮 LLM 生成：每轮一篇，逐步拼接成完整文档（prompt 从外部模板加载）"""
         if not self._llm_api_key:
             return None
@@ -798,7 +799,7 @@ class WriterAgent(BaseAgent):
         cached = self._restructure_cache.get(cache_key_short)
         if cached is not None:
             self.log_info("LLM 重构缓存命中，跳过")
-            return cached
+            return cached  # type: ignore[no-any-return]
 
         # 加载 prompt 模板
         template = self._load_prompt_template(self._prompt_profile)
@@ -1147,14 +1148,14 @@ class WriterAgent(BaseAgent):
             return paragraphs[:8]
 
         # 2. 稀疏 TF + 文档频率（单次遍历）
-        sparse_tf = []  # list[dict[str, float]] — 每篇文档的非零 TF
-        df = {}         # word -> 出现在多少篇文档中
+        sparse_tf: list[dict[str, float]] = []  # 每篇文档的非零 TF
+        df: dict[str, int] = {}         # word -> 出现在多少篇文档中
 
         for doc in all_docs:
             if not doc:
                 sparse_tf.append({})
                 continue
-            tf_counter = {}
+            tf_counter: dict[str, int] = {}
             for w in doc:
                 tf_counter[w] = tf_counter.get(w, 0) + 1
             max_tf = max(tf_counter.values())
@@ -1228,7 +1229,7 @@ class WriterAgent(BaseAgent):
         words = text.lower().split()
         stopwords = {"the", "a", "an", "is", "are", "was", "were", "be", "been",
                      "的", "是", "在", "和", "了", "有", "与", "及", "等"}
-        word_freq = defaultdict(int)
+        word_freq = defaultdict(int)  # type: ignore[var-annotated]
         for word in words:
             if len(word) > 2 and word not in stopwords:
                 word_freq[word] += 1
@@ -1281,7 +1282,7 @@ class WriterAgent(BaseAgent):
                     all_refs.append({"title": c.title, "url": c.url})
             section_data.append({"title": sec_title, "content": "\n\n".join(sec_content_parts)})
 
-        return self._template_mgr.render(template_name, title, section_data, all_refs)
+        return self._template_mgr.render(template_name, title, section_data, all_refs)  # type: ignore[no-any-return]
 
     def _expire_stale_pending(self):
         """清理过期的 pending 结果"""

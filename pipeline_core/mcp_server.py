@@ -25,15 +25,16 @@
 """
 from __future__ import annotations
 
-import json
+import contextlib
 import sys
-import uuid
 import tempfile
 import traceback
+import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from .fast_json import dumps as _fast_dumps, loads as _fast_loads
+from .fast_json import dumps as _fast_dumps
+from .fast_json import loads as _fast_loads
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "doc-pipeline"
@@ -139,7 +140,7 @@ class MCPServer:
                 sys.stdout.write(_fast_dumps(response) + "\n")
                 sys.stdout.flush()
 
-    def _handle_request(self, request: dict) -> Optional[dict]:
+    def _handle_request(self, request: dict) -> dict | None:
         method = request.get("method", "")
         req_id = request.get("id")
         params = request.get("params", {})
@@ -232,10 +233,8 @@ class MCPServer:
                     path = val
                 if path and Path(path).exists():
                     result["output_path"] = path
-                    try:
+                    with contextlib.suppress(Exception):
                         result["output_content"] = Path(path).read_text(encoding="utf-8")
-                    except Exception:
-                        pass
                     break
 
         return self._tool_result(req_id, result)
@@ -293,7 +292,7 @@ class MCPServer:
             result = {
                 "name": plan.pipeline_name,
                 "node_count": plan.node_count,
-                "levels": plan.execution_order,
+                "levels": plan.execution_order,  # type: ignore[attr-defined]
                 "agents": [
                     {
                         "name": n.agent_name,
@@ -301,7 +300,7 @@ class MCPServer:
                         "timeout": n.timeout,
                         "max_retries": n.max_retries,
                     }
-                    for n in plan.dag_nodes.values()
+                    for n in plan.dag_nodes.values()  # type: ignore[attr-defined]
                 ],
             }
             return self._tool_result(req_id, result)

@@ -23,13 +23,14 @@ BatchQueue - 批量文档生成队列
 """
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 import uuid
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Callable, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class BatchTaskStatus(Enum):
@@ -87,8 +88,8 @@ class BatchQueue:
     """
 
     def __init__(self, max_concurrent: int = 2,
-                 on_task_done: Optional[Callable[[BatchTask], None]] = None,
-                 on_all_done: Optional[Callable[[list], None]] = None):
+                 on_task_done: Callable[[BatchTask], None] | None = None,
+                 on_all_done: Callable[[list], None] | None = None):
         self.max_concurrent = max_concurrent
         self._on_task_done = on_task_done
         self._on_all_done = on_all_done
@@ -96,7 +97,7 @@ class BatchQueue:
         self._queue: list[BatchTask] = []
         self._lock = threading.RLock()
         self._running = False
-        self._executor: Optional[ThreadPoolExecutor] = None
+        self._executor: ThreadPoolExecutor | None = None
         self._stop_event = threading.Event()
 
     def submit(self, input_file: str, output: str = "",
@@ -170,15 +171,11 @@ class BatchQueue:
             done_futs = [f for f in futures if f.done()]
             for fut in done_futs:
                 task = futures.pop(fut)
-                try:
+                with contextlib.suppress(Exception):
                     fut.result()  # 触发异常（如果有）
-                except Exception:
-                    pass
                 if self._on_task_done:
-                    try:
+                    with contextlib.suppress(Exception):
                         self._on_task_done(task)
-                    except Exception:
-                        pass
 
             # 检查是否全部完成
             with self._lock:
@@ -189,10 +186,8 @@ class BatchQueue:
                 if all_done and self._queue:
                     self._running = False
                     if self._on_all_done:
-                        try:
+                        with contextlib.suppress(Exception):
                             self._on_all_done(list(self._queue))
-                        except Exception:
-                            pass
                     break
 
             if not self._queue:
@@ -203,9 +198,10 @@ class BatchQueue:
     def _execute_task(self, task: BatchTask):
         """执行单个文档生成任务"""
         try:
+            from pathlib import Path
+
             from .pipeline import PipelineOrchestrator
             from .scheduler import Scheduler
-            from pathlib import Path
 
             orch = PipelineOrchestrator()
             loaded = orch.register_agents()

@@ -27,10 +27,8 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
-
 
 # ─── 安全防护辅助 ─────────────────────────────
 # 安全修复 (P0): rollback 路径白名单校验，防止任意文件写入
@@ -105,8 +103,8 @@ class VersionManager:
         if not idx_path.exists():
             return []
         try:
-            with open(idx_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            with open(idx_path, encoding="utf-8") as f:
+                return json.load(f)  # type: ignore[no-any-return]
         except (json.JSONDecodeError, OSError):
             return []
 
@@ -120,7 +118,7 @@ class VersionManager:
         """计算下一个版本号"""
         if not index:
             return 1
-        return max(entry["version"] for entry in index) + 1
+        return max(entry["version"] for entry in index) + 1  # type: ignore[no-any-return]
 
     def commit(self, file_path: str, content: str,
                task_id: str = "", quality_score: float = 0.0,
@@ -186,7 +184,7 @@ class VersionManager:
             index = self._load_index(file_path)
             return list(reversed(index[-limit:]))
 
-    def get_version(self, file_path: str, version: int) -> Optional[dict]:
+    def get_version(self, file_path: str, version: int) -> dict | None:
         """获取指定版本信息"""
         with self._lock:
             index = self._load_index(file_path)
@@ -195,7 +193,7 @@ class VersionManager:
                     return entry
             return None
 
-    def get_content(self, file_path: str, version: int) -> Optional[str]:
+    def get_content(self, file_path: str, version: int) -> str | None:
         """读取指定版本的内容"""
         entry = self.get_version(file_path, version)
         if not entry:
@@ -279,7 +277,7 @@ class VersionManager:
             index = self._load_index(file_path)
             if not index:
                 return 0
-            return max(entry["version"] for entry in index)
+            return max(entry["version"] for entry in index)  # type: ignore[no-any-return]
 
     def stats(self) -> dict:
         """版本管理统计"""
@@ -309,7 +307,7 @@ class VersionManager:
 
 # ─── 全局单例 ──────────────────────────────
 
-_vm_instance: Optional[VersionManager] = None
+_vm_instance: VersionManager | None = None
 _vm_lock = threading.Lock()
 
 
