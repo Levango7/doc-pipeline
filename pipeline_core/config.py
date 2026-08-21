@@ -89,7 +89,7 @@ class ConfigCenter:
         except ValueError:
             pass
         # JSON 容器：支持环境变量传入数组/对象，如 DOCPIPE_RESEARCHER__SEARCH_ENGINES='["mock"]'
-        if value.startswith("[,{"):
+        if value and value[0] in ("[", "{"):
             try:
                 import json as _json
                 parsed = _json.loads(value)
