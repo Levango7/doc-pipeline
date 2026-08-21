@@ -1,4 +1,4 @@
-"""P2 并发压测：背压验证 + 死锁检测 + 并发安全 + 多任务编排
+﻿"""P2 并发压测：背压验证 + 死锁检测 + 并发安全 + 多任务编排
 
 覆盖四个场景：
 1. 总线 EVENT 洪水 → 背压激活，无 OOM
@@ -46,7 +46,7 @@ class TestBusBackpressure:
         print(f"\n  [背压] sent={ok} busy={busy} delivered={final}")
         assert busy > 0, "背压应触发"
         assert bus._worker_running, "worker 运行中"
-        bus._shutdown_event.set()
+        bus.shutdown()
 
     def test_burst_does_not_crash(self):
         """突发 200 条 → 系统不崩溃"""
@@ -71,7 +71,7 @@ class TestBusBackpressure:
         print(f"\n  [burst] depth after 1s = {depth}")
         assert depth < 200, f"队列深度应降低：{depth}"
         assert len(results) > 0, "消息应被投递"
-        bus._shutdown_event.set()
+        bus.shutdown()
 
 
 # ════════════════════════════════════════════════
@@ -106,7 +106,7 @@ class TestRequestConcurrency:
         print(f"\n  [并发] {n} req: {ok} ok")
         assert ok == n, f"应全部成功：{ok}/{n}"
         assert counter["calls"] == n
-        bus._shutdown_event.set()
+        bus.shutdown()
 
     def test_request_chain_no_deadlock(self):
         """A→B→C request 链 → 无死锁"""
@@ -126,7 +126,7 @@ class TestRequestConcurrency:
         r = bus.request("a.input", "t", "a", {"seed": 42})
         assert r is not None
         assert r["b_res"]["c_res"]["seq"] == 42
-        bus._shutdown_event.set()
+        bus.shutdown()
 
 
 # ════════════════════════════════════════════════
@@ -169,7 +169,7 @@ class TestStoreConcurrency:
               f"msgs+dlq={stats.get('dlq',0)+stats.get('messages',0)}")
         assert len(errors) == 0, f"异常：{errors[:3]}"
         assert bus._worker_running
-        bus._shutdown_event.set()
+        bus.shutdown()
 
     def test_no_massive_loss(self):
         """并发发布 → 丢失率 < 20%"""
@@ -192,7 +192,7 @@ class TestStoreConcurrency:
         missing = n - len(got)
         print(f"\n  [不丢] sent={n} got={len(got)} missing={missing}")
         assert len(got) >= n * 0.8, f"丢失过多：{missing}/{n}"
-        bus._shutdown_event.set()
+        bus.shutdown()
 
 
 # ════════════════════════════════════════════════
@@ -270,7 +270,7 @@ class TestOrchestratorConcurrency:
         print(f"\n  [多任务] {n} tasks: {ok} ok, {len(errors)} err")
         assert ok == n, f"全部应完成：{ok}/{n}"
         assert not errors
-        bus._shutdown_event.set()
+        bus.shutdown()
 
 
 # ════════════════════════════════════════════════
@@ -344,4 +344,4 @@ class TestSQLiteConcurrency:
         unique = set(received)
         assert len(unique) == len(received), "有重复 msg_id"
 
-        bus._shutdown_event.set()
+        bus.shutdown()

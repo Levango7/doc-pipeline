@@ -390,3 +390,6 @@ class MessageBus:
         self._worker_running = False
         self._shutdown_event.set()
         self._worker_thread.join(timeout=3)
+        if self._store is not None:
+            self._store.close()
+            self._store = None  # 断开引用，防止工作线程 GC 时残留连接

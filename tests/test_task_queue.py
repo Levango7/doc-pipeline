@@ -9,7 +9,9 @@ from pipeline_core.task_queue import TaskQueue
 @pytest.fixture
 def queue(tmp_path):
     db = str(tmp_path / "test_tasks.db")
-    return TaskQueue(db_path=db)
+    q = TaskQueue(db_path=db)
+    yield q
+    q.close()
 
 
 class TestTaskQueue:

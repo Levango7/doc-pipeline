@@ -64,7 +64,8 @@ def bus():
     b = MessageBus(db_path=str(db))
     # v3 线程在 __init__ 自动启动
     yield b
-    b._shutdown_event.set()
+    with contextlib.suppress(Exception):
+        b.shutdown()
 
 
 @pytest.fixture

@@ -9,6 +9,7 @@ MessageStore - 持久化消息存储
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
 import threading
@@ -418,3 +419,11 @@ class PersistentStore:
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
+
+    def close(self):
+        """显式关闭当前线程缓存的 SQLite 连接。"""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
+            self._local.conn = None

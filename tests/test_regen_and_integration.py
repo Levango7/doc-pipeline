@@ -1,4 +1,4 @@
-"""P1 集成测试：质量门控 regen 循环 + 全链路故障
+﻿"""P1 集成测试：质量门控 regen 循环 + 全链路故障
 
 覆盖两个未验证的临界场景：
 1. Regen 循环：真实低分内容 → 重生成 → 变好的端到端验证
@@ -165,7 +165,7 @@ class TestRegenLoop:
         assert r2.get("overall_score", 0) >= 70, f"regen 后得分 {r2.get('overall_score')} 应 >= 70"
         assert r2.get("needs_regenerate") is False
 
-        bus._shutdown_event.set()
+        bus.shutdown()
 
     def test_max_regen_limit(self):
         """writer 持续差内容 → max_gen 次后 can_regenerate=False"""
@@ -218,7 +218,7 @@ class TestRegenLoop:
 
         assert gen == max_gen, f"应执行 {max_gen} 次 regen，实际 {gen}"
         assert not result.get("can_regenerate", True), "应已达上限"
-        bus._shutdown_event.set()
+        bus.shutdown()
 
 
 # ════════════════════════════════════════════════
@@ -249,7 +249,7 @@ class TestFailureIntegration:
         assert len(dlq) >= 1, "故障 agent 的异常应进入 DLQ"
         assert fail_agent.call_count >= 1, "agent.handle 应被调过"
 
-        bus._shutdown_event.set()
+        bus.shutdown()
 
     def test_node_execution_handles_faulty_agent(self):
         """_execute_node_from_scheduler 对故障 agent → 返回 None（不阻塞）"""
@@ -304,4 +304,4 @@ class TestFailureIntegration:
             f"故障 agent 执行应返回 None/空 dict，实际 {result}"
         assert fail_agent.call_count >= 1, "agent.handle 应被调过"
 
-        bus._shutdown_event.set()
+        bus.shutdown()

@@ -1,4 +1,4 @@
-"""故障注入测试：验证熔断器与死信队列(DLQ)在真实异常下的行为。
+﻿"""故障注入测试：验证熔断器与死信队列(DLQ)在真实异常下的行为。
 
 覆盖三个真实场景：
 1. DLQ 真实重放 —— 故障消息进 DLQ 后可 replay 并重新投递
@@ -53,7 +53,7 @@ class TestDLQReplay:
         dlq_after = bus.list_dlq()
         assert dlq_after[0]["replay_count"] >= 1
 
-        bus._shutdown_event.set()
+        bus.shutdown()
 
     def test_dlq_does_not_crash_bus(self):
         """subscriber 异常不应导致整条总线崩溃"""
@@ -77,7 +77,7 @@ class TestDLQReplay:
         assert len(ok_received) == 1, "总线崩溃会导致正常 subscriber 收不到"
         assert bus.list_dlq()[0]["error"] == "fail"
 
-        bus._shutdown_event.set()
+        bus.shutdown()
 
 
 # ── 2. 熔断器状态机（纯单元，真实状态转换）──────
@@ -249,4 +249,4 @@ class TestDLQSelfHeal:
         # 验证重放计数递增
         assert o.bus.list_dlq()[0]["replay_count"] >= 1
 
-        o.bus._shutdown_event.set()
+        o.bus.shutdown()

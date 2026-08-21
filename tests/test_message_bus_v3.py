@@ -1,4 +1,4 @@
-"""MessageBus v3 — pub/sub, backpressure, DLQ, health"""
+﻿"""MessageBus v3 — pub/sub, backpressure, DLQ, health"""
 import time
 
 from pipeline_core.message_bus_v3 import MessageBus
@@ -84,7 +84,7 @@ class TestMessageBusBackpressure:
                 break
         busy_hits = [r for r in results if r["status"] == "busy"]
         assert len(busy_hits) > 0, f"never got busy: {results[:5]}..."
-        bus._shutdown_event.set()
+        bus.shutdown()
 
     def test_publish_blocking(self):
         """publish_blocking 应等到水位下降"""
@@ -92,7 +92,7 @@ class TestMessageBusBackpressure:
         bus.subscribe("block.topic", lambda m: time.sleep(0.3))
         r = bus.publish_blocking("block.topic", "s", {"x": 1}, max_wait=5)
         assert r["status"] in ("sent", "timeout")
-        bus._shutdown_event.set()
+        bus.shutdown()
 
     def test_health_includes_backpressure_metrics(self, bus):
         """health() 包含反压指标"""
