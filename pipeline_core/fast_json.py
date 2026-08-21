@@ -9,7 +9,7 @@ import json
 from typing import Any
 
 try:
-    import orjson  # type: ignore
+    import orjson
 
     def dumps(obj: Any, *, default=None, **kwargs) -> str:
         """序列化为 JSON 字符串（orjson 优先）"""
