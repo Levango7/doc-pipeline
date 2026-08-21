@@ -269,6 +269,19 @@ class BaseAgent(ABC):
         self._success_count = state.get("success_count", 0)
         self._error_count = state.get("error_count", 0)
 
+    # ─── 临时文件清理契约 ─────────────────────────────
+    # orchestrator 在任务结束的 finally（_cleanup_task_temp）和 shutdown
+    # （_cleanup_all_stale_temp）中动态遍历所有已注册 agent 调用以下方法，
+    # 需要清理临时文件的 agent 覆写并返回清理条目数。
+
+    def cleanup_task_temp(self, task_id: str) -> int:
+        """清理指定任务产生的临时文件（可覆盖）。返回清理的条目数量。"""
+        return 0
+
+    def cleanup_stale_temp(self, max_age_hours: int = 24) -> int:
+        """清理超过 max_age_hours 的过期临时文件（可覆盖）。返回清理的条目数量。"""
+        return 0
+
     def is_healthy(self) -> bool:
         """健康检查（可覆盖）"""
         # 默认健康检查：错误率不超过 50%
