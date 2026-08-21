@@ -1,6 +1,7 @@
 """ConfigCenter 单元测试——级联配置、环境变量覆盖、JSON 容器支持。"""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -46,10 +47,9 @@ class TestFileLoading:
         assert c.get("execution.fail_fast") is True
 
     def test_yaml_config_loaded(self, tmp_path: Path):
-        try:
-            import yaml  # noqa: PLC0415
-        except ImportError:
+        if importlib.util.find_spec("yaml") is None:
             pytest.skip("pyyaml not installed")
+        import yaml  # noqa: PLC0415, F401
         p = tmp_path / "config.yaml"
         p.write_text('llm:\n  model: claude-3\n  temperature: 0.3\n', encoding="utf-8")
         c = ConfigCenter(config_file=str(p))
