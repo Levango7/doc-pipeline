@@ -180,7 +180,7 @@ class PipelineOrchestrator:
         # 统一配置中心
         from .config import ConfigCenter
         self.config = ConfigCenter(
-            config_file=str(Path(__file__).parent.parent / "config.yaml"),
+            config_file=str(Path(__file__).parent.parent / "config.json"),
             auto_reload=True,
         )
 

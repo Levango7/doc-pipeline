@@ -512,7 +512,10 @@ def main():
         use_admin = args.admin or args.dashboard
         if not use_admin:
             # 自动启动 admin API（无 dashboard）
-            orch.start_admin_api(port=8910)
+            ok = orch.start_admin_api(port=8910)
+            if not ok:
+                print("[run] ERROR: Admin API 启动失败，守护进程无法维持", file=sys.stderr)
+                sys.exit(1)
             print("[run] 管理 API: http://127.0.0.1:8910")
         print("\n[run] 守护进程模式 — 按 Ctrl+C 退出")
         try:

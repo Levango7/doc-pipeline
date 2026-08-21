@@ -50,9 +50,11 @@ VOLUME ["/app/checkpoints", "/app/logs"]
 # Admin API
 EXPOSE 8910
 
-# Health check (admin API /health endpoint)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8910/health', timeout=3)" || exit 1
+# Health check: 先确认 admin API 进程存活再探 /health
+# （容器刚启动时 CMD 还是 --help，8910 未监听，直接 curl 会误报 unhealthy）
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD pgrep -f "python run.py" > /dev/null 2>&1 && \
+        python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8910/health', timeout=3)" || exit 1
 
 # Drop privileges
 USER app:app

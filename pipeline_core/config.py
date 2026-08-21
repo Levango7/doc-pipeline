@@ -75,7 +75,7 @@ class ConfigCenter:
             target[parts[-1]] = self._coerce(value)
 
     def _coerce(self, value: str):
-        """类型转换：'true'→True, '123'→123, '3.14'→3.14"""
+        """类型转换：'true'→True, '123'→123, '3.14'→3.14, '[a,b]'→list, '{"k":"v"}'→dict"""
         if value.lower() in ("true", "yes", "1"):
             return True
         if value.lower() in ("false", "no", "0"):
@@ -88,6 +88,15 @@ class ConfigCenter:
             return float(value)
         except ValueError:
             pass
+        # JSON 容器：支持环境变量传入数组/对象，如 DOCPIPE_RESEARCHER__SEARCH_ENGINES='["mock"]'
+        if value.startswith("[,{"):
+            try:
+                import json as _json
+                parsed = _json.loads(value)
+                if isinstance(parsed, (list, dict)):
+                    return parsed
+            except ValueError:
+                pass
         return value
 
     def _deep_merge(self, base: dict, override: dict):
