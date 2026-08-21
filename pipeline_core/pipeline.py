@@ -146,10 +146,13 @@ class PipelineTask:
             "error": self.error,
         }
 
-    # 修复 P0：PipelineTask 含 threading.Event / threading.Lock 字段，
-    # 在 ProcessPoolExecutor 模式下 pickle 会失败（threading.Lock 不可序列化）。
-    # 提供 __getstate__/__setstate__：pickle 时剥离同步原语，
-    # 反序列化时重新构造新的 Event/Lock（每个进程独立）。
+    # pickle 支持：PipelineTask 含 threading.Event / threading.Lock（均不可序列化），
+    # __getstate__ 剥离同步原语，__setstate__ 重建全新实例。
+    # 注意：重建的 stop_event 是反序列化侧的独立副本——父进程 cancel() 设置的信号
+    # 不会传播到子进程（Python 多进程同步原语只能通过继承共享，无法经 pickle 传递）。
+    # 进程模式（executor_type=process）下节点在子进程中会因 registry/bus 未重建
+    # （DAGExecutor.from_config 未接线）而失败，重试在父进程执行、stop_event 有效；
+    # 见 dag_executor._execute_node_worker 与 executor_factory.create_executor 的告警。
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
         state["stop_event"] = None
@@ -1038,8 +1041,20 @@ class PipelineOrchestrator:
             for t in recovered:
                 plan = scheduler.parse(t["pipeline_name"])
                 orch.run_plan(plan, input_file=t["input_file"], task_id=t["task_id"])
+
+        内存侧同步：_running_tasks 中同 id 且仍为 RUNNING 的任务一并置为 PENDING，
+        避免 get_task()/list_tasks() 返回与持久化队列不一致的旧状态
+        （PAUSED/DONE 等其他状态不动）。
         """
-        return self.task_queue.recover()
+        recovered = self.task_queue.recover()
+        if not recovered:
+            return recovered
+        with self._lock:
+            for entry in recovered:
+                task = self._running_tasks.get(entry.get("task_id", ""))
+                if task is not None and task.status == TaskStatus.RUNNING:
+                    task.status = TaskStatus.PENDING
+        return recovered
 
     def list_queued_tasks(self, status: str = None) -> list[dict]:
         """列出持久化队列中的任务"""
@@ -1162,27 +1177,44 @@ class PipelineOrchestrator:
             self._running_tasks.pop(tid, None)
 
     def _cleanup_task_temp(self, task: PipelineTask):
-        """任务完成后清理各 agent 产生的临时文件"""
+        """任务完成后清理各 agent 产生的临时文件。
+
+        动态遍历所有已注册 agent，凡实现 cleanup_task_temp 的均调用
+        （契约见 BaseAgent.cleanup_task_temp），不再硬编码单个 agent 名。
+        """
         try:
-            for agent_name in ("fetcher",):
+            cleaned = 0
+            for agent_name in self.registry.list_agent_names():
                 instance = self.registry.get_instance(agent_name)
-                if instance and hasattr(instance, "cleanup_task_temp"):
-                    try:
-                        instance.cleanup_task_temp(task.id)
-                    except Exception as e:
-                        self._log("warning", f"清理 {agent_name} 临时文件失败", task_id=task.id, error=str(e))
+                if instance is None or not hasattr(instance, "cleanup_task_temp"):
+                    continue
+                try:
+                    cleaned += int(instance.cleanup_task_temp(task.id) or 0)
+                except Exception as e:
+                    self._log("warning", f"清理 {agent_name} 临时文件失败",
+                              task_id=task.id, error=str(e))
+            if cleaned:
+                self._log("info", "任务临时文件已清理", task_id=task.id, removed=cleaned)
         except Exception as e:
             self._log("warning", "任务临时文件清理异常", task_id=task.id, error=str(e))
 
     def _cleanup_all_stale_temp(self, max_age_hours: int = 24):
-        """清理所有 agent 的过期临时文件"""
-        for agent_name in ("fetcher",):
-            instance = self.registry.get_instance(agent_name)
-            if instance and hasattr(instance, "cleanup_stale_temp"):
+        """清理所有 agent 的过期临时文件（动态遍历所有已注册 agent）。"""
+        try:
+            cleaned = 0
+            for agent_name in self.registry.list_agent_names():
+                instance = self.registry.get_instance(agent_name)
+                if instance is None or not hasattr(instance, "cleanup_stale_temp"):
+                    continue
                 try:
-                    instance.cleanup_stale_temp(max_age_hours)
+                    cleaned += int(instance.cleanup_stale_temp(max_age_hours) or 0)
                 except Exception as e:
                     self._log("warning", f"清理 {agent_name} 过期临时文件失败", error=str(e))
+            if cleaned:
+                self._log("info", "过期临时文件已清理",
+                          removed=cleaned, max_age_hours=max_age_hours)
+        except Exception as e:
+            self._log("warning", "过期临时文件清理异常", error=str(e))
 
     def start_admin_api(self, host: str = "127.0.0.1", port: int = 8910,
                          serve_static: bool = False,

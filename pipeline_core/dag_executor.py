@@ -27,7 +27,9 @@ def _execute_node_worker(dag_executor, task, node, input_file, plan):
         raise RuntimeError(
             "ProcessPoolExecutor 模式下 registry/bus 不可用。"
             "子进程需通过 DAGExecutor.from_config() 重建上下文，"
-            "或使用 ThreadPoolExecutor（默认）模式。"
+            "但当前无任何生产代码路径调用 from_config（子进程上下文重建未接线），"
+            "process 模式的节点会在子进程中失败并回落到父进程重试。"
+            "请使用 ThreadPoolExecutor（默认）模式。"
         )
     return dag_executor.execute_node_from_scheduler(task, node, input_file, plan)
 
@@ -447,6 +449,13 @@ class DAGExecutor:
                     if task.stop_event.wait(delay):
                         # 任务被取消，中断重试
                         break
+                    # 全局停止信号（shutdown）补充检查：上面的 wait 只监听 per-task
+                    # 事件，全局停止的感知最多延迟一个退避周期
+                    if self._stop_event is not None and self._stop_event.is_set():
+                        break
+                    # 重试执行前再查一次取消信号，避免取消后仍发起下一次节点调用
+                    if task.stop_event.is_set():
+                        break
                     dag_node.attempts += 1
                     dag_node.status = "pending"
                     try:
@@ -629,6 +638,9 @@ class DAGExecutor:
                     await asyncio.sleep(delay)
                     if task.stop_event.is_set():
                         break
+                    # 全局停止信号补充检查（与线程版对齐）
+                    if self._stop_event is not None and self._stop_event.is_set():
+                        break
                     dag_node.attempts += 1
                     dag_node.status = "pending"
                     try:
@@ -676,11 +688,16 @@ class DAGExecutor:
 
                     if self._circuit_breaker(node, task):
                         task.status = TaskStatus.FAILED
+                        # 对齐线程版（execute_level 同分支）的软中断语义：设置
+                        # stop_event 让后续重试/层级入口立即退出。async 下同层兄弟
+                        # 已由 gather 启动，无法像线程版那样 cancel 未启动的 future。
+                        task.stop_event.set()
                         break
 
                     fail_fast = getattr(plan, "fail_fast", True)
                     if fail_fast:
                         task.status = TaskStatus.FAILED
+                        task.stop_event.set()
                         break
 
             finally:

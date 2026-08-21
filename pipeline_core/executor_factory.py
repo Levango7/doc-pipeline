@@ -17,9 +17,15 @@
 """
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+
+logger = logging.getLogger(__name__)
+
+# 进程模式告警只发一次（run_plan 每层都会调用 create_executor）
+_process_mode_warned = False
 
 
 def create_executor(max_workers: int = 4, executor_type: str = "thread") -> ThreadPoolExecutor | ProcessPoolExecutor:
@@ -32,7 +38,16 @@ def create_executor(max_workers: int = 4, executor_type: str = "thread") -> Thre
     Returns:
         ThreadPoolExecutor 或 ProcessPoolExecutor 实例
     """
+    global _process_mode_warned
     if executor_type == "process":
+        if not _process_mode_warned:
+            logger.warning(
+                "executor_type='process' 为实验性：子进程上下文重建"
+                "（DAGExecutor.from_config）未在任何生产路径接线，节点会在子进程"
+                "中失败并回落到父进程重试；取消信号也不会跨进程传播。"
+                "建议使用 thread（默认）。"
+            )
+            _process_mode_warned = True
         return ProcessPoolExecutor(max_workers=max_workers)
     if executor_type == "auto":
         return SmartExecutor(max_workers=max_workers)  # type: ignore[return-value]
