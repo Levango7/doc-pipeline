@@ -4,6 +4,7 @@ backups/
 checkpoints/
 tmp_fetcher/
 tmp/
+benchmark_results.json
 
 # Python
 __pycache__/

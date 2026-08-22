@@ -287,6 +287,38 @@ python run.py --mcp
 
 提供 5 个 tools：`submit_task`、`get_task_status`、`get_task_result`、`list_tasks`、`get_system_health`。
 
+### 事件钩子（Event Hooks）
+
+通过 `POST /api/events/hooks` 注册 HTTP 回调，流水线事件触发时异步 POST JSON 到指定 URL：
+
+| 事件 | 说明 |
+|------|------|
+| `task.created` | 任务创建 |
+| `task.started` | 任务开始执行 |
+| `task.completed` | 任务完成 |
+| `task.failed` | 任务失败 |
+| `task.cancelled` | 任务取消 |
+| `agent.started` | Agent 启动 |
+| `agent.error` | Agent 异常 |
+| `quality_gate.evaluated` | 质量门控评分完成 |
+| `circuit_breaker.open` | 熔断器打开 |
+| `circuit_breaker.close` | 熔断器恢复 |
+
+```bash
+# 注册 webhook
+curl -X POST http://127.0.0.1:8910/api/events/hooks \
+  -H "Content-Type: application/json" \
+  -d '{"event": "task.completed", "url": "https://your-webhook-handler.com/notify"}'
+
+# 列出已注册钩子
+curl http://127.0.0.1:8910/api/events/hooks
+
+# 注销钩子
+curl -X DELETE http://127.0.0.1:8910/api/events/hooks/<id>
+```
+
+Webhook 使用独立事件循环异步发送（aiohttp 连接池），不阻塞流水线主线程。
+
 ### Agent 安全沙箱
 
 第三方 Agent 加载时自动执行 AST 安全检查（禁止 `os.system`/`subprocess`/`eval`/`exec`/`open` 等），

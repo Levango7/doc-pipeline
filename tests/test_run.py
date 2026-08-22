@@ -131,27 +131,38 @@ class TestCLIArgumentParsing:
 # ─── YAML 加载失败处理（P0 修复验证）────────────────────────────
 
 class TestYamlLoadFailure:
-    """YAML 加载失败时友好退出（P0 修复）"""
+    """YAML 加载失败时优雅降级到 Legacy 模式"""
 
-    def test_no_pipeline_file_friendly_exit(self, tmp_path):
-        """无可用 YAML 时 sys.exit(1) 而非 AttributeError"""
+    def test_no_pipeline_file_fallbacks_to_legacy(self, tmp_path):
+        """无可用 YAML 时回退到 Legacy 模式，而非 AttributeError"""
         from run import main
         input_file = tmp_path / "input.md"
         input_file.write_text("# Test")
 
-        with patch("sys.argv", ["run.py", str(input_file)]), patch("run.PipelineOrchestrator") as mock_orch_cls:
+        with patch("sys.argv", ["run.py", str(input_file)]), \
+                patch("run._get_orchestrator") as mock_get_orch, \
+                patch("run._load_config", return_value={}), \
+                patch("run._resolve_pipeline_plan", return_value=(None, False)):
             mock_orch = MagicMock()
             mock_orch.register_agents.return_value = ["agent1"]
-            mock_orch_cls.return_value = mock_orch
-            # pipelines 目录为空（无 YAML）
-            with patch("pathlib.Path.exists", return_value=False), patch("builtins.print"), \
-                    pytest.raises(SystemExit) as exc_info:
+            mock_orch.registry.list_agent_names.return_value = ["agent1"]
+            mock_get_orch.return_value = mock_orch
+            _FakeStatus = type("_FakeStatus", (), {"value": "done"})
+            mock_task = MagicMock()
+            mock_task.status = _FakeStatus()
+            mock_task.error = None
+            mock_task.steps = []
+            mock_task.result = {}
+            mock_task.finished_at = 1.0
+            mock_task.started_at = 0.5
+            mock_orch.run.return_value = mock_task
+            with patch("builtins.print"):
                 main()
-            # 应退出码 1，而非 AttributeError
-            assert exc_info.value.code == 1
+            # 应走 legacy 路径（orch.run 被调用），而非抛异常
+            mock_orch.run.assert_called_once()
 
-    def test_corrupt_yaml_friendly_exit(self, tmp_path):
-        """YAML 损坏时友好退出"""
+    def test_corrupt_yaml_fallbacks_to_legacy(self, tmp_path):
+        """YAML 损坏时回退到 Legacy 模式"""
         from run import main
         input_file = tmp_path / "input.md"
         input_file.write_text("# Test")
@@ -159,13 +170,25 @@ class TestYamlLoadFailure:
         bad_yaml.write_text(": invalid: yaml: :")
 
         with patch("sys.argv", ["run.py", str(input_file), "--pipeline-file", str(bad_yaml)]), \
-                patch("run.PipelineOrchestrator") as mock_orch_cls:
+                patch("run._get_orchestrator") as mock_get_orch, \
+                patch("run._load_config", return_value={}), \
+                patch("run._resolve_pipeline_plan", return_value=(None, False)):
             mock_orch = MagicMock()
             mock_orch.register_agents.return_value = ["agent1"]
-            mock_orch_cls.return_value = mock_orch
-            with patch("builtins.print"), pytest.raises(SystemExit) as exc_info:
+            mock_orch.registry.list_agent_names.return_value = ["agent1"]
+            mock_get_orch.return_value = mock_orch
+            _FakeStatus = type("_FakeStatus", (), {"value": "done"})
+            mock_task = MagicMock()
+            mock_task.status = _FakeStatus()
+            mock_task.error = None
+            mock_task.steps = []
+            mock_task.result = {}
+            mock_task.finished_at = 1.0
+            mock_task.started_at = 0.5
+            mock_orch.run.return_value = mock_task
+            with patch("builtins.print"):
                 main()
-            assert exc_info.value.code == 1
+            mock_orch.run.assert_called_once()
 
 
 # ─── 路由分支 ────────────────────────────

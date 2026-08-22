@@ -82,4 +82,4 @@ __all__ = [
     "QualityFeedback", "get_quality_feedback", "record_quality",
 ]
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"

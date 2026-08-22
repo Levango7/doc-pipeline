@@ -134,8 +134,6 @@ def _validate_task_id(task_id: str) -> bool:
     return bool(_TASK_ID_RE.match(task_id))
 
 
-
-
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     """多线程 HTTP 服务器 — 替代单线程 HTTPServer，避免慢请求阻塞所有连接"""
     daemon_threads = True

@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout
@@ -47,12 +47,10 @@ jobs:
           python -m pytest tests/ -v --tb=short --cov=. --cov-report=term-missing --cov-report=html
 
       - name: Security scan (bandit)
-        continue-on-error: true
         run: |
           bandit -r pipeline_core/ -r agents/ -f json -o bandit-report.json
 
       - name: Dependency audit (pip-audit)
-        continue-on-error: true
         run: |
           pip-audit
 

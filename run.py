@@ -52,7 +52,6 @@ def _load_dotenv():
 _load_dotenv()
 
 from pipeline_core import PipelineOrchestrator, TaskStatus, __version__  # noqa: E402
-from pipeline_core.scheduler import Scheduler  # noqa: E402
 
 
 def print_banner():
@@ -112,6 +111,224 @@ def _run_export(md_path: str, fmt: str, export_path: str = None):
             print(f"\n[export] Mermaid 图片已渲染至: {out_dir}")
     except Exception as e:
         print(f"\n[export] 导出失败: {e}")
+
+
+def _get_orchestrator(project_root: Path) -> PipelineOrchestrator:
+    """创建并注册 Agent 的编排器实例"""
+    orch = PipelineOrchestrator(
+        agents_dir=str(project_root / "agents"),
+        checkpoint_dir=str(project_root / "checkpoints"),
+    )
+    return orch
+
+
+def _load_config(args_args: argparse.Namespace, project_root: Path) -> dict:
+    """加载项目配置：优先 --config，其次 config.json"""
+    config_path = args_args.config or (project_root / "config.json")
+    if Path(config_path).exists():
+        with open(config_path, encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestrator,
+                           config: dict) -> tuple | None:
+    """尝试从 YAML 文件解析 pipeline plan；失败时返回 (None, False) 表示应走 legacy 路径"""
+    from pipeline_core.scheduler import Scheduler
+    sched = Scheduler()
+    base_dir = Path(__file__).parent
+    pipeline_files = []
+    if args_args.pipeline_file:
+        pipeline_files = [Path(args_args.pipeline_file)]
+    else:
+        pipelines_dir = base_dir / "pipelines"
+        if pipelines_dir.exists():
+            pipeline_files = sorted(pipelines_dir.glob(f"{args_args.pipeline}*.yaml"))
+            if not pipeline_files:
+                pipeline_files = sorted(pipelines_dir.glob("*.yaml"))
+
+    for pf in pipeline_files:
+        if pf.exists():
+            try:
+                plan = sched.parse_file(str(pf))
+                print(f"[run] 加载流水线配置: {pf.name}")
+                return (plan, True)
+            except Exception as e:
+                print(f"[run] 加载 {pf.name} 失败: {e}")
+    return (None, False)
+
+
+def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
+                     config: dict) -> None:
+    """执行单任务：构建 plan/task、等待结果、输出报告"""
+    base_dir = Path(__file__).parent
+    task_id = args_args.task_id or str(uuid.uuid4())[:8]
+
+    use_legacy = args_args.legacy
+    plan = None
+
+    if not use_legacy:
+        resolved = _resolve_pipeline_plan(args_args, orch, config)
+        plan = resolved[0] if resolved else None
+        plan_loaded = resolved[1] if resolved else False
+        if not plan_loaded:
+            use_legacy = True
+
+    # 预览模式
+    if args_args.plan:
+        if plan:
+            from pipeline_core.scheduler import Scheduler
+            sched = Scheduler()
+            print(sched.visualize(plan))
+        else:
+            try:
+                plan_preview = orch.plan(args_args.pipeline, args_args.input, config)
+                print(orch.visualize_plan(plan_preview))
+            except Exception as e:
+                print(f"[run] ✗ 无法生成预览: {e}")
+                sys.exit(1)
+        return
+
+    # 打印任务摘要
+    print(f"\n{'='*60}")
+    print(f"任务: {task_id}")
+    print(f"流水线: {args_args.pipeline}")
+    print(f"输入: {args_args.input}")
+    print(f"模式: {'声明式 DAG' if not use_legacy else 'Legacy'}")
+    print(f"Agent: {', '.join(orch.registry.list_agent_names())}")
+    if args_args.queries:
+        print(f"查询: {args_args.queries}")
+    if args_args.resume:
+        print("模式: 断点续传")
+    print(f"{'='*60}\n")
+
+    run_config = {
+        "timeout": args_args.timeout,
+        "output": args_args.output,
+        "queries": args_args.queries or [],
+        **config
+    }
+
+    if use_legacy:
+        task = orch.run(
+            task_id=task_id,
+            pipeline_name=args_args.pipeline,
+            input_file=args_args.input,
+            config=run_config,
+            wait=not args_args.dry_run,
+            resume=args_args.resume,
+        )
+    else:
+        if plan is None:
+            print(f"[run] ✗ 无法加载流水线配置（pipeline={args_args.pipeline}）")
+            print("[run] 请检查 pipelines/ 目录或 --pipeline-file 指定的 YAML 文件")
+            print("[run] 或使用 --legacy 模式绕过 YAML 配置")
+            sys.exit(1)
+        if args_args.output:
+            plan.raw.setdefault("pipeline", {})["output"] = args_args.output
+        task = orch.run_plan(
+            plan=plan,
+            input_file=args_args.input,
+            task_id=task_id,
+            wait=not args_args.dry_run,
+        )
+
+    if args_args.dry_run:
+        print(f"[run] 计划执行（dry-run），任务ID: {task_id}")
+        return
+
+    # 轮询进度
+    import time as time_module
+    try:
+        from pipeline_core import TaskStatus
+        while task.status in (TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.PAUSED):
+            time_module.sleep(1)
+            print(f"[run] 进度: {task.progress}%  状态: {task.status.value}")
+    except KeyboardInterrupt:
+        print("\n\n[run] 收到中断信号，正在暂停任务...")
+        orch.pause(task_id)
+        print("[run] 任务已暂停，可使用 --resume 续传")
+        if args_args.daemon:
+            print("\n[run] 守护进程模式激活，按 Ctrl+C 再次退出")
+            try:
+                while True:
+                    time_module.sleep(10)
+            except KeyboardInterrupt:
+                pass
+        return
+
+    print()
+
+    # 输出结果
+    steps = []
+    output_path = ""
+    if task.steps:
+        for step in task.steps:
+            steps.append({
+                "step_name": step.step_name,
+                "agent_name": step.agent_name,
+                "status": step.status,
+                "duration_ms": step.duration_ms,
+                "started_at": step.started_at,
+                "finished_at": step.finished_at,
+                "result": step.result if hasattr(step, 'result') else {}
+            })
+
+    if args_args.output and Path(args_args.output).exists():
+        output_path = args_args.output
+    elif task.result and isinstance(task.result, dict) and task.result.get("output_path"):
+        output_path = task.result["output_path"]
+    elif hasattr(task, 'output_path') and task.output_path:
+        output_path = task.output_path
+
+    status = task.status.value
+
+    if args_args.json_output:
+        output_json_result(task, output_path, steps, status)
+        return
+
+    print(f"\n{'='*60}")
+    print(f"流水线执行完成 | 状态: {task.status.value}")
+    if task.finished_at and task.started_at:
+        try:
+            duration = float(task.finished_at) - float(task.started_at)
+            print(f"耗时: {duration:.1f}s")
+        except (TypeError, ValueError):
+            pass
+
+    if task.steps:
+        print("\n执行步骤:")
+        for step in task.steps:
+            status_icon = "✅" if step.status == "success" else ("❌" if step.status == "failed" else "⏭️")
+            print(f"  {status_icon} {step.agent_name:20s} {step.duration_ms:8.1f}ms")
+
+    if task.error:
+        print(f"\n错误: {task.error}")
+
+    print(f"{'='*60}")
+
+    if args_args.report:
+        report_file = base_dir / "checkpoints" / f"report_{task_id}.json"
+        if report_file.exists():
+            print(f"\n详细报告已保存: {report_file}")
+
+    if args_args.fix_ascii and output_path:
+        _run_ascii_fix(output_path)
+
+    if args_args.export and output_path:
+        _run_export(output_path, args_args.export, args_args.export_output)
+
+
+def _run_daemon(orch: PipelineOrchestrator) -> None:
+    """守护进程模式：保持 Admin API 常驻直到收到 KeyboardInterrupt"""
+    print("\n[run] 守护进程模式 — 按 Ctrl+C 退出")
+    try:
+        import time
+        while True:
+            time.sleep(10)
+    except KeyboardInterrupt:
+        pass
 
 
 def main():
@@ -188,18 +405,15 @@ def main():
 
     # ─── 恢复中断任务 ──────────────────────
     if args.recover:
-        # P1 修复：移除局部 import（会遮蔽模块级 PipelineOrchestrator，导致其他分支 UnboundLocalError）
         project_root = Path(__file__).parent
-        orch = PipelineOrchestrator(
-            agents_dir=str(project_root / "agents"),
-            checkpoint_dir=str(project_root / "checkpoints"),
-        )
+        orch = _get_orchestrator(project_root)
         orch.register_agents()
         recovered = orch.recover_tasks()
         if not recovered:
             print("[recover] 没有需要恢复的中断任务")
             sys.exit(0)
         print(f"[recover] 发现 {len(recovered)} 个中断任务，开始恢复...")
+        from pipeline_core.scheduler import Scheduler
         sched = Scheduler()
         for t in recovered:
             print(f"  → 恢复任务 {t['task_id']} (pipeline={t['pipeline_name']}, input={t['input_file']})")
@@ -225,7 +439,6 @@ def main():
     # ─── 三阶段流水线模式 ──────────────────────
     if args.three_pass:
         from pipeline_core.three_pass_pipeline import ThreePassPipeline
-        # 从输入文件读取主题
         input_text = Path(args.input).read_text(encoding="utf-8").strip()
         if not input_text:
             print("[run] 输入文件为空")
@@ -245,27 +458,23 @@ def main():
         else:
             print(f"错误: {result.get('error', '')}")
         print(f"{'='*60}")
-
-        # ─── ASCII 图转换 + 格式导出 ──────────────
         if result["status"] == "ok" and output:
             if args.fix_ascii:
                 _run_ascii_fix(output)
             if args.export:
                 _run_export(output, args.export, args.export_output)
-
         return
 
     # ─── 文档增强模式 ──────────────────────────
     if args.enhance:
         from pipeline_core.document_enhancer import DocumentEnhancer
-        input_path = args.input
         output_dir = args.enhance_output or "output"
         with_search = not args.no_search
-        print(f"\n[enhance] 开始增强文档: {input_path}")
+        print(f"\n[enhance] 开始增强文档: {args.input}")
         print(f"[enhance] 搜索补充: {'启用' if with_search else '禁用'}")
         enhancer = DocumentEnhancer()
         result = enhancer.enhance(
-            input_path,
+            args.input,
             output_dir=output_dir,
             with_search=with_search,
         )
@@ -276,7 +485,6 @@ def main():
         print(f"章节: {stats.get('sections', 0)} | 增强: {stats.get('enhanced', 0)} | 搜索: {stats.get('searched', 0)} | ASCII修复: {stats.get('ascii_fixed', 0)}")
         print(f"输出: {result.get('output_path', '')}")
         print(f"{'='*60}")
-        # ─── ASCII 修复 + 格式导出 ──────────────
         output = result.get("output_path", "")
         if output and args.fix_ascii:
             _run_ascii_fix(output)
@@ -284,24 +492,11 @@ def main():
             _run_export(output, args.export, args.export_output)
         return
 
-    # 加载配置：优先 --config/-c 指定文件；未指定时自动加载项目根目录 config.json
-    # （README 快速体验命令不传 -c，若此处不加载，agent 将使用代码内默认值而非 config.json）
-    config = {}
-    config_path = args.config or (Path(__file__).parent / "config.json")
-    if Path(config_path).exists():
-        with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
-
-    # 初始化编排器
-    base_dir = Path(__file__).parent
-    orch = PipelineOrchestrator(
-        agents_dir=str(base_dir / "agents"),
-        checkpoint_dir=str(base_dir / "checkpoints")
-    )
-
-    # 发现并注册 Agent
-    agent_names = args.agent or None
-    loaded = orch.register_agents(agent_names, config=config)
+    # ─── 正常流水线执行 ──────────────────────
+    project_root = Path(__file__).parent
+    orch = _get_orchestrator(project_root)
+    config = _load_config(args, project_root)
+    loaded = orch.register_agents(agent_names=args.agent or None, config=config)
 
     if args.list_agents:
         print(f"\n已注册 {len(loaded)} 个 Agent:")
@@ -318,107 +513,11 @@ def main():
         print("[run] 没有加载任何 Agent，请检查 agents 目录")
         return
 
-    # 生成任务ID
-    task_id = args.task_id or str(uuid.uuid4())[:8]
-
-    # ─── 路由：Legacy 模式 vs Pipeline YAML 模式 ─────────────
-    use_legacy = args.legacy
-    plan = None
-
-    if not args.legacy:
-        # 尝试加载 pipeline YAML
-        pipeline_files = []
-        if args.pipeline_file:
-            pipeline_files = [Path(args.pipeline_file)]
-        else:
-            # 自动发现：pipelines/ 下匹配 pipeline 名称的 .yaml
-            pipelines_dir = base_dir / "pipelines"
-            if pipelines_dir.exists():
-                pipeline_files = sorted(pipelines_dir.glob(f"{args.pipeline}*.yaml"))
-                if not pipeline_files:
-                    pipeline_files = sorted(pipelines_dir.glob("*.yaml"))
-
-        for pf in pipeline_files:
-            if pf.exists():
-                try:
-                    sched = Scheduler()
-                    plan = sched.parse_file(str(pf))
-                    use_legacy = False
-                    print(f"[run] 加载流水线配置: {pf.name}")
-                    break
-                except Exception as e:
-                    print(f"[run] 加载 {pf.name} 失败: {e}")
-
-    # 预览
-    if args.plan:
-        if plan:
-            print(sched.visualize(plan))
-        else:
-            # P1 修复：plan 为 None 时 sched 也可能未定义，使用 legacy 路径预览
-            try:
-                plan_preview = orch.plan(args.pipeline, args.input, config)
-                print(orch.visualize_plan(plan_preview))
-            except Exception as e:
-                print(f"[run] ✗ 无法生成预览: {e}")
-                sys.exit(1)
-        return
-
-    print(f"\n{'='*60}")
-    print(f"任务: {task_id}")
-    print(f"流水线: {args.pipeline}")
-    print(f"输入: {args.input}")
-    print(f"模式: {'声明式 DAG' if not use_legacy else 'Legacy'}")
-    print(f"Agent: {', '.join(loaded)}")
-    if args.queries:
-        print(f"查询: {args.queries}")
-    if args.resume:
-        print("模式: 断点续传")
-    print(f"{'='*60}\n")
-
-    # 构建配置
-    run_config = {
-        "timeout": args.timeout,
-        "output": args.output,
-        "queries": args.queries or [],
-        **config
-    }
-
-    if use_legacy:
-        # ─── Legacy 路径 ──
-        task = orch.run(
-            task_id=task_id,
-            pipeline_name=args.pipeline,
-            input_file=args.input,
-            config=run_config,
-            wait=not args.dry_run,
-            resume=args.resume
-        )
-    else:
-        # ─── 声明式 Pipeline 路径 ──
-        # P0 修复：plan 可能为 None（所有 YAML 加载失败），友好退出而非 AttributeError
-        if plan is None:
-            print(f"[run] ✗ 无法加载流水线配置（pipeline={args.pipeline}）")
-            print("[run] 请检查 pipelines/ 目录或 --pipeline-file 指定的 YAML 文件")
-            print("[run] 或使用 --legacy 模式绕过 YAML 配置")
-            sys.exit(1)
-        # 将 CLI --output 注入 pipeline 配置，供 safe_writer 使用
-        if args.output:
-            plan.raw.setdefault("pipeline", {})["output"] = args.output
-        task = orch.run_plan(
-            plan=plan,
-            input_file=args.input,
-            task_id=task_id,
-            wait=not args.dry_run,
-        )
-
-    if args.dry_run:
-        print(f"[run] 计划执行（dry-run），任务ID: {task_id}")
-        return
+    _run_single_task(args, orch, config)
 
     # 可选：启动管理 API + 仪表盘
-    use_admin = args.admin or args.dashboard
-    if use_admin:
-        dashboard_dir = str(Path(__file__).parent / "dashboard") if args.dashboard else None
+    if args.admin or args.dashboard:
+        dashboard_dir = str(project_root / "dashboard") if args.dashboard else None
         orch.start_admin_api(
             port=8910,
             serve_static=args.dashboard,
@@ -427,102 +526,8 @@ def main():
         print("[run] 管理 API: http://127.0.0.1:8910")
         if args.dashboard:
             print("[run] 仪表盘:  http://127.0.0.1:8910/index.html")
-
-    # 等待结果
-    import time as time_module
-    try:
-        while task.status in (TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.PAUSED):
-            time_module.sleep(1)
-            print(f"\r[run] 进度: {task.progress}%  状态: {task.status.value}", end="", flush=True)
-    except KeyboardInterrupt:
-        print("\n\n[run] 收到中断信号，正在暂停任务...")
-        orch.pause(task_id)
-        print("[run] 任务已暂停，可使用 --resume 续传")
-        # 守护进程模式：暂停后不退出，继续提供 API 服务
         if args.daemon:
-            print("\n[run] 守护进程模式激活，按 Ctrl+C 再次退出")
-            try:
-                while True:
-                    time_module.sleep(10)
-            except KeyboardInterrupt:
-                pass
-        return
-
-    print()
-
-    # 准备步骤信息
-    steps = []
-    output_path = ""
-    if task.steps:
-        for step in task.steps:
-            steps.append({
-                "step_name": step.step_name,
-                "agent_name": step.agent_name,
-                "status": step.status,
-                "duration_ms": step.duration_ms,
-                "started_at": step.started_at,
-                "finished_at": step.finished_at,
-                "result": step.result if hasattr(step, 'result') else {}
-            })
-
-    if args.output and Path(args.output).exists():
-        output_path = args.output
-    elif task.result and isinstance(task.result, dict) and task.result.get("output_path"):
-        output_path = task.result["output_path"]
-    elif hasattr(task, 'output_path') and task.output_path:
-        output_path = task.output_path
-
-    status = task.status.value
-
-    if args.json_output:
-        output_json_result(task, output_path, steps, status)
-    else:
-        print(f"\n{'='*60}")
-        print(f"流水线执行完成 | 状态: {task.status.value}")
-        if task.finished_at and task.started_at:
-            duration = task.finished_at - task.started_at
-            print(f"耗时: {duration:.1f}s")
-
-        if task.steps:
-            print("\n执行步骤:")
-            for step in task.steps:
-                status_icon = "✅" if step.status == "success" else ("❌" if step.status == "failed" else "⏭️")
-                print(f"  {status_icon} {step.agent_name:20s} {step.duration_ms:8.1f}ms")
-
-        if task.error:
-            print(f"\n错误: {task.error}")
-
-        print(f"{'='*60}")
-
-        if args.report:
-            report_file = base_dir / "checkpoints" / f"report_{task_id}.json"
-            if report_file.exists():
-                print(f"\n详细报告已保存: {report_file}")
-
-        # ─── ASCII 图转换 ──────────────────────
-        if args.fix_ascii and output_path:
-            _run_ascii_fix(output_path)
-
-        # ─── 格式导出 ──────────────────────────
-        if args.export and output_path:
-            _run_export(output_path, args.export, args.export_output)
-
-    # 守护进程模式：任务完成后保持 Admin API 常驻
-    if args.daemon:
-        use_admin = args.admin or args.dashboard
-        if not use_admin:
-            # 自动启动 admin API（无 dashboard）
-            ok = orch.start_admin_api(port=8910)
-            if not ok:
-                print("[run] ERROR: Admin API 启动失败，守护进程无法维持", file=sys.stderr)
-                sys.exit(1)
-            print("[run] 管理 API: http://127.0.0.1:8910")
-        print("\n[run] 守护进程模式 — 按 Ctrl+C 退出")
-        try:
-            while True:
-                time_module.sleep(10)
-        except KeyboardInterrupt:
-            pass
+            _run_daemon(orch)
 
     orch.shutdown()
 
