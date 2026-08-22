@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.3] - 2026-08-22
+
+### Changed（剩余技术债清零）
+- **边缘超长方法拆分**（上轮 150L 边缘项全部处理，全仓 >150L 函数归零）：
+  - `run.py:main` 199L → ~110L（提取 `build_arg_parser`）
+  - `run.py:_run_single_task` 157L → ~60L（提取任务摘要/进度轮询/步骤收集/
+    输出路径解析/结果渲染 5 个函数）
+  - `pipeline.py:run_plan_async` 153L → ~85L（池化合并复用 `_merge_pooled_results`；
+    收尾提取为 `_finalize_plan_task_async`，与同步版差异保留：不更新 task_queue、不发事件钩子）
+  - `scripts/safe_writer.py:safe_write` 161L → ~90L（提取备份+manifest/换行符处理/
+    临时文件写入/体积行数校验 4 个函数）
+  - `admin_api.py:_handle_stream` 167L → ~80L（提取 SSE 帧发送/重连 replay/
+    writer 查找/后台流水线线程 4 个方法）
+- **.dockerignore 补全**：新增 checkpoints/versions/backups/cache/bus_data/
+  .pytest_tmp/.test_checkpoints/.test_outputs/.zcode（运行时产物不进镜像构建上下文）
+
+### Fixed
+- mypy：run.py 提取函数的 Any 返回值显式 str() 收敛（3 处 no-any-return）
+
 ## [3.3.2] - 2026-08-22
 
 ### Changed（技术债清理）

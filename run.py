@@ -160,10 +160,123 @@ def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestr
     return (None, False)
 
 
+def _print_task_summary(args_args: argparse.Namespace, orch: PipelineOrchestrator,
+                        task_id: str, use_legacy: bool) -> None:
+    """打印任务摘要横幅"""
+    print(f"\n{'='*60}")
+    print(f"任务: {task_id}")
+    print(f"流水线: {args_args.pipeline}")
+    print(f"输入: {args_args.input}")
+    print(f"模式: {'声明式 DAG' if not use_legacy else 'Legacy'}")
+    print(f"Agent: {', '.join(orch.registry.list_agent_names())}")
+    if args_args.queries:
+        print(f"查询: {args_args.queries}")
+    if args_args.resume:
+        print("模式: 断点续传")
+    print(f"{'='*60}\n")
+
+
+def _poll_task_progress(orch: PipelineOrchestrator, args_args: argparse.Namespace,
+                        task, task_id: str) -> bool:
+    """轮询任务进度直到结束。返回 False 表示被中断（已暂停/进入守护等待）。
+
+    中断且 --daemon 时保持进程存活（Admin API 常驻），再次 Ctrl+C 退出。
+    """
+    import time as time_module
+    try:
+        from pipeline_core import TaskStatus
+        while task.status in (TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.PAUSED):
+            time_module.sleep(1)
+            print(f"[run] 进度: {task.progress}%  状态: {task.status.value}")
+    except KeyboardInterrupt:
+        print("\n\n[run] 收到中断信号，正在暂停任务...")
+        orch.pause(task_id)
+        print("[run] 任务已暂停，可使用 --resume 续传")
+        if args_args.daemon:
+            print("\n[run] 守护进程模式激活，按 Ctrl+C 再次退出")
+            try:
+                while True:
+                    time_module.sleep(10)
+            except KeyboardInterrupt:
+                pass
+        return False
+    return True
+
+
+def _collect_steps(task) -> list[dict]:
+    """将 StepResult 列表转为可 JSON 序列化的 dict 列表"""
+    steps = []
+    if task.steps:
+        for step in task.steps:
+            steps.append({
+                "step_name": step.step_name,
+                "agent_name": step.agent_name,
+                "status": step.status,
+                "duration_ms": step.duration_ms,
+                "started_at": step.started_at,
+                "finished_at": step.finished_at,
+                "result": step.result if hasattr(step, 'result') else {}
+            })
+    return steps
+
+
+def _resolve_output_path(args_args: argparse.Namespace, task) -> str:
+    """确定输出文档路径：CLI 指定 > 任务结果 > 任务属性"""
+    if args_args.output and Path(args_args.output).exists():
+        return str(args_args.output)
+    if task.result and isinstance(task.result, dict) and task.result.get("output_path"):
+        return str(task.result["output_path"])
+    if hasattr(task, 'output_path') and task.output_path:
+        return str(task.output_path)
+    return ""
+
+
+def _render_task_result(args_args: argparse.Namespace, task, task_id: str) -> None:
+    """渲染最终结果：JSON 输出或人类可读报告 + ASCII 修复 + 格式导出"""
+    base_dir = Path(__file__).parent
+
+    steps = _collect_steps(task)
+    output_path = _resolve_output_path(args_args, task)
+
+    if args_args.json_output:
+        output_json_result(task, output_path, steps, task.status.value)
+        return
+
+    print(f"\n{'='*60}")
+    print(f"流水线执行完成 | 状态: {task.status.value}")
+    if task.finished_at and task.started_at:
+        try:
+            duration = float(task.finished_at) - float(task.started_at)
+            print(f"耗时: {duration:.1f}s")
+        except (TypeError, ValueError):
+            pass
+
+    if task.steps:
+        print("\n执行步骤:")
+        for step in task.steps:
+            status_icon = "✅" if step.status == "success" else ("❌" if step.status == "failed" else "⏭️")
+            print(f"  {status_icon} {step.agent_name:20s} {step.duration_ms:8.1f}ms")
+
+    if task.error:
+        print(f"\n错误: {task.error}")
+
+    print(f"{'='*60}")
+
+    if args_args.report:
+        report_file = base_dir / "checkpoints" / f"report_{task_id}.json"
+        if report_file.exists():
+            print(f"\n详细报告已保存: {report_file}")
+
+    if args_args.fix_ascii and output_path:
+        _run_ascii_fix(output_path)
+
+    if args_args.export and output_path:
+        _run_export(output_path, args_args.export, args_args.export_output)
+
+
 def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
                      config: dict) -> None:
     """执行单任务：构建 plan/task、等待结果、输出报告"""
-    base_dir = Path(__file__).parent
     task_id = args_args.task_id or str(uuid.uuid4())[:8]
 
     use_legacy = args_args.legacy
@@ -189,18 +302,7 @@ def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
                 sys.exit(1)
         return
 
-    # 打印任务摘要
-    print(f"\n{'='*60}")
-    print(f"任务: {task_id}")
-    print(f"流水线: {args_args.pipeline}")
-    print(f"输入: {args_args.input}")
-    print(f"模式: {'声明式 DAG' if not use_legacy else 'Legacy'}")
-    print(f"Agent: {', '.join(orch.registry.list_agent_names())}")
-    if args_args.queries:
-        print(f"查询: {args_args.queries}")
-    if args_args.resume:
-        print("模式: 断点续传")
-    print(f"{'='*60}\n")
+    _print_task_summary(args_args, orch, task_id, use_legacy)
 
     run_config = {
         "timeout": args_args.timeout,
@@ -237,86 +339,10 @@ def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
         print(f"[run] 计划执行（dry-run），任务ID: {task_id}")
         return
 
-    # 轮询进度
-    import time as time_module
-    try:
-        from pipeline_core import TaskStatus
-        while task.status in (TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.PAUSED):
-            time_module.sleep(1)
-            print(f"[run] 进度: {task.progress}%  状态: {task.status.value}")
-    except KeyboardInterrupt:
-        print("\n\n[run] 收到中断信号，正在暂停任务...")
-        orch.pause(task_id)
-        print("[run] 任务已暂停，可使用 --resume 续传")
-        if args_args.daemon:
-            print("\n[run] 守护进程模式激活，按 Ctrl+C 再次退出")
-            try:
-                while True:
-                    time_module.sleep(10)
-            except KeyboardInterrupt:
-                pass
+    if not _poll_task_progress(orch, args_args, task, task_id):
         return
 
-    print()
-
-    # 输出结果
-    steps = []
-    output_path = ""
-    if task.steps:
-        for step in task.steps:
-            steps.append({
-                "step_name": step.step_name,
-                "agent_name": step.agent_name,
-                "status": step.status,
-                "duration_ms": step.duration_ms,
-                "started_at": step.started_at,
-                "finished_at": step.finished_at,
-                "result": step.result if hasattr(step, 'result') else {}
-            })
-
-    if args_args.output and Path(args_args.output).exists():
-        output_path = args_args.output
-    elif task.result and isinstance(task.result, dict) and task.result.get("output_path"):
-        output_path = task.result["output_path"]
-    elif hasattr(task, 'output_path') and task.output_path:
-        output_path = task.output_path
-
-    status = task.status.value
-
-    if args_args.json_output:
-        output_json_result(task, output_path, steps, status)
-        return
-
-    print(f"\n{'='*60}")
-    print(f"流水线执行完成 | 状态: {task.status.value}")
-    if task.finished_at and task.started_at:
-        try:
-            duration = float(task.finished_at) - float(task.started_at)
-            print(f"耗时: {duration:.1f}s")
-        except (TypeError, ValueError):
-            pass
-
-    if task.steps:
-        print("\n执行步骤:")
-        for step in task.steps:
-            status_icon = "✅" if step.status == "success" else ("❌" if step.status == "failed" else "⏭️")
-            print(f"  {status_icon} {step.agent_name:20s} {step.duration_ms:8.1f}ms")
-
-    if task.error:
-        print(f"\n错误: {task.error}")
-
-    print(f"{'='*60}")
-
-    if args_args.report:
-        report_file = base_dir / "checkpoints" / f"report_{task_id}.json"
-        if report_file.exists():
-            print(f"\n详细报告已保存: {report_file}")
-
-    if args_args.fix_ascii and output_path:
-        _run_ascii_fix(output_path)
-
-    if args_args.export and output_path:
-        _run_export(output_path, args_args.export, args_args.export_output)
+    _render_task_result(args_args, task, task_id)
 
 
 def _run_daemon(orch: PipelineOrchestrator) -> None:
@@ -330,7 +356,8 @@ def _run_daemon(orch: PipelineOrchestrator) -> None:
         pass
 
 
-def main():
+def build_arg_parser() -> argparse.ArgumentParser:
+    """构建 CLI 参数解析器（含输入校验规则）"""
     parser = argparse.ArgumentParser(
         description=f"文档生成流水线 v{__version__} - 声明式 DAG + 自动重做",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -380,7 +407,11 @@ def main():
     parser.add_argument("--no-search", action="store_true", help="禁用搜索补充（仅 LLM 增强）")
     parser.add_argument("--mcp", action="store_true", help="启动 MCP server（stdio JSON-RPC，供 AI agent 调度）")
     parser.add_argument("--recover", action="store_true", help="恢复中断的任务（重启后把 running 改回 pending 并重新执行）")
+    return parser
 
+
+def main():
+    parser = build_arg_parser()
     args = parser.parse_args()
 
     # 非 --check 模式需要输入文件

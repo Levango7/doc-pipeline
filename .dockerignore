@@ -12,10 +12,23 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.pytest_tmp/
+.test_checkpoints/
+.test_outputs/
 output/
 logs/
 dist/
 build/
+
+# 运行时数据目录（由 Dockerfile 显式创建并挂卷，不打包宿主机数据）
+checkpoints/
+versions/
+backups/
+cache/
+bus_data/
+
+# 会话/工具目录
+.zcode/
 
 # 版本控制与编辑器
 .git/

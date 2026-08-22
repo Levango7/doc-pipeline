@@ -978,6 +978,79 @@ class AdminHandler(BaseHTTPRequestHandler):
         ok = mgr.unregister(hook_id)
         self._json({"unregistered": ok, "hook_id": hook_id})
 
+    def _send_sse(self, event_type: str, data: dict, event_id: int = 0) -> None:
+        """写出一条 SSE 帧（客户端断开时静默忽略）"""
+        payload = _fast_dumps({"type": event_type, "data": data})
+        id_line = f"id: {event_id}\n" if event_id else ""
+        try:
+            self.wfile.write(f"{id_line}data: {payload}\n\n".encode())
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _stream_replay(self, task_id: str, query: str,
+                       existing_callback, last_event_id: int) -> None:
+        """SSE 重连：replay 错过的事件后继续监听，直到 complete/error"""
+        self._send_sse("connected", {"task_id": task_id, "query": query,
+                                     "resumed_from": last_event_id, "reconnect": True})
+        missed_events = existing_callback.get_events_since(last_event_id)
+        for event in missed_events:
+            self._send_sse(event.event_type, event.to_dict().get("data", {}),
+                           event.event_id)
+        self._send_sse("resumed", {"replayed": len(missed_events)})
+
+        for event in existing_callback:
+            self._send_sse(event.event_type, event.to_dict().get("data", {}),
+                           event.event_id)
+            if event.event_type in ("complete", "error"):
+                break
+
+    def _find_streaming_agent(self):
+        """查找具备 handle_streaming 能力的 writer agent 实例"""
+        for a in self.orch.registry._agents.values():
+            if hasattr(a, "handle_streaming"):
+                return a
+        return None
+
+    def _start_stream_worker(self, writer_agent, task_id: str,
+                             input_file: Path, callback) -> threading.Thread:
+        """后台线程执行完整流水线（fetcher/researcher/writer 走 run_plan_async 真异步，
+        替代旧的 writer_agent.handle_streaming 单 Agent 方式），完成后回调 complete/error"""
+        orch = self.orch
+
+        def _run():
+            import asyncio as _aio
+
+            from pipeline_core.scheduler import Scheduler
+            try:
+                sched = Scheduler()
+                plan = sched.parse("docgen")
+                # 设置回调，writer 的 _restructure_document 会自动拾取
+                writer_agent._active_stream_callback = callback
+                task = _aio.run(orch.run_plan_async(
+                    plan, input_file=str(input_file), task_id=task_id
+                ))
+                # 流水线完成后发送 complete 事件
+                content = ""
+                if task and task.result:
+                    writer_result = task.result.get("writer", {})
+                    if isinstance(writer_result, dict):
+                        content = writer_result.get("content", "")
+                callback.on_complete(content, {
+                    "status": task.status.value if task else "unknown",
+                    "task_id": task_id,
+                })
+            except Exception as e:
+                callback.on_error(str(e))
+            finally:
+                writer_agent._active_stream_callback = None
+                with contextlib.suppress(OSError):
+                    input_file.unlink()
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        return worker
+
     def _handle_stream(self):
         """SSE 流式端点 —— 实时推送文档生成进度。
 
@@ -1020,15 +1093,6 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
-        def _send_sse(event_type: str, data: dict, event_id: int = 0):
-            payload = _fast_dumps({"type": event_type, "data": data})
-            id_line = f"id: {event_id}\n" if event_id else ""
-            try:
-                self.wfile.write(f"{id_line}data: {payload}\n\n".encode())
-                self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-
         from pipeline_core.streaming import (
             StreamCallback,
             get_callback,
@@ -1036,45 +1100,25 @@ class AdminHandler(BaseHTTPRequestHandler):
             unregister_callback,
         )
 
-        # SSE 重连: 查找已注册的 callback（同一 task_id 的活跃流）
+        # SSE 重连: 存在同一 task_id 的活跃流则 replay 后继续监听
         existing_callback = get_callback(task_id) if last_event_id > 0 else None
-
         if existing_callback:
-            # 重连模式：replay 历史事件后继续监听
-            _send_sse("connected", {"task_id": task_id, "query": query,
-                                    "resumed_from": last_event_id, "reconnect": True})
-            missed_events = existing_callback.get_events_since(last_event_id)
-            for event in missed_events:
-                _send_sse(event.event_type, event.to_dict().get("data", {}),
-                         event.event_id)
-            _send_sse("resumed", {"replayed": len(missed_events)})
-
-            # 继续监听新事件
-            for event in existing_callback:
-                _send_sse(event.event_type, event.to_dict().get("data", {}),
-                         event.event_id)
-                if event.event_type in ("complete", "error"):
-                    break
+            self._stream_replay(task_id, query, existing_callback, last_event_id)
             return
 
         # 首次连接
-        _send_sse("connected", {"task_id": task_id, "query": query,
-                                "resumed_from": 0, "reconnect": False})
+        self._send_sse("connected", {"task_id": task_id, "query": query,
+                                     "resumed_from": 0, "reconnect": False})
 
         if not self.orch:
-            _send_sse("error", {"error": "orchestrator not set"})
+            self._send_sse("error", {"error": "orchestrator not set"})
             return
 
         try:
             # 获取 writer agent 实例
-            writer_agent = None
-            for a in self.orch.registry._agents.values():
-                if hasattr(a, "handle_streaming"):
-                    writer_agent = a
-                    break
-
+            writer_agent = self._find_streaming_agent()
             if not writer_agent:
-                _send_sse("error", {"error": "writer agent not found"})
+                self._send_sse("error", {"error": "writer agent not found"})
                 return
 
             callback = StreamCallback()
@@ -1095,45 +1139,13 @@ class AdminHandler(BaseHTTPRequestHandler):
             input_file.write_text(
                 f"# {title}\n\n## 查询\n\n{query}\n", encoding="utf-8")
 
-            # 在后台线程用 run_plan_async 执行全流水线（端到端真异步）
-            # 替代旧的 writer_agent.handle_streaming(msg, callback) 方式，
-            # 使 fetcher/researcher/writer 三阶段均在 async 路径下执行
-            def _run():
-                import asyncio as _aio
-
-                from pipeline_core.scheduler import Scheduler
-                try:
-                    sched = Scheduler()
-                    plan = sched.parse("docgen")
-                    # 设置回调，writer 的 _restructure_document 会自动拾取
-                    writer_agent._active_stream_callback = callback
-                    task = _aio.run(self.orch.run_plan_async(
-                        plan, input_file=str(input_file), task_id=task_id
-                    ))
-                    # 流水线完成后发送 complete 事件
-                    content = ""
-                    if task and task.result:
-                        writer_result = task.result.get("writer", {})
-                        if isinstance(writer_result, dict):
-                            content = writer_result.get("content", "")
-                    callback.on_complete(content, {
-                        "status": task.status.value if task else "unknown",
-                        "task_id": task_id,
-                    })
-                except Exception as e:
-                    callback.on_error(str(e))
-                finally:
-                    writer_agent._active_stream_callback = None
-                    with contextlib.suppress(OSError):
-                        input_file.unlink()
-
-            worker = threading.Thread(target=_run, daemon=True)
-            worker.start()
+            worker = self._start_stream_worker(
+                writer_agent, task_id, input_file, callback)
 
             # 流式推送事件（带 event_id）
             for event in callback:
-                _send_sse(event.event_type, event.to_dict().get("data", {}),
-                         event.event_id)
+                self._send_sse(event.event_type, event.to_dict().get("data", {}),
+                               event.event_id)
                 if event.event_type in ("complete", "error"):
                     break
 
@@ -1143,7 +1155,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             unregister_callback(task_id)
 
         except Exception as e:
-            _send_sse("error", {"error": str(e)})
+            self._send_sse("error", {"error": str(e)})
             unregister_callback(task_id)
 
 

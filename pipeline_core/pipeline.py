@@ -831,6 +831,35 @@ class PipelineOrchestrator:
 
         return task
 
+    def _finalize_plan_task_async(self, task: PipelineTask, plan: ExecutionPlan) -> None:
+        """async 任务收尾：与 _finalize_plan_task 的差异是不更新 task_queue、不发事件钩子"""
+        task.progress = 100 if task.status == TaskStatus.DONE else task.progress
+        task.finished_at = time.time()
+        self._log("info", f"Pipeline {task.status.value} (async)",
+                  task_id=task.id, pipeline=plan.pipeline_name,
+                  status=task.status.value, duration_sec=round(task.finished_at - task.started_at, 2),
+                  error=task.error or "",
+                  steps=len(task.steps))
+        self._generate_report(task)
+        self._notify_callbacks(task)
+
+        self.bus.publish("pipeline.finished", "orchestrator", {
+            "task_id": task.id,
+            "status": task.status.value,
+            "result": task.result,
+            "error": task.error,
+            "duration": task.finished_at - task.started_at,
+            "plan_id": plan.plan_id,
+        })
+
+        self._cleanup_task_temp(task)
+
+        if task.status == TaskStatus.DONE and not plan.checkpoint.get("keep_on_success", False):
+            self._remove_checkpoint(task.id)
+
+        with self._lock:
+            self._trim_task_history()
+
     async def run_plan_async(self, plan: ExecutionPlan, input_file: str = "",
                              task_id: str | None = None) -> PipelineTask:
         """async 版 run_plan：在已有事件循环中直接 await，消除 asyncio.run 嵌套开销。
@@ -910,38 +939,8 @@ class PipelineOrchestrator:
                 task.current_step = completed
                 task.progress = int((completed / total_nodes) * 100)
 
-                # 池化节点结果合并（与 run_plan 相同）
-                merged = set()
-                for key in list(task.result.keys()):
-                    if "_pool_" in key:
-                        base = key.split("_pool_")[0]
-                        if base not in merged:
-                            merged.add(base)
-                            pooled_results = [
-                                self._get_task_output(task, k) for k in task.result
-                                if k.startswith(f"{base}_pool_") and self._get_task_output(task, k)
-                            ]
-                            if pooled_results:
-                                meta = self.registry.get_meta(base)
-                                if getattr(meta, "results_merge", "") == "extend":
-                                    combined = {"status": "ok", "task_id": task.id,
-                                                 "total": 0, "results": [],
-                                                 "query_count": 0, "engines_used": []}
-                                    for pr in pooled_results:
-                                        if isinstance(pr, dict):
-                                            combined["results"].extend(pr.get("results", []))  # type: ignore[attr-defined]
-                                            combined["total"] = len(combined["results"])  # type: ignore[arg-type]
-                                            combined["query_count"] += pr.get("query_count", 0)
-                                            eng = pr.get("engines_used", [])
-                                            combined["engines_used"] = list(
-                                                set(combined["engines_used"]) | set(eng)  # type: ignore[call-overload]
-                                            )
-                                    self._set_task_output(task, base, combined)
-                                else:
-                                    for pr in pooled_results:
-                                        if pr:
-                                            self._set_task_output(task, base, pr)
-                                            break
+                # 池化节点结果合并（与 run_plan 共用同一实现）
+                self._merge_pooled_results(task)
 
                 self._save_checkpoint(task, full_state=True)
 
@@ -956,32 +955,7 @@ class PipelineOrchestrator:
             task.error = str(e)
 
         finally:
-            task.progress = 100 if task.status == TaskStatus.DONE else task.progress
-            task.finished_at = time.time()
-            self._log("info", f"Pipeline {task.status.value} (async)",
-                      task_id=task.id, pipeline=plan.pipeline_name,
-                      status=task.status.value, duration_sec=round(task.finished_at - task.started_at, 2),
-                      error=task.error or "",
-                      steps=len(task.steps))
-            self._generate_report(task)
-            self._notify_callbacks(task)
-
-            self.bus.publish("pipeline.finished", "orchestrator", {
-                "task_id": task.id,
-                "status": task.status.value,
-                "result": task.result,
-                "error": task.error,
-                "duration": task.finished_at - task.started_at,
-                "plan_id": plan.plan_id,
-            })
-
-            self._cleanup_task_temp(task)
-
-            if task.status == TaskStatus.DONE and not plan.checkpoint.get("keep_on_success", False):
-                self._remove_checkpoint(task.id)
-
-            with self._lock:
-                self._trim_task_history()
+            self._finalize_plan_task_async(task, plan)
 
         return task
 

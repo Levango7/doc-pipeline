@@ -272,6 +272,78 @@ cleanup_old_backups = cleanup_tiered
 # 核心写入
 # =============================================================================
 
+def _backup_target(target: str, backup_dir: str, manifest_path: str,
+                   info: dict, reason: str, agent: str) -> str:
+    """备份原文件并更新 manifest，返回备份路径"""
+    backup_path = os.path.join(
+        backup_dir,
+        f"{Path(target).stem}_{now_ts()}{Path(target).suffix}"
+    )
+    os.makedirs(backup_dir, exist_ok=True)
+    shutil.copy2(target, backup_path)
+
+    man = load_manifest(manifest_path)
+    if target not in man["files"]:
+        man["files"][target] = {"backups": [], "latest": None}
+    entry = {
+        "path": str(Path(backup_path).resolve()),
+        "timestamp": datetime.datetime.now().isoformat(),
+        "size": info["size"],
+        "lines": info["lines"],
+        "sha256": info["sha256"],
+        "reason": reason,
+        "agent": agent,
+    }
+    man["files"][target]["backups"].append(entry)
+    man["files"][target]["latest"] = entry
+    save_manifest(manifest_path, man)
+
+    print(f"[SafeWriter] ✓ 备份: {Path(backup_path).name} ({info['size']:,} bytes, {info['lines']} 行)")
+    return backup_path
+
+
+def _normalize_newlines(content: str, newline: str) -> str:
+    """按策略统一换行符："auto" 保持原样 / "lf" / "crlf" """
+    if newline == "crlf":
+        return content.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+    if newline == "lf":
+        return content.replace("\r\n", "\n").replace("\r", "\n")
+    return content
+
+
+def _write_tmp_file(target: str, content: str) -> tuple[str, int, int]:
+    """写入临时文件，返回 (临时路径, 字节数, 行数)。失败抛 RuntimeError。"""
+    ext = Path(target).suffix.lower()
+    enc = "utf-8-sig" if ext in {".csv", ".tsv"} else "utf-8"
+    tmp_dir = str(Path(target).parent)
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            suffix=Path(target).suffix, prefix=".tmp_", dir=tmp_dir
+        )
+        os.close(fd)
+        content_bytes = content.encode(enc)
+        with open(tmp_path, "wb") as f:
+            f.write(content_bytes)
+        return tmp_path, len(content_bytes), content.count("\n") + 1
+    except Exception as e:
+        raise RuntimeError(f"写入临时文件失败: {e}") from e
+
+
+def _validate_new_content(info: dict, new_size: int, new_lines: int) -> list[str]:
+    """写入前校验：体积与行数突变检测（空内容检查由 safe_write 内联完成），返回问题列表"""
+    issues = []
+    if info["exists"] and info["size"] > 0:
+        size_ratio = new_size / info["size"]
+        if size_ratio < 0.5:
+            issues.append(f"P1: 文件缩减超50% ({info['size']:,} → {new_size:,} bytes)")
+        elif size_ratio > 10:
+            issues.append(f"P1: 文件增大超10倍 ({info['size']:,} → {new_size:,} bytes)")
+        line_ratio = new_lines / max(info["lines"], 1)
+        if line_ratio < 0.7:
+            issues.append(f"P1: 行数减少超30% ({info['lines']} → {new_lines} 行)")
+    return issues
+
+
 def safe_write(target: str, content: str,
                backup_dir: str = "backups",
                reason: str = "auto",
@@ -323,73 +395,26 @@ def safe_write(target: str, content: str,
             print("  ...(更多差异省略)...")
         print("─" * 50)
 
-    # Step 2: 备份
+    # Step 2: 备份 + manifest
     if info["exists"]:
-        backup_path = os.path.join(
-            backup_dir,
-            f"{Path(target).stem}_{now_ts()}{Path(target).suffix}"
-        )
-        os.makedirs(backup_dir, exist_ok=True)
-        shutil.copy2(target, backup_path)
-
-        # 更新 manifest
-        man = load_manifest(manifest_path)
-        if target not in man["files"]:
-            man["files"][target] = {"backups": [], "latest": None}
-        entry = {
-            "path": str(Path(backup_path).resolve()),
-            "timestamp": datetime.datetime.now().isoformat(),
-            "size": info["size"],
-            "lines": info["lines"],
-            "sha256": info["sha256"],
-            "reason": reason,
-            "agent": agent,
-        }
-        man["files"][target]["backups"].append(entry)
-        man["files"][target]["latest"] = entry
-        save_manifest(manifest_path, man)
-
-        print(f"[SafeWriter] ✓ 备份: {Path(backup_path).name} ({info['size']:,} bytes, {info['lines']} 行)")
+        backup_path = _backup_target(target, backup_dir, manifest_path, info, reason, agent)
 
     # Step 3: 换行符处理
-    if newline == "crlf":
-        content = content.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
-    elif newline == "lf":
-        content = content.replace("\r\n", "\n").replace("\r", "\n")
-    # "auto" = 保持传入 content 的换行符
+    content = _normalize_newlines(content, newline)
 
     # Step 4: 写入临时文件
-    ext = Path(target).suffix.lower()
-    enc = "utf-8-sig" if ext in {".csv", ".tsv"} else "utf-8"
-    tmp_dir = str(Path(target).parent)
-
     try:
-        fd, tmp_path = tempfile.mkstemp(
-            suffix=Path(target).suffix, prefix=".tmp_", dir=tmp_dir
-        )
-        os.close(fd)
-        content_bytes = content.encode(enc)
-        with open(tmp_path, "wb") as f:
-            f.write(content_bytes)
-        new_size = len(content_bytes)
-        new_lines = content.count("\n") + 1
+        tmp_path, new_size, new_lines = _write_tmp_file(target, content)
         print(f"[SafeWriter] ✓ 临时文件: {new_size:,} bytes, {new_lines} 行")
-    except Exception as e:
-        return {"status": "error", "message": f"写入临时文件失败: {e}"}
+    except RuntimeError as e:
+        return {"status": "error", "message": str(e)}
 
     # Step 5: 验证
     issues = []
     if not content.strip():
         issues.append("P0: 内容为空")
-    elif info["exists"] and info["size"] > 0:
-        size_ratio = new_size / info["size"]
-        if size_ratio < 0.5:
-            issues.append(f"P1: 文件缩减超50% ({info['size']:,} → {new_size:,} bytes)")
-        elif size_ratio > 10:
-            issues.append(f"P1: 文件增大超10倍 ({info['size']:,} → {new_size:,} bytes)")
-        line_ratio = new_lines / max(info["lines"], 1)
-        if line_ratio < 0.7:
-            issues.append(f"P1: 行数减少超30% ({info['lines']} → {new_lines} 行)")
+    else:
+        issues.extend(_validate_new_content(info, new_size, new_lines))
 
     if issues:
         os.unlink(tmp_path)
