@@ -26,8 +26,8 @@ FROM python:3.12-slim AS runtime
 # System setup: non-root user + runtime dirs
 RUN addgroup --system --gid 1001 app && \
     adduser --system --uid 1001 --gid 1001 --disabled-password --gecos "" app && \
-    mkdir -p /app /data && \
-    chown app:app /app /data
+    mkdir -p /app/checkpoints /app/logs /app/versions /app/backups /data && \
+    chown -R app:app /app /data
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -45,7 +45,7 @@ ENV PATH=/opt/venv/bin:$PATH
 COPY --chown=app:app . .
 
 # Runtime data directories (persistent volume mounts)
-VOLUME ["/app/checkpoints", "/app/logs"]
+VOLUME ["/app/checkpoints", "/app/logs", "/app/versions", "/app/backups"]
 
 # Admin API
 EXPOSE 8910

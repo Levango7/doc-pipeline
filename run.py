@@ -16,6 +16,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -133,7 +134,7 @@ def _load_config(args_args: argparse.Namespace, project_root: Path) -> dict:
 
 
 def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestrator,
-                           config: dict) -> tuple | None:
+                           config: dict) -> tuple[Any, bool]:
     """尝试从 YAML 文件解析 pipeline plan；失败时返回 (None, False) 表示应走 legacy 路径"""
     from pipeline_core.scheduler import Scheduler
     sched = Scheduler()
@@ -169,9 +170,7 @@ def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
     plan = None
 
     if not use_legacy:
-        resolved = _resolve_pipeline_plan(args_args, orch, config)
-        plan = resolved[0] if resolved else None
-        plan_loaded = resolved[1] if resolved else False
+        plan, plan_loaded = _resolve_pipeline_plan(args_args, orch, config)
         if not plan_loaded:
             use_legacy = True
 

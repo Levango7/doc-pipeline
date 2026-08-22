@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.1] - 2026-08-22
+
+### Fixed
+- **writer.py 生产 bug**：`_restructure_document` 的 `asyncio.gather` 在事件循环外调用，
+  配置 LLM Key 且走同步调用路径时必然抛 `RuntimeError`（无 current event loop，协程未 await）。
+  修复为在运行中的 loop 内执行 gather；同时移除集成测试中掩盖该缺陷的 `contextlib.suppress`
+- scripts/format_converter.py: 清零 18 个 mypy 类型错误（str/Path 混用、Optional 未收窄），行为不变
+- llm_router.py: 注册 atexit 钩子关闭共享 aiohttp Session，消除连接泄漏告警
+- Dockerfile: 显式创建并 chown checkpoints/logs/versions/backups 目录，补全 VOLUME 声明
+  （修复匿名卷 root 属主隐患；versions/backups 数据不再随容器销毁丢失）
+- 文档：README/deployment.md 与 config.json 实际搜索引擎列表对齐（原 mock 描述过时）；
+  Python 版本要求统一为 3.11+（与 pyproject 一致）；测试计数更新为 582；
+  生产配置对比表与 config.production.json 实际内容对齐
+
+### Changed
+- CI: perf-regression 在 push main 时也触发（原来仅 PR）；dev 依赖安装加版本下界（对齐 pyproject dev extras）
+- run.py: `_resolve_pipeline_plan` 返回类型精确为 `tuple[Any, bool]`
+
 ## [3.3.0] - 2026-08-11
 
 ### Fixed

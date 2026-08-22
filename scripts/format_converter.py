@@ -85,19 +85,19 @@ class FormatConverter:
 
         Returns: True 成功, False 失败
         """
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
         # 方式 1: mermaid-cli (mmdc)
         if self._mmdc_path:
-            return self._mmdc_render(mermaid_code, output_path, width, theme)
+            return self._mmdc_render(mermaid_code, out_path, width, theme)
 
         # 方式 2: Kroki API
-        if self._kroki_render(mermaid_code, output_path, "png"):
+        if self._kroki_render(mermaid_code, out_path, "png"):
             return True
 
         # 方式 3: mermaid.ink
-        if self._mermaid_ink_render(mermaid_code, output_path):
+        if self._mermaid_ink_render(mermaid_code, out_path):
             return True
 
         logger.warning("Mermaid 渲染失败：无可用渲染方式（安装 mermaid-cli: npm i -g @mermaid-js/mermaid-cli）")
@@ -106,24 +106,28 @@ class FormatConverter:
     def mermaid_to_svg(self, mermaid_code: str, output_path: str,
                        theme: str = "default") -> bool:
         """Mermaid 代码 → SVG 矢量图"""
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
         if self._mmdc_path:
-            return self._mmdc_render(mermaid_code, output_path, 0, theme, fmt="svg")
+            return self._mmdc_render(mermaid_code, out_path, 0, theme, fmt="svg")
 
-        return bool(self._kroki_render(mermaid_code, output_path, "svg"))
+        return bool(self._kroki_render(mermaid_code, out_path, "svg"))
 
     def _mmdc_render(self, code: str, output: Path, width: int,
                      theme: str, fmt: str = "png") -> bool:
         """使用 mermaid-cli 渲染"""
+        mmdc_cmd = self._mmdc_path
+        if not mmdc_cmd:
+            logger.warning("mmdc 未安装，跳过本地渲染")
+            return False
         try:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".mmd",
                                              delete=False, encoding="utf-8") as f:
                 f.write(code)
                 mmd_file = f.name
 
-            cmd = self._mmdc_path.split() + [
+            cmd = mmdc_cmd.split() + [
                 "-i", mmd_file,
                 "-o", str(output),
                 "-t", theme,
@@ -203,8 +207,8 @@ class FormatConverter:
 
         Returns: HTML 内容字符串
         """
-        md_path = Path(md_path)
-        with open(md_path, encoding="utf-8") as f:
+        md_file = Path(md_path)
+        with open(md_file, encoding="utf-8") as f:
             md_content = f.read()
 
         html_body = self._markdown_to_html_body(md_content)
@@ -228,11 +232,11 @@ class FormatConverter:
 </html>"""
 
         if html_path:
-            html_path = Path(html_path)
-            html_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(html_path, "w", encoding="utf-8") as f:
+            html_out = Path(html_path)
+            html_out.parent.mkdir(parents=True, exist_ok=True)
+            with open(html_out, "w", encoding="utf-8") as f:
                 f.write(html)
-            logger.info(f"HTML 已写入: {html_path}")
+            logger.info(f"HTML 已写入: {html_out}")
 
         return html
 
@@ -368,22 +372,22 @@ class FormatConverter:
 
         优先使用 pandoc（质量最好），回退到 python-docx。
         """
-        md_path = Path(md_path)
-        docx_path = md_path.with_suffix(".docx") if docx_path is None else Path(docx_path)
+        md_file = Path(md_path)
+        docx_file = md_file.with_suffix(".docx") if docx_path is None else Path(docx_path)
 
-        docx_path.parent.mkdir(parents=True, exist_ok=True)
+        docx_file.parent.mkdir(parents=True, exist_ok=True)
 
         # 方式 1: pandoc
         if self._pandoc_path:
             try:
                 result = subprocess.run(
-                    ["pandoc", str(md_path), "-o", str(docx_path),
+                    ["pandoc", str(md_file), "-o", str(docx_file),
                      "--from=markdown", "--to=docx"],
                     capture_output=True, text=True, timeout=60,
                 )
                 if result.returncode == 0:
-                    logger.info(f"pandoc 转换成功: {docx_path}")
-                    return str(docx_path)
+                    logger.info(f"pandoc 转换成功: {docx_file}")
+                    return str(docx_file)
                 else:
                     logger.warning(f"pandoc 转换失败: {result.stderr}")
             except Exception as e:
@@ -393,7 +397,7 @@ class FormatConverter:
         try:
             from docx import Document
             doc = Document()
-            with open(md_path, encoding="utf-8") as f:
+            with open(md_file, encoding="utf-8") as f:
                 md_content = f.read()
 
             for line in md_content.split("\n"):
@@ -404,9 +408,9 @@ class FormatConverter:
                 elif line.strip():
                     doc.add_paragraph(line.strip())
 
-            doc.save(str(docx_path))
-            logger.info(f"python-docx 转换成功: {docx_path}")
-            return str(docx_path)
+            doc.save(str(docx_file))
+            logger.info(f"python-docx 转换成功: {docx_file}")
+            return str(docx_file)
         except ImportError:
             logger.warning("python-docx 未安装（pip install python-docx）")
         except Exception as e:
@@ -421,19 +425,19 @@ class FormatConverter:
 
         将 ```mermaid 代码块替换为图片引用。
         """
-        md_path = Path(md_path)
-        with open(md_path, encoding="utf-8") as f:
+        md_file = Path(md_path)
+        with open(md_file, encoding="utf-8") as f:
             content = f.read()
 
-        output_dir = md_path.parent / "images" if output_dir is None else Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = md_file.parent / "images" if output_dir is None else Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
 
         def replace_mermaid(match):
             code = match.group(1)
             # P2 修复：同毫秒内多个图会重名，加计数器
             img_name = f"mermaid_{int(time.time()*1000)}_{replace_mermaid._counter}.png"
             replace_mermaid._counter += 1
-            img_path = output_dir / img_name
+            img_path = out_dir / img_name
             if self.mermaid_to_png(code, str(img_path)):
                 return f"![{img_name}]({img_path})"
             else:
@@ -449,11 +453,11 @@ class FormatConverter:
         )
 
         # 写回
-        with open(md_path, "w", encoding="utf-8") as f:
+        with open(md_file, "w", encoding="utf-8") as f:
             f.write(content)
 
-        logger.info(f"Mermaid 图渲染完成: {md_path}")
-        return str(md_path)
+        logger.info(f"Mermaid 图渲染完成: {md_file}")
+        return str(md_file)
 
     def status(self) -> dict:
         """获取转换器状态"""

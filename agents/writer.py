@@ -956,13 +956,16 @@ class WriterAgent(BaseAgent):
                 return ""
 
         # 使用 asyncio 真并行（创建新事件循环运行）
+        # 注意：gather 必须在运行中的 loop 内调用 —— 在 loop 外调用时
+        # ensure_future 会因主/工作线程无 current event loop 抛 RuntimeError
+        async def _gather_all() -> list[tuple[int, str, str]]:
+            return await asyncio.gather(*[
+                _gen_one_async(i, sn, sp) for i, sn, sp in sec_specs
+            ])
+
         loop = asyncio.new_event_loop()
         try:
-            results_parallel = loop.run_until_complete(
-                asyncio.gather(*[
-                    _gen_one_async(i, sn, sp) for i, sn, sp in sec_specs
-                ])
-            )
+            results_parallel = loop.run_until_complete(_gather_all())
         finally:
             loop.close()
 

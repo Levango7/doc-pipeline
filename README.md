@@ -27,7 +27,7 @@
 
 ### 前置条件
 
-- Python 3.10+
+- Python 3.11+
 - 网络连接（用于检索引擎抓取内容）
 - 搜索引擎 API Key（可选）— 复制 `.env.example` 为 `.env` 并填入 Bocha/Tavily/Serper 等 Key；无 Key 时默认使用 Bing/Sogou/360 免费引擎
 
@@ -222,15 +222,15 @@ citation:
 
 ### 生产环境配置
 
-项目提供 `config.production.json` 模板，与默认 `config.json`（测试用）的区别：
+项目提供 `config.production.json` 模板，与默认 `config.json` 的区别：
 
-| 配置项 | 测试 (config.json) | 生产 (config.production.json) |
+| 配置项 | 默认 (config.json) | 生产 (config.production.json) |
 |--------|-------------------|------------------------------|
-| `search_engines` | `["mock"]` | `["bocha", "tavily", "serper", "bing", "sogou", "360"]` |
+| `researcher.search_engines` | `["bing", "sogou", "360"]`（免费 HTML 兜底引擎） | `["bocha", "tavily", "serper", "bing", "sogou", "360"]`（含付费 API 引擎） |
 | `fail_fast` | `true` | `false`（单 Agent 失败不中断流水线） |
-| `max_workers` | 3 | 5 |
-| `cache_size` | 1000 | 2000 |
-| `admin_api.enabled` | — | `false`（按需开启） |
+| `researcher.max_workers` | 3 | 5 |
+| `researcher.cache_size` | 1000 | 2000 |
+| `admin_api.enabled` | —（由 CLI `--admin`/`--dashboard` 控制） | `true`（绑定 `0.0.0.0`，公网部署必须设置 `ADMIN_API_KEY`） |
 
 ```bash
 # 使用生产配置
@@ -343,7 +343,7 @@ docker run -p 8910:8910 -v $(pwd)/checkpoints:/app/checkpoints doc-pipeline
 python -m pytest tests/ -v
 ```
 
-**525 个测试全部通过**（6 个 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
+**582 个测试全部通过**（另有 6 个 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
 
 ```bash
 # 运行真实端到端测试（需要网络 + LLM API Key）
@@ -413,7 +413,7 @@ doc-pipeline/
 │       ├── technical-doc.yaml
 │       └── tutorial.yaml
 ├── dashboard/           # 前端仪表盘
-├── tests/               # 525 个测试（+ 6 个 e2e）
+├── tests/               # 582 个测试（+ 6 个 e2e）
 ├── checkpoints/         # 断点 + 日志（自动轮转）
 ├── versions/            # 文档版本存储
 ├── run.py               # CLI 入口
@@ -426,9 +426,10 @@ doc-pipeline/
 
 ## 📈 性能
 
-> **注意**：默认 `config.json` 使用 `search_engines: ["mock"]`（模拟引擎，无网络请求），
-> 质量门控自动跳过 LLM。以下数据为 **mock 模式** 下的框架性能基准。
-> 真实搜索 + LLM 润色请切换：`python run.py input.md -c config.production.json -o out.md`
+> **注意**：以下数据来自 `benchmark.py` 的 mock 基准（模拟引擎，无网络 I/O，质量门控跳过 LLM），
+> 反映框架本身的开销。默认 `config.json` 已启用 Bing/Sogou/360 免费 HTML 兜底引擎（无需 API Key，
+> 结果质量低于付费 API 引擎）；完整多引擎检索 + LLM 润色请使用：
+> `python run.py input.md -c config.production.json -o out.md`
 
 | 指标 | 数值 | 模式 |
 |------|------|------|
@@ -437,7 +438,7 @@ doc-pipeline/
 | LLM 额度消耗 | 0（质量门控跳过，规则兜底） | mock |
 | 消息总线吞吐 | 批量 drain 50 条/轮 | — |
 | 缓存命中 | 125 万 ops/s | — |
-| 测试覆盖 | 525 tests (+ 6 e2e) | — |
+| 测试覆盖 | 582 tests (+ 6 e2e) | — |
 
 ### 生产模式预期耗时（config.production.json）
 

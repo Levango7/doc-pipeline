@@ -3,7 +3,6 @@
 这些测试不测功能正确性，只验证"A 确实调了 B"。
 如果有人删掉集成调用，这些测试会红。
 """
-import contextlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -152,13 +151,20 @@ class TestWriterFeedbackIntegration:
             "sections": [{"title": "intro", "prompt": "Write intro"}],
         })
 
-        with patch("pipeline_core.quality_feedback.get_quality_feedback") as mock_gqf:
+        # mock LLM 路径：router 不可用 + 异步生成返回空串（避免真实网络调用）
+        async def _fake_llm_chat_async(messages, **kwargs):
+            return ""
+
+        writer._llm_chat_async = _fake_llm_chat_async
+
+        with patch("pipeline_core.quality_feedback.get_quality_feedback") as mock_gqf, \
+                patch("pipeline_core.llm_router.get_router", return_value=None):
             mock_gqf.return_value.get_recommendations = MagicMock(return_value=["加强引用"])
-            with contextlib.suppress(Exception):
-                writer._restructure_document(
-                    content="Some content",
-                    articles=[{"title": "a", "url": "http://x", "text": "t"}],
-                    query="test",
-                    title="Test",
-                )
+            # 不再用 suppress 吞异常 —— 让真实回归直接暴露
+            writer._restructure_document(
+                content="Some content",
+                articles=[{"title": "a", "url": "http://x", "text": "t"}],
+                query="test",
+                title="Test",
+            )
             mock_gqf.return_value.get_recommendations.assert_called_once()

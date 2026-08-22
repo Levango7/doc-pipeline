@@ -22,6 +22,8 @@ LLM Router — 多供应商 LLM 路由器
   10. 本地 Ollama（可选）
 """
 import asyncio
+import atexit
+import contextlib
 import logging
 import os
 import re
@@ -71,6 +73,17 @@ async def _close_shared_session():
     if _shared_aiohttp_session is not None:
         await _shared_aiohttp_session.close()
         _shared_aiohttp_session = None
+
+
+def _close_shared_session_at_exit() -> None:
+    """进程退出时关闭共享 aiohttp Session（best-effort，避免连接泄漏告警）"""
+    if _shared_aiohttp_session is None or getattr(_shared_aiohttp_session, "closed", True):
+        return
+    with contextlib.suppress(Exception):
+        asyncio.run(_close_shared_session())
+
+
+atexit.register(_close_shared_session_at_exit)
 
 
 @dataclass

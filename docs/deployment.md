@@ -31,9 +31,9 @@
 
 **无需 Key 的兜底引擎**：Bing / Baidu / Sogou / 360 / DuckDuckGo（HTML 抓取，稳定性较低但零成本）。
 
-> ⚠️ **降级行为**：未配置任何 API Key 时，系统自动使用 HTML 兜底引擎；配置了 `search_engines: [mock]` 的
-> `config.json` 为测试专用，生产请务必使用 `config.production.json`。启动日志会输出实际生效的引擎列表，
-> 请留意确认。
+> ⚠️ **降级行为**：未配置任何 API Key 时，系统自动使用 HTML 兜底引擎（Bing/Baidu/Sogou/360，
+> 稳定性较低但零成本）。生产环境建议使用 `config.production.json` 启用 Bocha/Tavily/Serper 等
+> 结构化 API 引擎。启动日志会输出实际生效的引擎列表，请留意确认。
 
 ### 2.2 LLM Key（用于 Writer 润色 / 质量增强）
 
