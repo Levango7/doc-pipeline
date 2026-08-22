@@ -364,15 +364,51 @@ class DAGExecutor:
 
         return result
 
-    def execute_level(self, task, level: list, input_file: str,
-                      plan, executor: ThreadPoolExecutor) -> bool:
-        """执行一个 DAG 层级的所有节点，处理成功/失败/重试/熔断。
-        返回 True 表示层级成功完成，False 表示需要中断（fail_fast）。"""
-        from .pipeline import StepResult, TaskStatus
+    # ─── 层级执行：共享辅助方法 ─────────────────────
 
-        if task.stop_event.is_set() or (self._stop_event and self._stop_event.is_set()):
-            task.status = TaskStatus.CANCELLED
-            return False
+    @staticmethod
+    def _business_failure(result) -> tuple[bool, str]:
+        """Agent 返回业务失败（status ∈ blocked/fail）时返回 (True, 错误消息)"""
+        if isinstance(result, dict):
+            sem_status = result.get("status")
+            if sem_status in ("blocked", "fail"):
+                raw = result.get("message", result.get("error", f"Agent returned {sem_status}"))
+                return True, "" if raw is None else str(raw)
+        return False, ""
+
+    @staticmethod
+    def _evaluate_retry_result(retry_result) -> tuple[bool, str]:
+        """判定重试结果是否成功，返回 (是否成功, 失败原因)"""
+        retry_ok = True
+        retry_err = ""
+        if not retry_result or "error" in retry_result:
+            retry_ok = False
+            raw = retry_result.get("error", "retry failed") if retry_result else "retry failed"
+            retry_err = "" if raw is None else str(raw)
+        elif isinstance(retry_result, dict):
+            sem_status = retry_result.get("status")
+            if sem_status in ("blocked", "fail"):
+                raw = retry_result.get("message", retry_result.get("error", f"Agent returned {sem_status}"))
+                retry_err = "" if raw is None else str(raw)
+        return retry_ok, retry_err
+
+    def _apply_node_success(self, task, node, dag_node, step_result, result) -> None:
+        """节点成功：写入 dag_node/step_result/任务输出 + 熔断成功计数"""
+        dag_node.result = result
+        dag_node.status = "success"
+        dag_node.finished_at = time.time()
+        dag_node.error = ""
+        step_result.status = "success"
+        step_result.result = result
+        step_result.error = ""
+        self._set_task_output(task, node.agent_name, result)
+        self._circuit_breaker_success(node)
+
+    def _submit_level_futures(self, task, level: list, input_file: str,
+                              plan, executor: ThreadPoolExecutor) -> dict:
+        """提交层级内所有节点到执行器，返回 {future: (node, dag_node, step_result)}"""
+        from .executor_factory import is_process_executor
+        from .pipeline import StepResult
 
         futures = {}
         for node in level:
@@ -391,8 +427,6 @@ class DAGExecutor:
                 started_at=time.time(),
             )
 
-            from .executor_factory import is_process_executor
-
             if is_process_executor(executor):
                 # ProcessPoolExecutor 模式：使用模块级函数（可 pickle）
                 future = executor.submit(
@@ -405,94 +439,156 @@ class DAGExecutor:
                     task=task, node=node, input_file=input_file, plan=plan,
                 )
             futures[future] = (node, dag_node, step_result)
+        return futures
+
+    def _retry_node_sync(self, task, node, dag_node, step_result,
+                         input_file: str, plan) -> tuple[object, str]:
+        """失败节点重试循环（线程版：stop_event.wait 可中断退避）。
+        返回 (重试成功的结果或 None, 最后错误)。"""
+        last_error = dag_node.error or ""
+        while dag_node.attempts < node.max_retries:
+            delay = backoff_with_jitter(
+                base_delay=getattr(node, "initial_delay", 1.0),
+                attempt=dag_node.attempts,
+                strategy=getattr(node, "backoff", "exponential"),
+            )
+            self._log("warning", f"Node {node.agent_name} 失败，{delay:.1f}s 后重试 (尝试 {dag_node.attempts + 1}/{node.max_retries})",
+                      task_id=task.id, error=str(dag_node.error)[:100])
+            # 用 stop_event.wait 替代 time.sleep，支持取消中断
+            if task.stop_event.wait(delay):
+                # 任务被取消，中断重试
+                break
+            # 全局停止信号（shutdown）补充检查：上面的 wait 只监听 per-task
+            # 事件，全局停止的感知最多延迟一个退避周期
+            if self._stop_event is not None and self._stop_event.is_set():
+                break
+            # 重试执行前再查一次取消信号，避免取消后仍发起下一次节点调用
+            if task.stop_event.is_set():
+                break
+            dag_node.attempts += 1
+            dag_node.status = "pending"
+            try:
+                retry_result = self.execute_node_from_scheduler(
+                    task, node, input_file, plan
+                )
+                retry_ok, retry_err = self._evaluate_retry_result(retry_result)
+
+                if retry_ok:
+                    self._apply_node_success(task, node, dag_node, step_result, retry_result)
+                    return retry_result, ""
+                last_error = retry_err
+                dag_node.error = retry_err
+                step_result.error = retry_err
+            except Exception as retry_e:
+                last_error = str(retry_e)
+                dag_node.error = str(retry_e)
+                step_result.error = str(retry_e)
+        return None, last_error
+
+    async def _retry_node_async(self, task, node, dag_node, step_result,
+                                input_file: str, plan) -> tuple[object, str]:
+        """失败节点重试循环（async 版：asyncio.sleep 避免阻塞事件循环）。
+        返回 (重试成功的结果或 None, 最后错误)。"""
+        last_error = dag_node.error or ""
+        while dag_node.attempts < node.max_retries:
+            delay = backoff_with_jitter(
+                base_delay=getattr(node, "initial_delay", 1.0),
+                attempt=dag_node.attempts,
+                strategy=getattr(node, "backoff", "exponential"),
+            )
+            self._log("warning", f"Node {node.agent_name} 失败，{delay:.1f}s 后重试 (尝试 {dag_node.attempts + 1}/{node.max_retries})",
+                      task_id=task.id, error=str(dag_node.error)[:100])
+            # 原实现用 task.stop_event.wait(delay) 会阻塞 asyncio 事件循环；
+            # 改为 await asyncio.sleep 避免阻塞，随后再检查 stop 信号。
+            await asyncio.sleep(delay)
+            if task.stop_event.is_set():
+                break
+            # 全局停止信号补充检查（与线程版对齐）
+            if self._stop_event is not None and self._stop_event.is_set():
+                break
+            dag_node.attempts += 1
+            dag_node.status = "pending"
+            try:
+                retry_result = await asyncio.to_thread(
+                    self.execute_node_from_scheduler, task, node, input_file, plan
+                )
+                retry_ok, retry_err = self._evaluate_retry_result(retry_result)
+
+                if retry_ok:
+                    self._apply_node_success(task, node, dag_node, step_result, retry_result)
+                    return retry_result, ""
+                last_error = retry_err
+                dag_node.error = retry_err
+                step_result.error = retry_err
+            except Exception as retry_e:
+                last_error = str(retry_e)
+                dag_node.error = str(retry_e)
+                step_result.error = str(retry_e)
+        return None, last_error
+
+    def _record_step_result(self, task, plan, node, step_result) -> None:
+        """记录单节点步骤：checkpoint、审计日志、指标（as_completed 每节点 finally）"""
+        step_result.finished_at = time.time()
+        duration_ms = (step_result.finished_at - step_result.started_at) * 1000
+        task.steps.append(step_result)
+        if self._checkpoint_save:
+            self._checkpoint_save(task)
+        if self._audit_log:
+            self._audit_log(
+                task_id=task.id,
+                agent_name=node.agent_name,
+                input_summary=getattr(getattr(node, "agent_config", None), "config", {}),
+                output_summary=step_result.result or {},
+                duration_ms=duration_ms,
+                status=step_result.status,
+                error=step_result.error,
+            )
+        self._metrics.observe(
+            "step_duration_ms", duration_ms,
+            labels={"agent": node.agent_name, "status": step_result.status},
+        )
+        self._metrics.counter(
+            "step_total", labels={"agent": node.agent_name},
+        )
+        if step_result.status != "success":
+            self._metrics.counter(
+                "step_failures", labels={"agent": node.agent_name, "status": step_result.status},
+            )
+        self._metrics.gauge(
+            "pipeline_progress", task.progress,
+            labels={"pipeline": getattr(plan, "pipeline_name", "")},
+        )
+
+    def execute_level(self, task, level: list, input_file: str,
+                      plan, executor: ThreadPoolExecutor) -> bool:
+        """执行一个 DAG 层级的所有节点，处理成功/失败/重试/熔断。
+        返回 True 表示层级成功完成，False 表示需要中断（fail_fast）。"""
+        from .pipeline import TaskStatus
+
+        if task.stop_event.is_set() or (self._stop_event and self._stop_event.is_set()):
+            task.status = TaskStatus.CANCELLED
+            return False
+
+        futures = self._submit_level_futures(task, level, input_file, plan, executor)
 
         for future in as_completed(futures):
             node, dag_node, step_result = futures[future]
-            result = None
-            last_error = ""
             try:
                 result = future.result()
 
-                is_business_fail = False
-                if isinstance(result, dict):
-                    sem_status = result.get("status")
-                    if sem_status in ("blocked", "fail"):
-                        is_business_fail = True
-                        last_error = result.get("message", result.get("error", f"Agent returned {sem_status}"))  # type: ignore[assignment]
-
+                is_business_fail, biz_err = self._business_failure(result)
                 if is_business_fail:
-                    raise Exception(last_error or "Agent returned failure status")
+                    raise Exception(biz_err or "Agent returned failure status")
 
                 # 成功路径
-                dag_node.result = result
-                dag_node.status = "success"
-                dag_node.finished_at = time.time()
-                step_result.status = "success"
-                step_result.result = result
-                self._set_task_output(task, node.agent_name, result)
-                self._circuit_breaker_success(node)
+                self._apply_node_success(task, node, dag_node, step_result, result)
 
             except Exception as e:
                 dag_node.error = str(e)
-                last_error = str(e)
 
-                # while 循环重试直到达到 max_retries
-                while dag_node.attempts < node.max_retries:
-                    delay = backoff_with_jitter(
-                        base_delay=getattr(node, "initial_delay", 1.0),
-                        attempt=dag_node.attempts,
-                        strategy=getattr(node, "backoff", "exponential"),
-                    )
-                    self._log("warning", f"Node {node.agent_name} 失败，{delay:.1f}s 后重试 (尝试 {dag_node.attempts + 1}/{node.max_retries})",
-                              task_id=task.id, error=str(e)[:100])
-                    # 用 stop_event.wait 替代 time.sleep，支持取消中断
-                    if task.stop_event.wait(delay):
-                        # 任务被取消，中断重试
-                        break
-                    # 全局停止信号（shutdown）补充检查：上面的 wait 只监听 per-task
-                    # 事件，全局停止的感知最多延迟一个退避周期
-                    if self._stop_event is not None and self._stop_event.is_set():
-                        break
-                    # 重试执行前再查一次取消信号，避免取消后仍发起下一次节点调用
-                    if task.stop_event.is_set():
-                        break
-                    dag_node.attempts += 1
-                    dag_node.status = "pending"
-                    try:
-                        retry_result = self.execute_node_from_scheduler(
-                            task, node, input_file, plan
-                        )
-                        retry_ok = True
-                        retry_err = ""
-                        if not retry_result or "error" in retry_result:
-                            retry_ok = False
-                            retry_err = retry_result.get("error", "retry failed") if retry_result else "retry failed"
-                        elif isinstance(retry_result, dict):
-                            sem_status = retry_result.get("status")
-                            if sem_status in ("blocked", "fail"):
-                                retry_ok = False
-                                retry_err = retry_result.get("message", retry_result.get("error", f"Agent returned {sem_status}"))
-
-                        if retry_ok:
-                            result = retry_result
-                            dag_node.result = retry_result
-                            dag_node.status = "success"
-                            dag_node.finished_at = time.time()
-                            dag_node.error = ""
-                            step_result.status = "success"
-                            step_result.result = retry_result
-                            step_result.error = ""
-                            self._set_task_output(task, node.agent_name, retry_result)
-                            self._circuit_breaker_success(node)
-                            break
-                        else:
-                            last_error = retry_err
-                            dag_node.error = retry_err
-                            step_result.error = retry_err
-                    except Exception as retry_e:
-                        last_error = str(retry_e)
-                        dag_node.error = str(retry_e)
-                        step_result.error = str(retry_e)
+                # while 循环重试直到达到 max_retries（取消/全局停止时提前中断）
+                _, last_error = self._retry_node_sync(task, node, dag_node, step_result,
+                                                      input_file, plan)
 
                 # 重试循环结束，检查是否最终失败
                 if dag_node.status != "success":
@@ -522,36 +618,7 @@ class DAGExecutor:
                         break
 
             finally:
-                step_result.finished_at = time.time()
-                duration_ms = (step_result.finished_at - step_result.started_at) * 1000
-                task.steps.append(step_result)
-                if self._checkpoint_save:
-                    self._checkpoint_save(task)
-                if self._audit_log:
-                    self._audit_log(
-                        task_id=task.id,
-                        agent_name=node.agent_name,
-                        input_summary=getattr(getattr(node, "agent_config", None), "config", {}),
-                        output_summary=step_result.result or {},
-                        duration_ms=duration_ms,
-                        status=step_result.status,
-                        error=step_result.error,
-                    )
-                self._metrics.observe(
-                    "step_duration_ms", duration_ms,
-                    labels={"agent": node.agent_name, "status": step_result.status},
-                )
-                self._metrics.counter(
-                    "step_total", labels={"agent": node.agent_name},
-                )
-                if step_result.status != "success":
-                    self._metrics.counter(
-                        "step_failures", labels={"agent": node.agent_name, "status": step_result.status},
-                    )
-                self._metrics.gauge(
-                    "pipeline_progress", task.progress,
-                    labels={"pipeline": getattr(plan, "pipeline_name", "")},
-                )
+                self._record_step_result(task, plan, node, step_result)
 
         return task.status != TaskStatus.FAILED  # type: ignore[no-any-return]
 
@@ -598,86 +665,21 @@ class DAGExecutor:
 
         # 处理结果（与 execute_level 相同的逻辑）
         for (node, dag_node, step_result), result in zip(node_meta, results, strict=False):
-            last_error = ""
             try:
                 if isinstance(result, Exception):
                     raise result
 
-                is_business_fail = False
-                if isinstance(result, dict):
-                    sem_status = result.get("status")
-                    if sem_status in ("blocked", "fail"):
-                        is_business_fail = True
-                        last_error = result.get("message", result.get("error", f"Agent returned {sem_status}"))
-
+                is_business_fail, biz_err = self._business_failure(result)
                 if is_business_fail:
-                    raise Exception(last_error or "Agent returned failure status")
+                    raise Exception(biz_err or "Agent returned failure status")
 
-                dag_node.result = result
-                dag_node.status = "success"
-                dag_node.finished_at = time.time()
-                step_result.status = "success"
-                step_result.result = result  # type: ignore[assignment]
-                self._set_task_output(task, node.agent_name, result)
-                self._circuit_breaker_success(node)
+                self._apply_node_success(task, node, dag_node, step_result, result)
 
             except Exception as e:
                 dag_node.error = str(e)
-                last_error = str(e)
 
-                while dag_node.attempts < node.max_retries:
-                    delay = backoff_with_jitter(
-                        base_delay=getattr(node, "initial_delay", 1.0),
-                        attempt=dag_node.attempts,
-                        strategy=getattr(node, "backoff", "exponential"),
-                    )
-                    self._log("warning", f"Node {node.agent_name} 失败，{delay:.1f}s 后重试 (尝试 {dag_node.attempts + 1}/{node.max_retries})",
-                              task_id=task.id, error=str(e)[:100])
-                    # 原实现用 task.stop_event.wait(delay) 会阻塞 asyncio 事件循环；
-                    # 改为 await asyncio.sleep 避免阻塞，随后再检查 stop 信号。
-                    await asyncio.sleep(delay)
-                    if task.stop_event.is_set():
-                        break
-                    # 全局停止信号补充检查（与线程版对齐）
-                    if self._stop_event is not None and self._stop_event.is_set():
-                        break
-                    dag_node.attempts += 1
-                    dag_node.status = "pending"
-                    try:
-                        retry_result = await asyncio.to_thread(
-                            self.execute_node_from_scheduler, task, node, input_file, plan
-                        )
-                        retry_ok = True
-                        retry_err = ""
-                        if not retry_result or "error" in retry_result:
-                            retry_ok = False
-                            retry_err = retry_result.get("error", "retry failed") if retry_result else "retry failed"
-                        elif isinstance(retry_result, dict):
-                            sem_status = retry_result.get("status")
-                            if sem_status in ("blocked", "fail"):
-                                retry_ok = False
-                                retry_err = retry_result.get("message", retry_result.get("error", f"Agent returned {sem_status}"))
-
-                        if retry_ok:
-                            result = retry_result
-                            dag_node.result = retry_result
-                            dag_node.status = "success"
-                            dag_node.finished_at = time.time()
-                            dag_node.error = ""
-                            step_result.status = "success"
-                            step_result.result = retry_result
-                            step_result.error = ""
-                            self._set_task_output(task, node.agent_name, retry_result)
-                            self._circuit_breaker_success(node)
-                            break
-                        else:
-                            last_error = retry_err
-                            dag_node.error = retry_err
-                            step_result.error = retry_err
-                    except Exception as retry_e:
-                        last_error = str(retry_e)
-                        dag_node.error = str(retry_e)
-                        step_result.error = str(retry_e)
+                _, last_error = await self._retry_node_async(task, node, dag_node, step_result,
+                                                              input_file, plan)
 
                 if dag_node.status != "success":
                     dag_node.status = "failed"
@@ -701,36 +703,7 @@ class DAGExecutor:
                         break
 
             finally:
-                step_result.finished_at = time.time()
-                duration_ms = (step_result.finished_at - step_result.started_at) * 1000
-                task.steps.append(step_result)
-                if self._checkpoint_save:
-                    self._checkpoint_save(task)
-                if self._audit_log:
-                    self._audit_log(
-                        task_id=task.id,
-                        agent_name=node.agent_name,
-                        input_summary=getattr(getattr(node, "agent_config", None), "config", {}),
-                        output_summary=step_result.result or {},
-                        duration_ms=duration_ms,
-                        status=step_result.status,
-                        error=step_result.error,
-                    )
-                self._metrics.observe(
-                    "step_duration_ms", duration_ms,
-                    labels={"agent": node.agent_name, "status": step_result.status},
-                )
-                self._metrics.counter(
-                    "step_total", labels={"agent": node.agent_name},
-                )
-                if step_result.status != "success":
-                    self._metrics.counter(
-                        "step_failures", labels={"agent": node.agent_name, "status": step_result.status},
-                    )
-                self._metrics.gauge(
-                    "pipeline_progress", task.progress,
-                    labels={"pipeline": getattr(plan, "pipeline_name", "")},
-                )
+                self._record_step_result(task, plan, node, step_result)
 
         return task.status != TaskStatus.FAILED  # type: ignore[no-any-return]
 

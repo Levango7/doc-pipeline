@@ -785,6 +785,177 @@ class WriterAgent(BaseAgent):
             self.log_error(f"加载 prompt 模板失败: {e}")
             return {}
 
+    # ─── 多轮 LLM 重构：辅助方法（供 _restructure_document 调用） ──────────
+
+    def _enhance_system_prompt_with_feedback(self, system_prompt: str) -> str:
+        """质量闭环：读取历史低分模式，附加改进提醒到 system prompt"""
+        try:
+            from pipeline_core.quality_feedback import get_quality_feedback
+            recs = get_quality_feedback().get_recommendations()
+            if recs:
+                enhancement = "\n\n【质量改进提醒】基于历史评分数据，以下维度需要加强：\n"
+                for r in recs[:3]:
+                    enhancement += f"- {r}\n"
+                self.log_info(f"质量闭环：应用 {len(recs[:3])} 条改进建议")
+                return system_prompt + enhancement
+        except Exception:
+            pass
+        return system_prompt
+
+    @staticmethod
+    def _build_article_context(articles: list[dict]) -> str:
+        """构建文章素材摘要（前 3 篇，每篇截断 3000 字符）"""
+        summaries = []
+        for art in articles[:3]:
+            text = (art.get("text") or "")[:3000]
+            summaries.append(
+                f"--- 文章: {art.get('title','')} ---\n"
+                f"来源: {art.get('url','')}\n{text}\n"
+            )
+        return "\n".join(summaries)
+
+    async def _generate_section_async(self, idx: int, sec_name: str, sec_prompt: str,
+                                       system_prompt: str, context: str) -> tuple[int, str, str]:
+        """异步生成单个 section，返回 (序号, 章节名, 内容)"""
+        part = await self._generate_text_async(sec_prompt, system_prompt, context,
+                                                max_tok=4096, time_out=180)
+        return (idx, sec_name, part)
+
+    async def _generate_text_async(self, section_prompt: str, system_prompt: str,
+                                    context: str, max_tok: int = 4096,
+                                    time_out: int = 120) -> str:
+        """异步 LLM 生成（优先 LLMRouter 异步接口，回退 _llm_chat_async）"""
+        prompt = (
+            f"{system_prompt}\n\n"
+            f"{section_prompt}\n\n"
+            f"素材文章参考（如有）:\n{context[:2000]}\n"
+        )
+        try:
+            try:
+                from pipeline_core.llm_router import get_router
+                router = get_router()
+                if router and router.get_active_providers():
+                    content, provider = await router.chat_async(
+                        [{"role": "user", "content": prompt}],
+                        max_tokens=max_tok, temperature=0.3, timeout=time_out,
+                    )
+                    return content.strip() if content else ""
+            except Exception as e:
+                self.log_debug(f"LLMRouter 异步不可用，回退: {e}")
+
+            text = await self._llm_chat_async(
+                [{"role": "user", "content": prompt}],
+                max_tokens=max_tok, temperature=0.3, timeout=time_out,
+            )
+            return text.strip()
+        except Exception as e:
+            self.log_warning(f"LLM 异步生成异常: {e}")
+            return ""
+
+    def _clean_mermaid(self, text: str) -> str:
+        """修复常见的 Mermaid 语法问题 + 删除孤立的 end"""
+        def fix_mermaid_block(m):
+            block = m.group(0)
+            lines = block.split("\n")
+            in_block = False
+            for i, line in enumerate(lines):
+                if "```mermaid" in line:
+                    in_block = True
+                    continue
+                if in_block and "```" in line:
+                    break
+                if in_block and line.strip():
+                    first = line.strip()
+                    if not any(first.startswith(kw) for kw in
+                            ["graph", "sequenceDiagram", "flowchart", "classDiagram",
+                             "stateDiagram", "erDiagram", "gantt", "pie"]):
+                        lines[i] = "graph TD  " + first
+                    break
+            subgraph_count = 0
+            cleaned = []
+            for line in lines:
+                s = line.strip()
+                if s.startswith("subgraph"):
+                    subgraph_count += 1
+                    cleaned.append(line)
+                elif s == "end":
+                    if subgraph_count > 0:
+                        subgraph_count -= 1
+                        cleaned.append(line)
+                else:
+                    cleaned.append(line)
+            while subgraph_count > 0:
+                cleaned.append("    end")
+                subgraph_count -= 1
+            return "\n".join(cleaned)
+        text = re.sub(r"```mermaid.*?```", fix_mermaid_block, text, flags=re.DOTALL)
+        def fix_br(m):
+            return m.group(0).replace("<br/>", "<br")
+        text = re.sub(r"```mermaid.*?```", fix_br, text, flags=re.DOTALL)
+        return text
+
+    @staticmethod
+    def _fix_references(text: str) -> str:
+        """删除空的参考资料段落"""
+        text = re.sub(r"\n## 参考资料\n\s*$", "", text)
+        text = re.sub(r"\n## 参考资料\s*\n(?=## )", "\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _remove_truncated_mermaid_blocks(text: str) -> str:
+        """删除截断的 Mermaid 块（只有开标签没闭标签）"""
+        lines = text.split("\n")
+        in_mermaid = False
+        final_lines = []
+        for line in lines:
+            if "```mermaid" in line:
+                in_mermaid = True
+                final_lines.append(line)
+            elif in_mermaid and "```" in line:
+                in_mermaid = False
+                final_lines.append(line)
+            elif in_mermaid:
+                final_lines.append(line)
+            else:
+                final_lines.append(line)
+        if in_mermaid:
+            for i in range(len(final_lines) - 1, -1, -1):
+                if "```mermaid" in final_lines[i]:
+                    final_lines = final_lines[:i]
+                    break
+        return "\n".join(final_lines)
+
+    def _assemble_sections(self, results_parallel: list[tuple[int, str, str]],
+                            title: str,
+                            stream_callback: StreamCallback | None) -> str | None:
+        """按序号拼接各 section，做 Mermaid/参考资料修复，返回最终文档（全失败返回 None）"""
+        parts = []
+        for idx, sec_name, part in sorted(results_parallel, key=lambda x: x[0]):
+            if part:
+                self.log_info(f"R{idx+1} [{sec_name}] 完成: {len(part)} 字符")
+                parts.append(part)
+                if stream_callback:
+                    stream_callback.on_section(idx, sec_name, part)
+            else:
+                self.log_info(f"R{idx+1} [{sec_name}] 失败，跳过")
+
+        if not parts:
+            return None
+
+        final = parts[0]
+        for p in parts[1:]:
+            final += "\n\n" + p
+
+        final = self._remove_truncated_mermaid_blocks(final)
+        final = self._clean_mermaid(final)
+        final = self._fix_references(final)
+
+        if not final.startswith(f"# {title}"):
+            final = f"# {title}\n\n" + final
+
+        self.log_info(f"多轮拼接完成: {len(final)} 字符")
+        return final
+
     def _restructure_document(self, content: str, articles: list[dict],
                                query: str, title: str,
                                stream_callback: StreamCallback | None = None) -> str | None:
@@ -810,105 +981,9 @@ class WriterAgent(BaseAgent):
             self.log_warning("Prompt 模板为空或加载失败，跳过 LLM 重构")
             return None
 
-        # 质量闭环：读取历史低分模式，加强薄弱环节
-        try:
-            from pipeline_core.quality_feedback import get_quality_feedback
-            recs = get_quality_feedback().get_recommendations()
-            if recs:
-                enhancement = "\n\n【质量改进提醒】基于历史评分数据，以下维度需要加强：\n"
-                for r in recs[:3]:
-                    enhancement += f"- {r}\n"
-                system_prompt += enhancement
-                self.log_info(f"质量闭环：应用 {len(recs[:3])} 条改进建议")
-        except Exception:
-            pass
-
-        # 文章摘要（第一轮提供素材）
-        article_summaries = []
-        for art in articles[:3]:
-            text = (art.get("text") or "")[:3000]
-            article_summaries.append(
-                f"--- 文章: {art.get('title','')} ---\n"
-                f"来源: {art.get('url','')}\n{text}\n"
-            )
-        context = "\n".join(article_summaries)
-
-        def _llm_generate(section_prompt: str, max_tok: int = 4096, time_out: int = 120) -> str:
-            """调用 LLM 生成一段内容（使用 urllib，避免 requests 依赖）"""
-            prompt = (
-                f"{system_prompt}\n\n"
-                f"{section_prompt}\n\n"
-                f"素材文章参考（如有）:\n{context[:2000]}\n"
-            )
-            try:
-                # 流式模式：逐 chunk 拼接，降低首字延迟
-                if stream_callback:
-                    chunks = []
-                    for delta in self._llm_chat_stream(
-                        [{"role": "user", "content": prompt}],
-                        max_tokens=max_tok, temperature=0.3, timeout=time_out):
-                        chunks.append(delta)
-                        stream_callback.on_chunk(delta)
-                    text = "".join(chunks).strip()
-                else:
-                    text = self._llm_chat(
-                        [{"role": "user", "content": prompt}],
-                        max_tokens=max_tok, temperature=0.3, timeout=time_out).strip()
-                if text.startswith("#"):
-                    return text
-                self.log_warning(f"LLM 返回非markdown: {text[:60]}")
-                return text
-            except Exception as e:
-                self.log_warning(f"LLM 生成异常: {e}")
-                return ""
-
-        def _clean_mermaid(text: str) -> str:
-            """修复常见的 Mermaid 语法问题 + 删除孤立的 end"""
-            def fix_mermaid_block(m):
-                block = m.group(0)
-                lines = block.split("\n")
-                in_block = False
-                for i, line in enumerate(lines):
-                    if "```mermaid" in line:
-                        in_block = True
-                        continue
-                    if in_block and "```" in line:
-                        break
-                    if in_block and line.strip():
-                        first = line.strip()
-                        if not any(first.startswith(kw) for kw in
-                                ["graph", "sequenceDiagram", "flowchart", "classDiagram",
-                                 "stateDiagram", "erDiagram", "gantt", "pie"]):
-                            lines[i] = "graph TD  " + first
-                        break
-                subgraph_count = 0
-                cleaned = []
-                for line in lines:
-                    s = line.strip()
-                    if s.startswith("subgraph"):
-                        subgraph_count += 1
-                        cleaned.append(line)
-                    elif s == "end":
-                        if subgraph_count > 0:
-                            subgraph_count -= 1
-                            cleaned.append(line)
-                    else:
-                        cleaned.append(line)
-                while subgraph_count > 0:
-                    cleaned.append("    end")
-                    subgraph_count -= 1
-                return "\n".join(cleaned)
-            text = re.sub(r"```mermaid.*?```", fix_mermaid_block, text, flags=re.DOTALL)
-            def fix_br(m):
-                return m.group(0).replace("<br/>", "<br>")
-            text = re.sub(r"```mermaid.*?```", fix_br, text, flags=re.DOTALL)
-            return text
-
-        def _fix_references(text: str) -> str:
-            """删除空的参考资料段落"""
-            text = re.sub(r"\n## 参考资料\n\s*$", "", text)
-            text = re.sub(r"\n## 参考资料\s*\n(?=## )", "\n", text)
-            return text.strip()
+        # 质量闭环增强 prompt + 素材摘要（逻辑见辅助方法）
+        system_prompt = self._enhance_system_prompt_with_feedback(system_prompt)
+        context = self._build_article_context(articles)
 
         # 并行生成：真异步并发所有 sections（aiohttp + asyncio.gather）
         sec_specs = []
@@ -918,49 +993,13 @@ class WriterAgent(BaseAgent):
             sec_prompt = sec_prompt.replace("{title}", title).replace("{query}", query)
             sec_specs.append((i, sec_name, sec_prompt))
 
-        async def _gen_one_async(idx: int, sec_name: str, sec_prompt: str) -> tuple[int, str, str]:
-            """真异步生成单个 section"""
-            part = await _llm_generate_async(sec_prompt, max_tok=4096, time_out=180)
-            return (idx, sec_name, part)
-
-        async def _llm_generate_async(section_prompt: str, max_tok: int = 4096,
-                                       time_out: int = 120) -> str:
-            """异步 LLM 生成（优先 aiohttp 真异步，回退同步）"""
-            prompt = (
-                f"{system_prompt}\n\n"
-                f"{section_prompt}\n\n"
-                f"素材文章参考（如有）:\n{context[:2000]}\n"
-            )
-            try:
-                # 优先尝试 LLMRouter 异步接口
-                try:
-                    from pipeline_core.llm_router import get_router
-                    router = get_router()
-                    if router and router.get_active_providers():
-                        content, provider = await router.chat_async(
-                            [{"role": "user", "content": prompt}],
-                            max_tokens=max_tok, temperature=0.3, timeout=time_out,
-                        )
-                        return content.strip() if content else ""
-                except Exception as e:
-                    self.log_debug(f"LLMRouter 异步不可用，回退: {e}")
-
-                # 回退到 _llm_chat_async
-                text = await self._llm_chat_async(
-                    [{"role": "user", "content": prompt}],
-                    max_tokens=max_tok, temperature=0.3, timeout=time_out,
-                )
-                return text.strip()
-            except Exception as e:
-                self.log_warning(f"LLM 异步生成异常: {e}")
-                return ""
-
         # 使用 asyncio 真并行（创建新事件循环运行）
         # 注意：gather 必须在运行中的 loop 内调用 —— 在 loop 外调用时
         # ensure_future 会因主/工作线程无 current event loop 抛 RuntimeError
         async def _gather_all() -> list[tuple[int, str, str]]:
             return await asyncio.gather(*[
-                _gen_one_async(i, sn, sp) for i, sn, sp in sec_specs
+                self._generate_section_async(i, sn, sp, system_prompt, context)
+                for i, sn, sp in sec_specs
             ])
 
         loop = asyncio.new_event_loop()
@@ -969,57 +1008,9 @@ class WriterAgent(BaseAgent):
         finally:
             loop.close()
 
-        parts = []
-        for idx, sec_name, part in sorted(results_parallel, key=lambda x: x[0]):
-            if part:
-                self.log_info(f"R{idx+1} [{sec_name}] 完成: {len(part)} 字符")
-                parts.append(part)
-                if stream_callback:
-                    stream_callback.on_section(idx, sec_name, part)
-            else:
-                self.log_info(f"R{idx+1} [{sec_name}] 失败，跳过")
-
-        if not parts:
+        final = self._assemble_sections(results_parallel, title, stream_callback)
+        if final is None:
             return None
-
-        # ── 拼接 ──
-        final = parts[0]
-        for p in parts[1:]:
-            final += "\n\n" + p
-
-        # 修复截断的 Mermaid 块
-        def _fix_truncated_blocks(text: str) -> str:
-            """删除截断的 Mermaid 块（只有开标签没闭标签）"""
-            lines = text.split("\n")
-            in_mermaid = False
-            final_lines = []
-            for line in lines:
-                if "```mermaid" in line:
-                    in_mermaid = True
-                    final_lines.append(line)
-                elif in_mermaid and "```" in line:
-                    in_mermaid = False
-                    final_lines.append(line)
-                elif in_mermaid:
-                    final_lines.append(line)
-                else:
-                    final_lines.append(line)
-            if in_mermaid:
-                for i in range(len(final_lines) - 1, -1, -1):
-                    if "```mermaid" in final_lines[i]:
-                        final_lines = final_lines[:i]
-                        break
-            return "\n".join(final_lines)
-
-        final = _fix_truncated_blocks(final)
-        final = _clean_mermaid(final)
-        final = _fix_references(final)
-
-        # 确保文档以标题开头
-        if not final.startswith(f"# {title}"):
-            final = f"# {title}\n\n" + final
-
-        self.log_info(f"多轮拼接完成: {len(final)} 字符")
         self._restructure_cache.set(cache_key_short, final)
         return final
 

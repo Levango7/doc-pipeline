@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.2] - 2026-08-22
+
+### Changed（技术债清理）
+- **超长方法拆分**（行为不变，582 测试全过）：
+  - `writer.py:_restructure_document` 237L → 57L（提取 prompt 增强/素材构建/异步生成/
+    Mermaid 修复/拼接装配等 7 个方法；顺带删除无调用的死代码嵌套函数 `_llm_generate`）
+  - `pipeline.py:run_plan` 192L → 116L（提取 `_merge_pooled_results` / `_finalize_plan_task`）
+  - `dag_executor.py:execute_level` 190L → 62L、`execute_level_async` 178L → 瘦身
+    （共享提取：业务失败判定/重试结果评估/节点成功落账/futures 提交/同步与异步重试循环/步骤记录，
+     两版本 finally 记录逻辑去重为单一 `_record_step_result`）
+  - `openapi_spec.py:generate_spec` 267L → ~30L（按 section 拆为模块级函数；
+     生成结果经 JSON diff 验证字节级一致）
+- **Dashboard XSS 加固**：app.js 全部 6 处 innerHTML 字符串拼接改为
+  createElement/textContent DOM 构建，动态数据不再经过 HTML 解析；
+  移除不再需要的 escapeHtml 辅助函数
+- **文档补全**：新增 docs/api.md（REST API 参考）、docs/architecture.md（分层架构 +
+  线程模型 + 数据流）、docs/agents.md（Agent 开发指南 + 沙箱规则）；README 增加文档索引
+
+### Fixed
+- mypy：run_plan 提取后 `combined` 字典失去上下文推断导致的 2 个新错误（显式标注）；
+  dag_executor 辅助函数返回类型收紧（原代码靠 type: ignore 压制）
+
 ## [3.3.1] - 2026-08-22
 
 ### Fixed

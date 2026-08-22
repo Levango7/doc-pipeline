@@ -452,6 +452,17 @@ doc-pipeline/
 
 ---
 
+## 📚 文档
+
+| 文档 | 内容 |
+|------|------|
+| [部署指南](docs/deployment.md) | 生产环境配置、API Key、监控、备份策略 |
+| [API 参考](docs/api.md) | Admin REST API 全端点说明与鉴权 |
+| [架构说明](docs/architecture.md) | 分层结构、线程模型、数据流 |
+| [Agent 开发指南](docs/agents.md) | 自定义 Agent 契约、沙箱规则、最小示例 |
+
+---
+
 ## 📝 License
 
 MIT

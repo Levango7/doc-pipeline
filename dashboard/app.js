@@ -59,10 +59,19 @@
     return n + ' ' + (n === 1 ? s : s + 's');
   }
 
-  function escapeHtml (str) {
-    const div = document.createElement('div');
-    div.appendChild(document.createTextNode(str));
-    return div.innerHTML;
+  /* DOM 构建辅助：所有动态数据一律走 textContent，禁止字符串拼 HTML */
+  function elt (tag, cls, text) {
+    const el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text != null) el.textContent = text;
+    return el;
+  }
+
+  function emptyState (icon, msg) {
+    const box = elt('div', 'empty-state');
+    box.appendChild(elt('span', 'icon', icon));
+    box.appendChild(document.createTextNode(msg));
+    return box;
   }
 
   function timeAgo (date) {
@@ -73,6 +82,20 @@
     const min = Math.floor(sec / 60);
     if (min < 60) return min + 'm ago';
     return date.toLocaleTimeString();
+  }
+
+  function fmtUptime (sec) {
+    if (sec < 60) return sec + 's';
+    if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    return h + 'h ' + m + 's';
+  }
+
+  function formatNum (n) {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+    return String(n);
   }
 
   function statusClass (status) {
@@ -124,8 +147,7 @@
   /* ---- Pipeline Status (top-left) ---- */
   function renderStatus (health) {
     if (!health || !health.status) {
-      els.statusPanel.innerHTML =
-        '<div class="empty-state"><span class="icon">📡</span>No status data</div>';
+      els.statusPanel.replaceChildren(emptyState('📡', 'No status data'));
       return;
     }
 
@@ -149,39 +171,35 @@
       }
     }
 
-    els.statusPanel.innerHTML =
-      '<div class="status-grid">'
-        /* status pill spans 2 cols */
-        + '<div style="grid-column:1/-1;display:flex;justify-content:center;margin-bottom:4px;">'
-        +   '<span class="status-pill ' + statusLabel + '">'
-        +     '<span class="dot"></span>' + statusLabel
-        +   '</span>'
-        + '</div>'
-        /* subtitle stats */
-        + statCell('Subscribers', subs, 'ok')
-        + statCell('Queue Depth', queueDepth, queueDepth > 10 ? 'warn' : 'ok')
-        + statCell('DB Size', typeof dbSize === 'number' ? pluralize(dbSize, 'entry') : dbSize, 'ok')
-        + statCell('Uptime', metrics.uptime ? fmtUptime(metrics.uptime) : '—', 'ok')
-      + '</div>';
-
     function statCell (label, value, cls) {
-      return '<div class="stat-item">'
-        + '<div class="stat-label">' + label + '</div>'
-        + '<div class="stat-value ' + cls + '">' + value + '</div>'
-        + '</div>';
+      const item = elt('div', 'stat-item');
+      item.appendChild(elt('div', 'stat-label', label));
+      item.appendChild(elt('div', 'stat-value ' + cls, String(value)));
+      return item;
     }
 
-    function fmtUptime (sec) {
-          if (sec < 60) return sec + 's';
-          if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
-          const h = Math.floor(sec / 3600);
-          const m = Math.floor((sec % 3600) / 60);
-          return h + 'h ' + m + 's';
-        }
+    const grid = elt('div', 'status-grid');
 
-        // Update badge
-        if (els.badgeStatus) els.badgeStatus.textContent = statusLabel;
-      }
+    /* status pill spans 2 cols */
+    const pillWrap = elt('div');
+    pillWrap.style.cssText = 'grid-column:1/-1;display:flex;justify-content:center;margin-bottom:4px;';
+    const pill = elt('span', 'status-pill ' + statusLabel);
+    pill.appendChild(elt('span', 'dot'));
+    pill.appendChild(document.createTextNode(statusLabel));
+    pillWrap.appendChild(pill);
+    grid.appendChild(pillWrap);
+
+    /* subtitle stats */
+    grid.appendChild(statCell('Subscribers', subs, 'ok'));
+    grid.appendChild(statCell('Queue Depth', queueDepth, queueDepth > 10 ? 'warn' : 'ok'));
+    grid.appendChild(statCell('DB Size', typeof dbSize === 'number' ? pluralize(dbSize, 'entry') : dbSize, 'ok'));
+    grid.appendChild(statCell('Uptime', metrics.uptime ? fmtUptime(metrics.uptime) : '—', 'ok'));
+
+    els.statusPanel.replaceChildren(grid);
+
+    // Update badge
+    if (els.badgeStatus) els.badgeStatus.textContent = statusLabel;
+  }
 
       /* ---- Tasks (top-right) ---- */
   function renderTasks (data) {
@@ -192,21 +210,19 @@
     if (els.badgeTasks) els.badgeTasks.textContent = count;
 
     if (!tasks.length) {
-      els.tasksPanel.innerHTML =
-        '<div class="empty-state"><span class="icon">📋</span>No active tasks</div>';
+      els.tasksPanel.replaceChildren(emptyState('📋', 'No active tasks'));
       return;
     }
 
-    let html =
-      '<table class="tasks-table">'
-      + '<thead><tr>'
-      +   '<th>ID</th>'
-      +   '<th>Pipeline</th>'
-      +   '<th>Status</th>'
-      +   '<th>Progress</th>'
-      + '</tr></thead>'
-      + '<tbody>';
+    const table = elt('table', 'tasks-table');
+    const thead = elt('thead');
+    const headRow = elt('tr');
+    for (const h of ['ID', 'Pipeline', 'Status', 'Progress']) {
+      headRow.appendChild(elt('th', null, h));
+    }
+    thead.appendChild(headRow);
 
+    const tbody = elt('tbody');
     for (const t of tasks) {
       const sCls = statusClass(t.status);
       const emoji = statusEmoji(t.status);
@@ -214,23 +230,36 @@
       const steps = t.steps != null ? t.steps : 100;
       const pct = Math.min(100, Math.max(0, Math.round((progress / (steps || 100)) * 100)));
 
-      html += '<tr>'
-        + '<td class="task-id" title="' + escapeHtml(t.id) + '">' + escapeHtml(t.id) + '</td>'
-        + '<td class="task-pipeline">' + escapeHtml(t.pipeline || '—') + '</td>'
-        + '<td><span class="badge-status ' + sCls + '">' + emoji + ' ' + escapeHtml(t.status || 'unknown') + '</span></td>'
-        + '<td>'
-        +   '<div style="display:flex;align-items:center;gap:6px;">'
-        +     '<div class="progress-wrap" style="flex:1;">'
-        +       '<div class="progress-fill ' + sCls + '" style="width:' + pct + '%;"></div>'
-        +     '</div>'
-        +     '<span class="progress-text">' + pct + '%</span>'
-        +   '</div>'
-        + '</td>'
-        + '</tr>';
+      const tdId = elt('td', 'task-id', t.id == null ? '' : String(t.id));
+      tdId.title = tdId.textContent;
+
+      const badge = elt('span', 'badge-status ' + sCls, emoji + ' ' + (t.status || 'unknown'));
+      const tdStatus = elt('td');
+      tdStatus.appendChild(badge);
+
+      const wrap = elt('div');
+      wrap.style.cssText = 'display:flex;align-items:center;gap:6px;';
+      const pwrap = elt('div', 'progress-wrap');
+      pwrap.style.flex = '1';
+      const fill = elt('div', 'progress-fill ' + sCls);
+      fill.style.width = pct + '%';
+      pwrap.appendChild(fill);
+      wrap.appendChild(pwrap);
+      wrap.appendChild(elt('span', 'progress-text', pct + '%'));
+      const tdProgress = elt('td');
+      tdProgress.appendChild(wrap);
+
+      const tr = elt('tr');
+      tr.appendChild(tdId);
+      tr.appendChild(elt('td', 'task-pipeline', t.pipeline || '—'));
+      tr.appendChild(tdStatus);
+      tr.appendChild(tdProgress);
+      tbody.appendChild(tr);
     }
 
-    html += '</tbody></table>';
-    els.tasksPanel.innerHTML = html;
+    table.appendChild(thead);
+    table.appendChild(tbody);
+    els.tasksPanel.replaceChildren(table);
   }
 
   /* ---- Agents (bottom-left) ---- */
@@ -252,15 +281,13 @@
     if (els.badgeAgents) els.badgeAgents.textContent = count;
 
     if (!list.length) {
-      els.agentsPanel.innerHTML =
-        '<div class="empty-state"><span class="icon">🤖</span>No agents registered</div>';
+      els.agentsPanel.replaceChildren(emptyState('🤖', 'No agents registered'));
       return;
     }
 
-    let html = '<div class="agents-list">';
+    const container = elt('div', 'agents-list');
     for (const a of list) {
       const s = (a.status || 'ok').toLowerCase();
-      const sCls = statusClass(s);
       const sTag = s === 'ok' || s === 'healthy' ? 'ok'
                  : s === 'warn' || s === 'warning' || s === 'degraded' ? 'warn'
                  : 'error';
@@ -270,16 +297,15 @@
 
       const detail = a.type || a.role || a.pipeline || a.host || '';
 
-      html += '<div class="' + itemCls + '">'
-        + '<div class="agent-info">'
-        +   '<span class="agent-name">' + escapeHtml(a.name || 'agent') + '</span>'
-        +   (detail ? '<span class="agent-detail">' + escapeHtml(detail) + '</span>' : '')
-        + '</div>'
-        + '<span class="agent-status-tag ' + sTag + '">' + escapeHtml(a.status || 'ok') + '</span>'
-        + '</div>';
+      const item = elt('div', itemCls);
+      const info = elt('div', 'agent-info');
+      info.appendChild(elt('span', 'agent-name', a.name || 'agent'));
+      if (detail) info.appendChild(elt('span', 'agent-detail', detail));
+      item.appendChild(info);
+      item.appendChild(elt('span', 'agent-status-tag ' + sTag, a.status || 'ok'));
+      container.appendChild(item);
     }
-    html += '</div>';
-    els.agentsPanel.innerHTML = html;
+    els.agentsPanel.replaceChildren(container);
   }
 
   /* ---- Metrics (bottom-right) ---- */
@@ -313,26 +339,19 @@
       { icon: '🗑️', label: 'DLQ',     value: dlq,      cls: dlq > 0 ? 'error' : 'ok' },
     ];
 
-    let html = '<div class="metrics-grid">';
+    const grid = elt('div', 'metrics-grid');
     for (const m of items) {
-      html += '<div class="metric-card">'
-        + '<div class="metric-icon">' + m.icon + '</div>'
-        + '<div class="metric-body">'
-        +   '<div class="metric-label">' + m.label + '</div>'
-        +   '<div class="metric-value" style="color:var(--status-' + m.cls + ')">'
-        +     formatNum(m.value)
-        +   '</div>'
-        + '</div>'
-        + '</div>';
+      const card = elt('div', 'metric-card');
+      card.appendChild(elt('div', 'metric-icon', m.icon));
+      const body = elt('div', 'metric-body');
+      body.appendChild(elt('div', 'metric-label', m.label));
+      const value = elt('div', 'metric-value', formatNum(m.value));
+      value.style.color = 'var(--status-' + m.cls + ')';
+      body.appendChild(value);
+      card.appendChild(body);
+      grid.appendChild(card);
     }
-    html += '</div>';
-    els.metricsPanel.innerHTML = html;
-
-    function formatNum (n) {
-      if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-      if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-      return String(n);
-    }
+    els.metricsPanel.replaceChildren(grid);
   }
 
   // ----------------------------------------------------------
