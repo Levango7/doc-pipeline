@@ -90,8 +90,13 @@ KeyboardInterrupt 走同一收尾路径。
 
 ## 5. 设计取舍备注
 
-- **进程模式**（`executor_type: process`）当前不可用：子进程内 registry/bus 为 None，
-  无生产代码路径重建上下文（`dag_executor._execute_node_worker` 会显式报错）。
-  生产使用线程模式即可。
+- **进程模式**（`executor_type: process`）：节点在 ProcessPoolExecutor 子进程中执行。
+  DAGExecutor 经 pickle 传入子进程时剥离全部含线程锁的组件；worker 入口
+  （`dag_executor._execute_node_worker`）依据构造时记录的 `child_context`
+  （agents_dir / agent_names / config，由 `register_agents()` 写入）在每个 worker
+  进程内一次性重建 Registry 与非持久化 MessageBus，再通过 AgentLoader 加载 Agent。
+  **已知限制**：① 子进程内的总线事件不回传父进程（节点结果经返回值 pickle 回传，
+  不受影响）；② 熔断器与限流计数按进程隔离，不跨进程聚合；③ 每个 worker 首次执行
+  有 Agent 冷启动开销。I/O 密集场景仍建议默认的 thread 模式。
 - `MessageBus` 在构造时即启动 worker 线程——每个实例必须配套 `shutdown()`
   （orchestrator 与测试 fixture 已保证）。

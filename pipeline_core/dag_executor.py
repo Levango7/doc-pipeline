@@ -14,23 +14,71 @@ from .circuit_breaker import backoff_with_jitter
 
 # ─── 模块级函数：支持 ProcessPoolExecutor pickle ──────────────────
 
+# 子进程上下文缓存（每个 worker 进程仅重建一次；Windows spawn 下模块级状态按进程隔离）
+_CHILD_CONTEXT_LOCK = threading.Lock()
+_CHILD_CONTEXT = None
+_CHILD_CONTEXT_KEY = None
+
+
+def _build_child_context(ctx_cfg: dict):
+    """在子进程内重建最小可执行上下文：(registry, bus)。
+
+    - Registry 关闭健康检查线程（子进程无需活性探测）
+    - MessageBus 使用非持久化模式：节点执行所需输入来自任务载荷而非总线，
+      子进程内的 publish 事件不回传父进程（已知限制，见 docs/architecture.md §5）
+    """
+    from .agent_loader import AgentLoader
+    from .message_bus_v3 import MessageBus
+    from .registry import Registry
+
+    registry = Registry(enable_health_check=False)
+    bus = MessageBus(enable_persistence=False)
+    loader = AgentLoader(registry, bus, ctx_cfg.get("agents_dir", "agents"))
+    loaded = loader.register(
+        ctx_cfg.get("agent_names"),
+        ctx_cfg.get("config") or {},
+    )
+    if not loaded:
+        raise RuntimeError(
+            f"子进程上下文重建失败：{ctx_cfg.get('agents_dir')} 下未加载到任何 Agent"
+        )
+    return registry, bus
+
+
+def _get_child_context(ctx_cfg: dict):
+    """获取（或构建）本 worker 进程的缓存上下文"""
+    global _CHILD_CONTEXT, _CHILD_CONTEXT_KEY
+    key = (
+        str(ctx_cfg.get("agents_dir")),
+        repr(sorted((ctx_cfg.get("config") or {}).items()))[:512],
+        repr(ctx_cfg.get("agent_names")),
+    )
+    with _CHILD_CONTEXT_LOCK:
+        if _CHILD_CONTEXT is None or key != _CHILD_CONTEXT_KEY:
+            _CHILD_CONTEXT = _build_child_context(ctx_cfg)
+            _CHILD_CONTEXT_KEY = key
+    return _CHILD_CONTEXT
+
+
 def _execute_node_worker(dag_executor, task, node, input_file, plan):
-    """模块级节点执行函数 —— 支持 ProcessPoolExecutor pickle。
+    """模块级节点执行函数 —— ProcessPoolExecutor 子进程入口。
 
-    当使用 ProcessPoolExecutor 时，dag_executor 会被 pickle 传输到子进程。
-    非可序列化属性（registry, bus 等）会被置为 None（通过 __getstate__），
-    子进程需通过 DAGExecutor.from_config() 重建上下文。
-
-    若 registry/bus 为 None，说明子进程未重建上下文，抛出明确错误。
+    dag_executor 经 pickle 传入时非序列化属性为 None；若构造时携带
+    child_context 配置，则在本进程内一次性重建 registry/bus 后执行节点，
+    结果 dict 作为返回值 pickle 回父进程。
     """
     if dag_executor.registry is None or dag_executor.bus is None:
-        raise RuntimeError(
-            "ProcessPoolExecutor 模式下 registry/bus 不可用。"
-            "子进程需通过 DAGExecutor.from_config() 重建上下文，"
-            "但当前无任何生产代码路径调用 from_config（子进程上下文重建未接线），"
-            "process 模式的节点会在子进程中失败并回落到父进程重试。"
-            "请使用 ThreadPoolExecutor（默认）模式。"
-        )
+        ctx_cfg = getattr(dag_executor, "child_context", None)
+        if not ctx_cfg:
+            raise RuntimeError(
+                "ProcessPoolExecutor 模式下 registry/bus 不可用，且 DAGExecutor "
+                "未携带 child_context 配置（无法在子进程重建上下文）。"
+                "请先通过 PipelineOrchestrator.register_agents() 注册 Agent，"
+                "或使用 ThreadPoolExecutor（默认）模式。"
+            )
+        registry, bus = _get_child_context(ctx_cfg)
+        dag_executor.registry = registry
+        dag_executor.bus = bus
     return dag_executor.execute_node_from_scheduler(task, node, input_file, plan)
 
 
@@ -40,7 +88,8 @@ class DAGExecutor:
     def __init__(self, registry, bus, cb_registry, rate_limiters, metrics, logger=None,
                  stop_event: threading.Event | None = None,
                  checkpoint_save_fn: Callable | None = None,
-                 audit_log_fn: Callable | None = None):
+                 audit_log_fn: Callable | None = None,
+                 child_context: dict | None = None):
         self.registry = registry
         self.bus = bus
         self._cb_registry = cb_registry
@@ -50,15 +99,19 @@ class DAGExecutor:
         self._stop_event = stop_event
         self._checkpoint_save = checkpoint_save_fn
         self._audit_log = audit_log_fn
+        # process 模式子进程上下文重建配置（可 pickle 的纯数据）：
+        # {"agents_dir": str, "agent_names": list[str] | None, "config": dict}
+        self.child_context = child_context
         self._execution_stats: list[dict] = []
         self._query_cache = CacheManager(name="dag_queries", max_size=100, ttl=3600)
 
     # ─── pickle 支持（ProcessPoolExecutor 兼容） ─────────────
 
-    # 非可序列化属性列表：pickle 时置 None，子进程需通过 from_config() 重建
+    # 非可序列化属性列表：pickle 时置 None，子进程在 _execute_node_worker 中重建
     _NON_PICKLABLE_ATTRS = (
         "registry", "bus", "_logger", "_stop_event",
         "_checkpoint_save", "_audit_log",
+        "_cb_registry", "_rate_limiters", "_metrics", "_query_cache",
     )
 
     def __getstate__(self):
@@ -69,16 +122,27 @@ class DAGExecutor:
         return state
 
     def __setstate__(self, state):
-        """从 pickle 恢复，非可序列化属性为 None（子进程需自行重建）。"""
+        """从 pickle 恢复：非序列化组件按需重建（子进程独立实例）。"""
         self.__dict__.update(state)
+        if self.__dict__.get("_cb_registry") is None:
+            from .circuit_breaker import CircuitBreakerRegistry
+            self._cb_registry = CircuitBreakerRegistry()
+        if self.__dict__.get("_rate_limiters") is None:
+            from .rate_limiter import RateLimiterRegistry
+            self._rate_limiters = RateLimiterRegistry()
+        if self.__dict__.get("_metrics") is None:
+            from .observability import get_metrics
+            self._metrics = get_metrics()
+        if self.__dict__.get("_query_cache") is None:
+            self._query_cache = CacheManager(name="dag_queries", max_size=100, ttl=3600)
 
     @classmethod
     def from_config(cls, config: dict, registry, bus, cb_registry, rate_limiters, metrics,
                     logger=None, stop_event=None, checkpoint_save_fn=None, audit_log_fn=None):
-        """从配置重建 DAGExecutor —— 供 ProcessPoolExecutor 子进程使用。
+        """手动构建 DAGExecutor（低层入口）。
 
-        在子进程中，通过此方法用从父进程 pickle 传来的 config 重建完整上下文：
-            executor = DAGExecutor.from_config(config, registry, bus, ...)
+        常规 process 模式无需调用它：_execute_node_worker 会依据 child_context
+        自动在子进程内重建 registry/bus。此方法保留给需要完全手工装配的高级场景。
         """
         return cls(
             registry=registry, bus=bus, cb_registry=cb_registry,

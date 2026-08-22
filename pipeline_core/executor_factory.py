@@ -42,10 +42,9 @@ def create_executor(max_workers: int = 4, executor_type: str = "thread") -> Thre
     if executor_type == "process":
         if not _process_mode_warned:
             logger.warning(
-                "executor_type='process' 为实验性：子进程上下文重建"
-                "（DAGExecutor.from_config）未在任何生产路径接线，节点会在子进程"
-                "中失败并回落到父进程重试；取消信号也不会跨进程传播。"
-                "建议使用 thread（默认）。"
+                "executor_type='process'：节点将在子进程执行（自动重建 Agent 上下文）。"
+                "注意序列化开销与限制：子进程内的总线事件不回传父进程、熔断/限流计数"
+                "按进程隔离、每个 worker 首次执行有冷启动开销。I/O 密集场景建议 thread（默认）。"
             )
             _process_mode_warned = True
         return ProcessPoolExecutor(max_workers=max_workers)

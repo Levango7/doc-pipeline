@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-08-22
+
+### Added（进程执行模式正式支持）
+- **`executor_type: process` 从实验性限制变为可用特性**——子进程上下文自动重建：
+  - `DAGExecutor` 新增 `child_context` 配置（agents_dir / agent_names / config，
+    由 `PipelineOrchestrator.register_agents()` 写入），纯数据、可 pickle
+  - `_execute_node_worker` 在 worker 进程内依据 child_context 一次性重建
+    Registry（关闭健康检查线程）与非持久化 MessageBus，经 AgentLoader 加载 Agent；
+    每个worker 进程仅重建一次（模块级缓存）
+  - `__getstate__` 补齐剥离全部含线程锁组件（熔断器/限流器/Metrics/查询缓存），
+    修复此前 DAGExecutor 整体 pickle 必然失败导致节点回落父进程重试的问题；
+    `__setstate__` 对剥离组件按需重建可用实例
+- 新增 `tests/test_process_mode.py`：pickle 往返、无 context 守卫报错、
+  **真实 ProcessPoolExecutor 跨进程执行**（探针 Agent 返回子进程 pid ≠ 父进程 pid）
+- 文档：docs/architecture.md §5 更新为进程模式工作原理 + 已知限制
+
+### Changed
+- executor_factory 进程模式告警更新：不再称"实验性/必然失败"，改为说明序列化开销与隔离限制
+
 ## [3.3.3] - 2026-08-22
 
 ### Changed（剩余技术债清零）

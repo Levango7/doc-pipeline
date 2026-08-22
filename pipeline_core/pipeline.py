@@ -253,7 +253,16 @@ class PipelineOrchestrator:
         return self._loader.discover()
 
     def register_agents(self, agent_names: list[str] | None = None, config: dict | None = None) -> list[str]:
-        return self._loader.register(agent_names, config)
+        loaded = self._loader.register(agent_names, config)
+        if loaded:
+            # 记录注册信息，供 process 执行模式在子进程内重建上下文使用
+            # （见 dag_executor._get_child_context）
+            self._executor.child_context = {
+                "agents_dir": str(self.agents_dir),
+                "agent_names": list(loaded),
+                "config": config or {},
+            }
+        return loaded
 
     def _extract_meta(self, cls) -> AgentMeta:
         return self._loader._extract_meta(cls)

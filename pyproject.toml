@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc-pipeline"
-version = "3.3.3"
+version = "3.4.0"
 description = "Multi-agent document generation pipeline with DAG orchestration, quality gating, and elastic fault tolerance"
 readme = "README.md"
 license = {text = "MIT"}
