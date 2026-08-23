@@ -65,3 +65,8 @@ warn_unused_configs = true
 ignore_missing_imports = true
 implicit_optional = true
 disable_error_code = ["valid-type", "attr-defined"]
+
+[tool.bandit]
+# B310: urllib 访问 URL —— 全部 11 处均为调用固定的 https 搜索引擎/LLM API 端点，
+# scheme 不受外部输入控制（webhook 类 SSRF 已在 event_hook 单独防护），故项目级豁免。
+skips = ["B310"]

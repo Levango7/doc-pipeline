@@ -48,7 +48,7 @@ jobs:
 
       - name: Security scan (bandit)
         run: |
-          bandit -r pipeline_core/ -r agents/ -f json -o bandit-report.json
+          bandit -c pyproject.toml -ll -r pipeline_core agents -f json -o bandit-report.json
 
       - name: Dependency audit (pip-audit)
         run: |
