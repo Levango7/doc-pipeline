@@ -86,8 +86,9 @@
 |------|------|------|
 | GET | `/dlq` | 死信列表 |
 | POST | `/dlq/{dlq_id}/replay` | 重放死信消息 |
+| GET | `/stream/metrics` | 流式推送指标快照（连接数/事件数等） |
 | GET | `/stream` | SSE 流式生成，query 参数：`query`（必填）、`title`、`task_id`；
-返回 `text/event-stream`，免鉴权 |
+支持 `Last-Event-ID` 断线重连。返回 `text/event-stream`，免鉴权 |
 
 ---
 

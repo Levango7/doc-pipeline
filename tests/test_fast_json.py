@@ -84,12 +84,14 @@ class TestFallback:
         result = dumps({"a": 1})
         assert result == json.dumps({"a": 1})
 
+    @pytest.mark.skipif(not HAS_ORJSON, reason="orjson 未安装，无 fallback 模拟目标")
     def test_fallback_simulated(self):
         """模拟 orjson 抛出异常时回退到 stdlib json。"""
         with patch("pipeline_core.fast_json.orjson.dumps", side_effect=Exception("boom")):
             result = dumps({"key": "value"})
             assert json.loads(result) == {"key": "value"}
 
+    @pytest.mark.skipif(not HAS_ORJSON, reason="orjson 未安装，无 fallback 模拟目标")
     def test_loads_fallback_simulated(self):
         with patch("pipeline_core.fast_json.orjson.loads", side_effect=Exception("boom")):
             result = loads('{"k": "v"}')

@@ -414,8 +414,9 @@ def main():
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    # 非 --check 模式需要输入文件
-    if args.input is None and not args.check and not args.mcp and not args.recover:
+    # 无输入文件时：仅 --check/--mcp/--recover 及服务模式（admin/dashboard/daemon）可用
+    if args.input is None and not args.check and not args.mcp and not args.recover \
+            and not args.admin and not args.dashboard and not args.daemon:
         parser.error('需要指定输入文件，或使用 --check 运行启动自检')
 
     print_banner()
@@ -543,20 +544,31 @@ def main():
         print("[run] 没有加载任何 Agent，请检查 agents 目录")
         return
 
-    _run_single_task(args, orch, config)
+    # 纯服务模式：无输入文件，仅常驻 Admin API（任务经 POST /api/tasks 提交）
+    service_only = args.input is None
+    if not service_only:
+        _run_single_task(args, orch, config)
 
-    # 可选：启动管理 API + 仪表盘
-    if args.admin or args.dashboard:
-        dashboard_dir = str(project_root / "dashboard") if args.dashboard else None
-        orch.start_admin_api(
-            port=8910,
-            serve_static=args.dashboard,
-            dashboard_dir=dashboard_dir,
-        )
+    # ─── 管理 API / 仪表盘 / 守护进程 ──────────────
+    want_server = args.admin or args.dashboard or args.daemon or service_only
+    if want_server:
+        if args.admin or args.dashboard:
+            dashboard_dir = str(project_root / "dashboard") if args.dashboard else None
+            ok = orch.start_admin_api(
+                port=8910,
+                serve_static=args.dashboard,
+                dashboard_dir=dashboard_dir,
+            )
+        else:
+            # --daemon / 纯服务模式未显式开启 admin 时自动补启
+            ok = orch.start_admin_api(port=8910)
+        if not ok:
+            print("[run] ERROR: Admin API 启动失败", file=sys.stderr)
+            sys.exit(1)
         print("[run] 管理 API: http://127.0.0.1:8910")
         if args.dashboard:
             print("[run] 仪表盘:  http://127.0.0.1:8910/index.html")
-        if args.daemon:
+        if args.daemon or service_only:
             _run_daemon(orch)
 
     orch.shutdown()

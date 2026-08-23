@@ -39,6 +39,7 @@ doc-pipeline = "run:main"
 
 [tool.setuptools]
 packages = ["pipeline_core", "agents", "scripts"]
+py-modules = ["run"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

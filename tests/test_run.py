@@ -270,3 +270,60 @@ class TestOutputJsonResult:
         result = json.loads(output)
         assert result["exit_code"] == 1
         assert result["stderr"] == "something went wrong"
+
+
+# ─── 服务模式（无输入文件启动 Admin API / 守护进程）────────────────
+
+class TestServiceMode:
+    """无输入文件的服务模式 + --daemon 自动补启 Admin API"""
+
+    def _patch_common(self, mock_orch):
+        """公共 patch 上下文：mock 编排器与耗时环节"""
+        mock_orch.register_agents.return_value = ["agent1"]
+        mock_orch.start_admin_api.return_value = True
+        return (
+            patch("run._get_orchestrator", return_value=mock_orch),
+            patch("run._load_config", return_value={}),
+            patch("run._run_single_task"),
+            patch("run._run_daemon"),
+        )
+
+    def test_dashboard_without_input_serves_and_daemons(self):
+        """--dashboard 无输入文件：跳过任务执行，直接常驻服务（deployment.md §3.2）"""
+        from run import main
+        mock_orch = MagicMock()
+        patches = self._patch_common(mock_orch)
+        with patch("sys.argv", ["run.py", "--dashboard"]), \
+                patch("builtins.print"), \
+                patches[0], patches[1], patches[2] as mock_task, patches[3] as mock_daemon:
+            main()
+        # 不执行本地任务，直接进入服务
+        mock_task.assert_not_called()
+        mock_orch.start_admin_api.assert_called_once()
+        assert mock_orch.start_admin_api.call_args.kwargs.get("serve_static") is True
+        mock_daemon.assert_called_once()
+        mock_orch.shutdown.assert_called_once()
+
+    def test_daemon_autostarts_admin_without_flag(self):
+        """--daemon 未显式给 --admin 时自动补启 Admin API（历史行为恢复）"""
+        from run import main
+        mock_orch = MagicMock()
+        patches = self._patch_common(mock_orch)
+        with patch("sys.argv", ["run.py", "input.md", "--daemon"]), \
+                patch("pathlib.Path.exists", return_value=False), \
+                patch("run._resolve_pipeline_plan", return_value=(None, False)), \
+                patch("builtins.print"), \
+                patches[0], patches[1], patches[2] as mock_task, patches[3] as mock_daemon:
+            main()
+        mock_task.assert_called_once()
+        mock_orch.start_admin_api.assert_called_once()
+        assert mock_orch.start_admin_api.call_args.kwargs == {"port": 8910}
+        mock_daemon.assert_called_once()
+
+    def test_bare_no_flags_no_input_still_errors(self):
+        """无任何服务标志且无输入文件：仍然报参数错误"""
+        from run import main
+        with patch("sys.argv", ["run.py"]), \
+                patch("builtins.print"), pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2
