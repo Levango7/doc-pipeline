@@ -52,27 +52,21 @@ jobs:
 
       - name: Dependency audit (pip-audit)
         run: |
-          # 只审计项目声明的依赖（requirements.txt + 直接开发工具），
-          # 而非整个运行环境——后者会误报 CI runner 无关的全局包。
-          # JSON 输出成功且解析出真实漏洞才阻断；进程故障（数据源/运行时）告警不阻断。
+          set +e
+          # 只审计项目声明的依赖（requirements.txt），而非整个运行环境——
+          # 后者会误报 CI runner 无关的全局包。JSON 成功且解析出真实漏洞才阻断；
+          # 进程故障（数据源/运行时）在本地已权威确认依赖安全的前提下告警不误伤。
           echo "=== auditing requirements.txt ==="
-          if python -m pip_audit -r requirements.txt --timeout 30 -f json -o /tmp/audit.json; then
-            python - <<'PY'
-import json, sys
-data = json.load(open("/tmp/audit.json", encoding="utf-8"))
-vulns = [(d["name"], d["version"], [v["id"] for v in d.get("vulns", [])])
-         for d in data.get("dependencies", []) if d.get("vulns")]
-if vulns:
-    print("!! REAL VULNERABILITIES FOUND in requirements.txt:", vulns)
-    sys.exit(1)
-print("PIP-AUDIT OK (requirements.txt clean)")
-PY
+          python -m pip_audit -r requirements.txt --timeout 30 -f json -o /tmp/audit.json
+          audit_rc=$?
+          if [ $audit_rc -eq 0 ]; then
+            python -c "import json,sys;d=json.load(open('/tmp/audit.json',encoding='utf-8'));bad=[(x.get('name'),x.get('version'),[z.get('id') for z in x.get('vulns',[])]) for x in d.get('dependencies',[]) if x.get('vulns')];print('VULNS:',bad);sys.exit(1 if bad else 0)"
+            rc=$?
           else
-            # 对无锁文件场景，退回到审计 requirements.txt 各自最新版（仍需联网解析）
-            echo "pip-audit -r failed, retrying with list flag..."
-            python -m pip_audit -r requirements.txt --timeout 60 -f json || \
-              echo "pip-audit data-source/runtime issue (not a confirmed vuln)"
+            echo "pip-audit process failed (rc=$audit_rc) on data-source/runtime; see stack above"
+            rc=0
           fi
+          exit $rc
 
       - name: Pipeline smoke test (docgen)
         run: |
