@@ -119,7 +119,12 @@ class TestOrchestratorPauseResume:
                              task_id="test_resume", wait=False)
         orch.pause(task.id)
         orch.resume(task.id)
-        time.sleep(1)
+        # 轮询等待终态（冷缓存下流水线可能超过 1s，固定 sleep 会误报）
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            if task.status.name in ("DONE", "FAILED", "CANCELLED"):
+                break
+            time.sleep(0.2)
         assert task.status.name == "DONE", f"task stuck at {task.status}"
 
 
