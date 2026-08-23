@@ -52,7 +52,14 @@ jobs:
 
       - name: Dependency audit (pip-audit)
         run: |
-          pip-audit
+          # OSV/PyPI 数据源偶发瞬时故障会导致误报失败，重试最多 3 次
+          for i in 1 2 3; do
+            pip-audit && exit 0
+            echo "pip-audit attempt $i failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "pip-audit failed after 3 attempts"
+          exit 1
 
       - name: Pipeline smoke test (docgen)
         run: |
