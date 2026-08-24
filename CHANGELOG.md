@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-08-24
+
+### Fixed（第九轮审查修复：API 契约 / 鉴权可用性 / MCP / CICD）
+
+**鉴权与 Dashboard 可用性**
+- **鉴权本机信任模式**：未配置 `ADMIN_API_KEY` 时，绑定回环地址免鉴权访问
+  （此前所有受保护端点无条件 401，Dashboard 永远空白且无任何提示）；
+  绑定非回环地址 + 无 key → **拒绝启动**（安全门），与 docs/api.md 原有描述对齐
+- Dashboard 前端：请求携带 Bearer Token（localStorage）；401 时弹出 Token 输入框自动重试
+- run.py 消费配置文件的 `admin_api.host/port`（此前该配置块整体无效，
+  config.production.json 的 `0.0.0.0` 绑定从未生效）
+
+**API 契约修复**
+- **OpenAPI 安全声明反转修正**：新增全局 `security: [BearerAuth]`；
+  `/stream` 移除错误的 `security: []`（实际需鉴权）；`/health` 显式豁免——
+  此前整份 Spec 将全部端点描述为公开，与实现完全相反
+- **版本管理端点接线**：`_handle_versions_list/diff/rollback/stats` 四个 handler
+  已实现但从未注册路由（全部 404 死代码）→ 现已接入 do_GET/do_POST 并补 OpenAPI 定义
+- 错误响应信封统一为 `{"error": ...}`（消除三种顶层结构并存）
+- `cancel/pause/resume/rerun` 任务不存在时返回 **404**（此前 200 + false 无法区分）
+- `/api/dashboard`、`/api/pipeline`、`/stream/metrics`、versions 四端点补入 OpenAPI；
+  TaskSubmit schema 补 `output` 参数
+
+**前端字段契约修复（Dashboard 三处恒错数据显示）**
+- Queue Depth 改读 `/health` 顶层 `queue_depth`（原读 metrics 子对象不存在的字段，恒 0）
+- DB Store 显示 `store.messages` 条目数 + `db_size` MB（原读不存在字段恒显示 "6 entries"）
+- 任务列表改用 `/api/dashboard` 聚合端点，进度条真实生效
+  （原读 `/tasks` 列表不存在的 progress/steps 字段，恒 0%）
+- 部分请求失败时状态栏显示"⚠ 部分数据不可用"角标（原先静默渲染空数据）
+
+**其他修复**
+- MCP Server `get_pipeline_info` 必失败修复：改读 `plan.levels`
+  （原访问不存在的 `plan.execution_order/dag_nodes` 属性，每次调用 -32603）；
+  SERVER_VERSION 动态取包版本（原硬编码 3.2.0）
+- SSE 流水线线程 `worker.join()` 补 120s 超时（原无限阻塞可耗尽 HTTP 线程）
+- pause() 不再在节点并发执行中途保存撕裂 checkpoint；改为执行循环在暂停边界
+  （上一 level 完结后）保存一致性快照；语义已在 docstring 文档化
+- POST 路由先鉴权后读请求体；task_id 路径参数接入 `_validate_task_id` 校验
+- 删除死模块 `batch_queue.py`（167 行语句零调用方）
+
+### Changed（CICD）
+- **perf-regression job 从形同虚设变为真实回归门**：
+  baseline 经 actions/cache 在运行间传递 + benchmark.py 对比通过后滚动更新基线
+  （此前 baseline 被 gitignore 导致 CI 永远走"无 baseline 跳过检测"分支）
+
+### 测试
+- 新增 `tests/test_auth_contract.py`（15 项）：真实 HTTP 层鉴权矩阵、
+  versions 路由接线、404 语义、OpenAPI 安全契约、MCP get_pipeline_info
+
 ## [3.4.0] - 2026-08-22
 
 ### Added（进程执行模式正式支持）

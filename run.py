@@ -552,22 +552,34 @@ def main():
     # ─── 管理 API / 仪表盘 / 守护进程 ──────────────
     want_server = args.admin or args.dashboard or args.daemon or service_only
     if want_server:
+        # admin_api.host/port 可由配置文件覆盖（config.production.json 等）；
+        # 未配置时默认仅本机回环绑定
+        admin_cfg = config.get("admin_api") or {}
+        host = str(admin_cfg.get("host", "127.0.0.1"))
+        try:
+            port = int(admin_cfg.get("port", 8910))
+        except (TypeError, ValueError):
+            print(f"[run] ERROR: admin_api.port 配置非法: {admin_cfg.get('port')!r}",
+                  file=sys.stderr)
+            sys.exit(1)
         if args.admin or args.dashboard:
             dashboard_dir = str(project_root / "dashboard") if args.dashboard else None
             ok = orch.start_admin_api(
-                port=8910,
+                host=host,
+                port=port,
                 serve_static=args.dashboard,
                 dashboard_dir=dashboard_dir,
             )
         else:
             # --daemon / 纯服务模式未显式开启 admin 时自动补启
-            ok = orch.start_admin_api(port=8910)
+            ok = orch.start_admin_api(host=host, port=port)
         if not ok:
-            print("[run] ERROR: Admin API 启动失败", file=sys.stderr)
+            print("[run] ERROR: Admin API 启动失败（详见上方日志；"
+                  "非本机绑定需设置 ADMIN_API_KEY）", file=sys.stderr)
             sys.exit(1)
-        print("[run] 管理 API: http://127.0.0.1:8910")
+        print(f"[run] 管理 API: http://{host}:{port}")
         if args.dashboard:
-            print("[run] 仪表盘:  http://127.0.0.1:8910/index.html")
+            print(f"[run] 仪表盘:  http://{host}:{port}/index.html")
         if args.daemon or service_only:
             _run_daemon(orch)
 

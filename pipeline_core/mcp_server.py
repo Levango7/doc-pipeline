@@ -36,9 +36,13 @@ from typing import Any
 from .fast_json import dumps as _fast_dumps
 from .fast_json import loads as _fast_loads
 
+try:
+    from . import __version__ as SERVER_VERSION
+except ImportError:  # pragma: no cover
+    SERVER_VERSION = "unknown"
+
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "doc-pipeline"
-SERVER_VERSION = "3.2.0"
 
 TOOLS = [
     {
@@ -85,7 +89,7 @@ TOOLS = [
     },
     {
         "name": "list_tasks",
-        "description": "列出所有任务（含状态、进度、结果摘要）。",
+        "description": "列出所有任务（含 id/状态/流水线/进度）。",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -268,6 +272,7 @@ class MCPServer:
                     "id": t.id,
                     "status": t.status.value if hasattr(t.status, "value") else str(t.status),
                     "pipeline": t.pipeline_name,
+                    "progress": getattr(t, "progress", 0),
                 }
                 for t in tasks
             ],
@@ -289,18 +294,19 @@ class MCPServer:
             from .scheduler import Scheduler
             sched = Scheduler()
             plan = sched.parse(name)
+            nodes = [n for level in plan.levels for n in level]
             result = {
                 "name": plan.pipeline_name,
                 "node_count": plan.node_count,
-                "levels": plan.execution_order,  # type: ignore[attr-defined]
+                "levels": [[n.agent_name for n in level] for level in plan.levels],
                 "agents": [
                     {
                         "name": n.agent_name,
-                        "dependencies": n.dependencies,
+                        "dependencies": list(n.dependencies),
                         "timeout": n.timeout,
                         "max_retries": n.max_retries,
                     }
-                    for n in plan.dag_nodes.values()  # type: ignore[attr-defined]
+                    for n in nodes
                 ],
             }
             return self._tool_result(req_id, result)

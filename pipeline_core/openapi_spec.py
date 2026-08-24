@@ -17,6 +17,7 @@ def _schemas() -> dict:
                 "title": {"type": "string", "description": "文档标题"},
                 "pipeline": {"type": "string", "default": "docgen"},
                 "wait": {"type": "boolean", "default": False},
+                "output": {"type": "string", "description": "输出文件路径（白名单目录内）"},
             },
         },
         "TaskInfo": {
@@ -112,28 +113,40 @@ def _task_paths() -> dict:
             "post": {
                 "summary": "取消任务",
                 "parameters": [{"name": "task_id", "in": "path", "required": True, "schema": {"type": "string"}}],
-                "responses": {"200": {"description": "取消结果"}},
+                "responses": {
+                    "200": {"description": "取消结果"},
+                    "404": {"description": "任务不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+                },
             },
         },
         "/tasks/{task_id}/rerun": {
             "post": {
                 "summary": "重跑任务",
                 "parameters": [{"name": "task_id", "in": "path", "required": True, "schema": {"type": "string"}}],
-                "responses": {"200": {"description": "重跑已启动"}},
+                "responses": {
+                    "200": {"description": "重跑已启动"},
+                    "404": {"description": "原任务不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+                },
             },
         },
         "/tasks/{task_id}/pause": {
             "post": {
                 "summary": "暂停任务",
                 "parameters": [{"name": "task_id", "in": "path", "required": True, "schema": {"type": "string"}}],
-                "responses": {"200": {"description": "暂停结果"}},
+                "responses": {
+                    "200": {"description": "暂停结果"},
+                    "404": {"description": "任务不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+                },
             },
         },
         "/tasks/{task_id}/resume": {
             "post": {
                 "summary": "恢复任务",
                 "parameters": [{"name": "task_id", "in": "path", "required": True, "schema": {"type": "string"}}],
-                "responses": {"200": {"description": "恢复结果"}},
+                "responses": {
+                    "200": {"description": "恢复结果"},
+                    "404": {"description": "任务不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+                },
             },
         },
     }
@@ -263,10 +276,71 @@ def _ops_paths() -> dict:
                 "responses": {"200": {"description": "重放结果"}},
             },
         },
+        "/api/dashboard": {
+            "get": {
+                "summary": "Dashboard 聚合数据（任务含 progress/steps + Agent 摘要）",
+                "responses": {"200": {"description": "聚合状态"}},
+            },
+        },
+        "/api/pipeline": {
+            "get": {
+                "summary": "流水线配置与版本信息",
+                "responses": {"200": {"description": "流水线信息"}},
+            },
+        },
+        "/api/versions": {
+            "get": {
+                "summary": "文件版本历史",
+                "parameters": [{"name": "file", "in": "query", "required": True, "schema": {"type": "string"}}],
+                "responses": {
+                    "200": {"description": "版本列表"},
+                    "400": {"description": "参数/路径校验失败", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+                },
+            },
+        },
+        "/api/versions/diff": {
+            "get": {
+                "summary": "对比两个版本",
+                "parameters": [
+                    {"name": "file", "in": "query", "required": True, "schema": {"type": "string"}},
+                    {"name": "v1", "in": "query", "required": True, "schema": {"type": "integer"}},
+                    {"name": "v2", "in": "query", "required": True, "schema": {"type": "integer"}},
+                ],
+                "responses": {
+                    "200": {"description": "差异文本"},
+                    "400": {"description": "参数错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+                },
+            },
+        },
+        "/api/versions/stats": {
+            "get": {
+                "summary": "版本管理统计",
+                "responses": {"200": {"description": "统计信息"}},
+            },
+        },
+        "/api/versions/rollback": {
+            "post": {
+                "summary": "回滚到指定版本",
+                "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "required": ["file", "version"],
+                    "properties": {"file": {"type": "string"}, "version": {"type": "integer"}},
+                }}}},
+                "responses": {
+                    "200": {"description": "回滚结果"},
+                    "404": {"description": "版本不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+                },
+            },
+        },
+        "/stream/metrics": {
+            "get": {
+                "summary": "流式推送指标快照（连接数/事件数等）",
+                "responses": {"200": {"description": "text/event-stream"}},
+            },
+        },
         "/stream": {
             "get": {
                 "summary": "SSE 流式文档生成",
-                "security": [],
                 "parameters": [
                     {"name": "query", "in": "query", "required": True, "schema": {"type": "string"}},
                     {"name": "title", "in": "query", "schema": {"type": "string"}},
@@ -280,16 +354,23 @@ def _ops_paths() -> dict:
 
 def generate_spec() -> dict:
     """生成 OpenAPI 3.0 spec"""
+    try:
+        from . import __version__
+    except ImportError:  # pragma: no cover
+        __version__ = "unknown"
     return {
         "openapi": "3.0.3",
         "info": {
             "title": "Doc-Pipeline Admin API",
             "description": "多 Agent 文档生成流水线管理 API",
-            "version": "3.2.0",
+            "version": __version__,
         },
         "servers": [
             {"url": "http://localhost:8910", "description": "本地开发"},
         ],
+        # 全局安全要求：除显式标注 security: [] 的端点（/health）外均需 Bearer 凭证，
+        # 与 AdminHandler._check_auth 实现一致
+        "security": [{"BearerAuth": []}],
         "components": {
             "securitySchemes": {
                 "BearerAuth": {

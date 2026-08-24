@@ -317,7 +317,9 @@ class TestServiceMode:
             main()
         mock_task.assert_called_once()
         mock_orch.start_admin_api.assert_called_once()
-        assert mock_orch.start_admin_api.call_args.kwargs == {"port": 8910}
+        assert mock_orch.start_admin_api.call_args.kwargs == {
+            "host": "127.0.0.1", "port": 8910,
+        }
         mock_daemon.assert_called_once()
 
     def test_bare_no_flags_no_input_still_errors(self):

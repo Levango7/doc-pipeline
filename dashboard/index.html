@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Doc-Pipeline v3 Dashboard</title>
+<title>Doc-Pipeline Dashboard</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <div class="header">
-  <h1>🔧 <span class="accent">Doc-Pipeline</span> v3 Dashboard</h1>
+  <h1>🔧 <span class="accent">Doc-Pipeline</span> Dashboard</h1>
   <div class="header-right">
     <span id="last-updated" class="last-updated">--</span>
     <span class="refresh-indicator"></span>
@@ -17,11 +17,23 @@
 </div>
 
 <!-- Error overlay (hidden by default) -->
-<div id="error-overlay" class="error-overlay" style="display:none">
+<div id="error-overlay" class="error-overlay" style="display:none" role="alert" aria-live="assertive">
   <div class="err-icon">⚠️</div>
   <h2>Dashboard Offline</h2>
-  <p id="error-msg">无法连接到 Admin API。请确保 pipeline 已在 <code>--admin</code> 模式下运行。</p>
+  <p id="error-msg">无法连接到 Admin API。请确保 pipeline 已在 <code>--admin</code>/<code>--dashboard</code> 模式下运行。</p>
   <button id="retry-btn" class="retry-btn">重试连接</button>
+</div>
+
+<!-- Token prompt (shown on 401 when API key auth is enabled) -->
+<div id="token-prompt" class="error-overlay" style="display:none" role="dialog" aria-label="API Token 输入">
+  <div class="err-icon">🔑</div>
+  <h2>需要 API Token</h2>
+  <p>Admin API 已启用鉴权（ADMIN_API_KEY）。输入 Token 后将保存在本浏览器。</p>
+  <div style="display:flex;gap:8px;">
+    <input id="token-input" type="password" placeholder="ADMIN_API_KEY"
+           style="padding:8px 10px;border-radius:8px;border:1px solid var(--border,#444);background:var(--panel,#222);color:inherit;min-width:220px;" />
+    <button id="token-save" class="retry-btn">保存并连接</button>
+  </div>
 </div>
 
 <div id="dashboard" class="dashboard">

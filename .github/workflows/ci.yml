@@ -103,7 +103,23 @@ jobs:
           pip install -r requirements.txt
           pip install numpy selectolax
 
+      - name: Restore perf baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: benchmark_results.json
+          key: perf-baseline-${{ github.ref_name }}
+          restore-keys: |
+            perf-baseline-
+
       - name: Performance regression check
         run: |
           python benchmark.py --ci --threshold 0.30
           echo "PERF CHECK PASSED"
+
+      # 仅 main 更新滚动基线（benchmark.py 在对比通过后会重写 benchmark_results.json）
+      - name: Save perf baseline
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: benchmark_results.json
+          key: perf-baseline-main-${{ github.run_id }}

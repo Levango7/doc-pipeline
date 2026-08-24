@@ -14,7 +14,6 @@ pipeline_core v3 - 文档生成流水线核心框架
 from .agent_loader import AgentLoader
 from .alert_manager import alert, clear_alerts, get_alerts
 from .base_agent import AgentLogger, BaseAgent
-from .batch_queue import BatchQueue, BatchTask, BatchTaskStatus
 from .bootstrap import StartupReport, quick_check, run_startup_check
 from .cache_manager import CacheManager, all_stats, clear_all_caches, get_cache
 from .checkpoint_manager import CheckpointManager
@@ -71,7 +70,6 @@ __all__ = [
     "DocumentEnhancer",
     "run_startup_check", "quick_check", "StartupReport",
     "EventHookManager", "get_hook_manager", "emit_event",
-    "BatchQueue", "BatchTask", "BatchTaskStatus",
     "VersionManager", "VersionEntry", "get_version_manager",
     "MCPServer", "run_mcp_server",
     "TaskQueue",
@@ -82,4 +80,4 @@ __all__ = [
     "QualityFeedback", "get_quality_feedback", "record_quality",
 ]
 
-__version__ = "3.4.0"
+__version__ = "3.5.0"

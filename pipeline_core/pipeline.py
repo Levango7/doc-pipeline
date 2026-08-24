@@ -521,12 +521,16 @@ class PipelineOrchestrator:
             return task
 
     def pause(self, task_id: str) -> bool:
-        """暂停任务（支持断点续传）"""
+        """暂停任务（在层级边界生效，支持断点续传）。
+
+        语义说明：正在执行的 level 内节点不会被中断，执行器推进到下一 level 前
+        检测到 PAUSED 即阻塞等待；边界 checkpoint 由执行循环在进入等待时保存
+        （此时无并发节点写入，避免撕裂快照），pause() 本身不落盘。
+        """
         with self._lock:
             task = self._running_tasks.get(task_id)
             if task and task.status == TaskStatus.RUNNING:
                 task.status = TaskStatus.PAUSED
-                self._save_checkpoint(task)
                 # 通知所有 agent 暂停
                 for name in self.registry.list_agent_names():  # type: ignore[attr-defined]
                     inst = self.registry.get_instance(name)
@@ -775,8 +779,17 @@ class PipelineOrchestrator:
                         task.status = TaskStatus.CANCELLED
                         return
 
-                    # 暂停检查点：任务被暂停时阻塞，直到恢复或取消
+                    # 暂停检查点：任务被暂停时阻塞，直到恢复或取消；
+                    # 进入等待时保存边界快照（此时上一 level 已完结、无并发节点写入）
+                    paused_saved = False
                     while task.status == TaskStatus.PAUSED:
+                        if not paused_saved:
+                            try:
+                                self._save_checkpoint(task)
+                            except Exception as e:
+                                self._log("warning", "暂停边界 checkpoint 保存失败",
+                                          task_id=task.id, error=str(e))
+                            paused_saved = True
                         if task.stop_event.is_set() or self._stop_event.is_set():
                             task.status = TaskStatus.CANCELLED
                             return
@@ -920,7 +933,16 @@ class PipelineOrchestrator:
                     task.status = TaskStatus.CANCELLED
                     break
 
+                # 暂停边界：与同步版一致，进入等待时保存无并发写入的边界快照
+                paused_saved = False
                 while task.status == TaskStatus.PAUSED:
+                    if not paused_saved:
+                        try:
+                            self._save_checkpoint(task)
+                        except Exception as e:
+                            self._log("warning", "暂停边界 checkpoint 保存失败",
+                                      task_id=task.id, error=str(e))
+                        paused_saved = True
                     if task.stop_event.is_set() or self._stop_event.is_set():
                         task.status = TaskStatus.CANCELLED
                         break

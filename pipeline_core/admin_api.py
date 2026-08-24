@@ -146,6 +146,16 @@ class AdminHandler(BaseHTTPRequestHandler):
     orch: Any = None  # 由 AdminAPI 注入
     dashboard_dir: str | None = None  # 静态文件目录
     api_key: str | None = None  # 由 AdminAPI 注入
+    server_host: str = "127.0.0.1"  # 由 AdminAPI 注入（本机信任模式判定）
+
+    def _parse_query(self) -> dict:
+        """解析 URL 查询串为 dict（不含 URL 解码以外的处理）"""
+        if "?" not in self.path:
+            return {}
+        qs = self.path.split("?", 1)[1]
+        return dict(
+            kv.split("=", 1) for kv in qs.split("&") if "=" in kv
+        )
 
     def _json(self, data: dict, status: int = 200):
         self.send_response(status)
@@ -212,7 +222,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             history = vm.history(file_path, limit=50)
             self._json({"status": "ok", "file": file_path, "versions": history, "count": len(history)})
         except Exception as e:
-            self._json({"status": "error", "error": str(e)}, 500)
+            self._json({"error": str(e)}, 500)
 
     def _handle_versions_diff(self, file_path: str, v1: int, v2: int):
         """GET /api/versions/diff?file=<path>&v1=N&v2=M — 对比两版本"""
@@ -226,7 +236,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             diff_text = vm.diff(file_path, v1, v2)
             self._json({"status": "ok", "file": file_path, "v1": v1, "v2": v2, "diff": diff_text})
         except Exception as e:
-            self._json({"status": "error", "error": str(e)}, 500)
+            self._json({"error": str(e)}, 500)
 
     def _handle_versions_rollback(self, file_path: str, version: int):
         """POST /api/versions/rollback — 回滚到指定版本"""
@@ -241,7 +251,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             status_code = 200 if result["status"] == "ok" else 404
             self._json(result, status_code)
         except Exception as e:
-            self._json({"status": "error", "error": str(e)}, 500)
+            self._json({"error": str(e)}, 500)
 
     def _handle_versions_stats(self):
         """GET /api/versions/stats — 版本管理统计"""
@@ -250,17 +260,23 @@ class AdminHandler(BaseHTTPRequestHandler):
             vm = get_version_manager()
             self._json({"status": "ok", **vm.stats()})
         except Exception as e:
-            self._json({"status": "error", "error": str(e)}, 500)
+            self._json({"error": str(e)}, 500)
 
+
+    # 回环地址集合：未配置 API key 时仅对这些绑定地址放行（本机信任模式）
+    _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", ""}
 
     def _check_auth(self) -> bool:
         """校验 API key。
 
-        未配置 api_key 时，所有受保护端点返回 401（默认开启鉴权门，无钥匙则不可进）。
-        /health 与 /stream 已在路由层豁免。
+        - 配置了 api_key：所有受保护端点必须携带有效凭证（Bearer 头或 ?token=）
+        - 未配置 api_key 且服务绑定回环地址：放行（本机信任模式，与 docs/api.md 一致）
+        - 未配置 api_key 且绑定非回环地址：拒绝（AdminAPI.start 已在此组合下拒绝启动，
+          此处为兜底防线）
+        /health 与静态资源已在路由层豁免。
         """
         if not self.api_key:
-            return False
+            return getattr(self, "server_host", "127.0.0.1") in self._LOOPBACK_HOSTS
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             token = auth[len("Bearer "):].strip()
@@ -297,6 +313,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._handle_list_tasks()
             elif self.path.startswith("/tasks/"):
                 task_id = self.path.split("/tasks/")[1].split("/")[0]
+                if not _validate_task_id(task_id):
+                    return self._json({"error": "invalid task id"}, 400)
                 if self.path.endswith("/cancel"):
                     self._handle_cancel_task(task_id)
                 elif self.path.endswith("/rerun"):
@@ -327,6 +345,22 @@ class AdminHandler(BaseHTTPRequestHandler):
             elif self.path.startswith("/dlq/") and self.path.endswith("/replay"):
                 dlq_id = int(self.path.split("/dlq/")[1].split("/")[0])
                 self._handle_replay_dlq(dlq_id)
+            elif self.path.split("?", 1)[0] == "/api/versions/stats":
+                self._handle_versions_stats()
+            elif self.path.split("?", 1)[0] == "/api/versions/diff":
+                qs = self._parse_query()
+                file_path = qs.get("file", "")
+                try:
+                    v1, v2 = int(qs.get("v1", "")), int(qs.get("v2", ""))
+                except ValueError:
+                    return self._json({"error": "v1/v2 必须为整数"}, 400)
+                self._handle_versions_diff(file_path, v1, v2)
+            elif self.path.split("?", 1)[0] == "/api/versions":
+                qs = self._parse_query()
+                file_path = qs.get("file", "")
+                if not file_path:
+                    return self._json({"error": "缺少 file 参数"}, 400)
+                self._handle_versions_list(file_path)
             elif self.path == "/api/dashboard":
                 self._handle_dashboard()
             elif self.path == "/api/pipeline":
@@ -352,19 +386,20 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            # 读取请求体
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length) if content_length > 0 else b""
-
             # 静态资源/健康免鉴权
             if self._serve_static(self.path):
                 return
             if self.path == "/health":
                 self._handle_health()
                 return
+            # 鉴权前置：未通过前不读取请求体（HTTP/1.0 无 keep-alive，可安全直接响应）
             if not self._check_auth():
                 self._json({"error": "unauthorized"}, 401)
                 return
+
+            # 读取请求体（已通过鉴权）
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length) if content_length > 0 else b""
 
             # 处理 POST 专属路由
             if self.path == "/api/tasks":
@@ -372,6 +407,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return
             if self.path.startswith("/tasks/"):
                 task_id = self.path.split("/tasks/")[1].split("/")[0]
+                if not _validate_task_id(task_id):
+                    return self._json({"error": "invalid task id"}, 400)
                 if self.path.endswith("/cancel"):
                     self._handle_cancel_task(task_id)
                     return
@@ -384,6 +421,18 @@ class AdminHandler(BaseHTTPRequestHandler):
                 elif self.path.endswith("/resume"):
                     self._handle_resume_task(task_id)
                     return
+            elif self.path == "/api/versions/rollback":
+                try:
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                except (ValueError, UnicodeDecodeError):
+                    return self._json({"error": "请求体不是合法 JSON"}, 400)
+                file_path = payload.get("file", "")
+                version = payload.get("version")
+                if not file_path or not isinstance(version, int):
+                    return self._json(
+                        {"error": '需要 JSON 体 {"file": <path>, "version": <int>}'}, 400)
+                self._handle_versions_rollback(file_path, version)
+                return
             elif self.path.startswith("/dlq/") and self.path.endswith("/replay"):
                 dlq_id = int(self.path.split("/dlq/")[1].split("/")[0])
                 self._handle_replay_dlq(dlq_id)
@@ -590,6 +639,8 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_cancel_task(self, task_id: str):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
+        if self.orch.get_task(task_id) is None:
+            return self._json({"error": "task not found"}, 404)
         ok = self.orch.cancel(task_id)
         self._json({"cancelled": ok, "task_id": task_id})
 
@@ -610,12 +661,16 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_pause_task(self, task_id: str):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
+        if self.orch.get_task(task_id) is None:
+            return self._json({"error": "task not found"}, 404)
         ok = self.orch.pause(task_id)
         self._json({"paused": ok, "task_id": task_id})
 
     def _handle_resume_task(self, task_id: str):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
+        if self.orch.get_task(task_id) is None:
+            return self._json({"error": "task not found"}, 404)
         ok = self.orch.resume(task_id)
         self._json({"resumed": ok, "task_id": task_id})
 
@@ -641,7 +696,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def _handle_dashboard(self):
         if not self.orch:
-            return self._json({"status": "error", "message": "orchestrator not set"})
+            return self._json({"error": "orchestrator not set"}, 500)
         orch = self.orch
         tasks = orch.list_tasks()
         tasks_data = [
@@ -675,7 +730,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_pipeline(self):
         """返回流水线配置信息"""
         if not self.orch:
-            return self._json({"status": "error", "message": "orchestrator not set"})
+            return self._json({"error": "orchestrator not set"}, 500)
         orch = self.orch
         try:
             from pipeline_core import __version__ as _v
@@ -1150,8 +1205,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                     break
 
             # 等待后台生成线程完整结束，确保 complete/error 事件已推送给客户端；
-            # 不设置 timeout，避免早退导致回调提前注销、客户端收不到完整流。
-            worker.join()
+            # timeout=120s 防止流水线挂死时 HTTP 线程永久阻塞（daemon 线程，
+            # 超时后仅放弃等待并注销回调，不影响后台线程自行退出）。
+            worker.join(timeout=120)
+            if worker.is_alive():
+                _logger.warning("[AdminAPI] 流式任务 %s 后台线程 %ss 未结束，提前断开",
+                                task_id, 120)
             unregister_callback(task_id)
 
         except Exception as e:
@@ -1177,8 +1236,16 @@ class AdminAPI:
     def start(self, orch) -> bool:
         """在后台线程启动 API 服务器"""
         try:
+            # 安全门：非回环绑定必须配置 API key（本机信任模式仅限回环地址）
+            if not self.api_key and self.host not in AdminHandler._LOOPBACK_HOSTS:
+                _logger.error(
+                    f"[AdminAPI] 拒绝启动：绑定 {self.host} 但未设置 ADMIN_API_KEY。"
+                    "公网/容器部署必须设置 ADMIN_API_KEY，或将 host 改为 127.0.0.1（仅本机）。"
+                )
+                return False
             AdminHandler.orch = orch
             AdminHandler.api_key = self.api_key
+            AdminHandler.server_host = self.host
             if self.serve_static and self.dashboard_dir:
                 AdminHandler.dashboard_dir = self.dashboard_dir
                 _logger.info(f"[AdminAPI] 静态文件目录: {self.dashboard_dir}")
@@ -1186,8 +1253,8 @@ class AdminAPI:
                 _logger.info("[AdminAPI] 已启用 API Key 鉴权")
             else:
                 _logger.warning(
-                    "[AdminAPI] 未配置 ADMIN_API_KEY：Admin API 写/读受保护端点"
-                    "将全部返回 401（默认关闭）。设置 ADMIN_API_KEY 以启用鉴权访问。"
+                    "[AdminAPI] 未配置 ADMIN_API_KEY：本机信任模式（仅回环访问免鉴权），"
+                    "受保护端点对远程来源返回 401。"
                 )
             self._server = ThreadingHTTPServer((self.host, self.port), AdminHandler)
             self._thread = threading.Thread(

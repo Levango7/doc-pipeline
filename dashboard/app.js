@@ -38,6 +38,9 @@
     els.retryBtn       = $('#retry-btn');
     els.dashboard      = $('#dashboard');
     els.lastUpdated    = $('#last-updated');
+    els.tokenPrompt    = $('#token-prompt');
+    els.tokenInput     = $('#token-input');
+    els.tokenSave      = $('#token-save');
 
     // Panel containers
     els.statusPanel    = $('#panel-status .card-body');
@@ -125,19 +128,43 @@
   // ----------------------------------------------------------
   // API fetcher
   // ----------------------------------------------------------
+  const TOKEN_KEY = 'docpipe_token';
+
+  function getToken () { return localStorage.getItem(TOKEN_KEY) || ''; }
+
   async function fetchJson (url) {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    const token = getToken();
+    const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
+    const resp = await fetch(url, { signal: AbortSignal.timeout(4000), headers });
+    if (resp.status === 401 && !url.includes('/health')) {
+      // 凭证缺失/失效 → 请求 token 后重试一次
+      requestToken();
+      throw new Error('HTTP 401（需要 API Token）');
+    }
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     return resp.json();
   }
 
+  function requestToken () {
+    if (els.tokenPrompt && els.tokenPrompt.style.display !== 'flex') {
+      els.tokenPrompt.style.display = 'flex';
+      if (els.tokenInput) els.tokenInput.focus();
+    }
+  }
+
   async function fetchAll () {
-    const [health, tasks, agents] = await Promise.all([
-      fetchJson(API_BASE + '/health').catch(() => null),
-      fetchJson(API_BASE + '/tasks').catch(() => null),
-      fetchJson(API_BASE + '/agents').catch(() => null),
+    const results = await Promise.allSettled([
+      fetchJson(API_BASE + '/health'),
+      fetchJson(API_BASE + '/api/dashboard'),
     ]);
-    return { health, tasks, agents };
+    const health = results[0].status === 'fulfilled' ? results[0].value : null;
+    const dash = results[1].status === 'fulfilled' ? results[1].value : null;
+    return {
+      health,
+      tasks: dash || null,           // /api/dashboard 含 tasks[].progress/steps 与 agents
+      agents: dash || null,
+      failedCount: results.filter(r => r.status === 'rejected').length,
+    };
   }
 
   // ----------------------------------------------------------
@@ -156,18 +183,18 @@
     const subs = health.subscribers != null ? health.subscribers : 0;
     const metrics = health.metrics || {};
 
-    // Queue depth: try to derive from metrics or store
-    const queueDepth = metrics.queue_depth != null
-      ? metrics.queue_depth
-      : (metrics.pending != null ? metrics.pending : 0);
+    // Queue depth: /health 的顶层字段（metrics 子对象里没有该字段）
+    const queueDepth = health.queue_depth != null ? health.queue_depth : 0;
 
-    // DB store size: from store object
-    let dbSize = '—';
+    // DB store: messages 为条目数，db_size 为字节数
+    let dbLabel = '—';
     if (health.store) {
-      if (typeof health.store.size === 'number') {
-        dbSize = health.store.size;
-      } else if (typeof health.store === 'object') {
-        dbSize = Object.keys(health.store).length;
+      const msgs = typeof health.store.messages === 'number' ? health.store.messages : null;
+      const bytes = typeof health.store.db_size === 'number' ? health.store.db_size : null;
+      if (msgs != null && bytes != null) {
+        dbLabel = pluralize(msgs, 'msg') + ' · ' + (bytes / (1024 * 1024)).toFixed(1) + 'MB';
+      } else if (msgs != null) {
+        dbLabel = pluralize(msgs, 'entry');
       }
     }
 
@@ -192,7 +219,7 @@
     /* subtitle stats */
     grid.appendChild(statCell('Subscribers', subs, 'ok'));
     grid.appendChild(statCell('Queue Depth', queueDepth, queueDepth > 10 ? 'warn' : 'ok'));
-    grid.appendChild(statCell('DB Size', typeof dbSize === 'number' ? pluralize(dbSize, 'entry') : dbSize, 'ok'));
+    grid.appendChild(statCell('DB Store', dbLabel, 'ok'));
     grid.appendChild(statCell('Uptime', metrics.uptime ? fmtUptime(metrics.uptime) : '—', 'ok'));
 
     els.statusPanel.replaceChildren(grid);
@@ -204,7 +231,7 @@
       /* ---- Tasks (top-right) ---- */
   function renderTasks (data) {
     const tasks = (data && data.tasks) || [];
-    const count = data && data.count != null ? data.count : tasks.length;
+    const count = data && data.task_count != null ? data.task_count : tasks.length;
 
     // Update badge
     if (els.badgeTasks) els.badgeTasks.textContent = count;
@@ -365,9 +392,10 @@
       state.health = data.health;
       state.tasks = data.tasks;
       state.agents = data.agents;
+      state.partialFail = data.failedCount > 0;
 
-      // If all three failed, treat it as offline
-      if (!data.health && !data.tasks && !data.agents) {
+      // If all endpoints failed, treat it as offline
+      if (!data.health && !data.tasks) {
         throw new Error('All API endpoints unreachable');
       }
 
@@ -385,7 +413,8 @@
     hideError();
     if (!state.loaded) return;
 
-    els.lastUpdated.textContent = 'Updated ' + timeAgo(state.lastUpdated);
+    els.lastUpdated.textContent = 'Updated ' + timeAgo(state.lastUpdated)
+      + (state.partialFail ? ' · ⚠ 部分数据不可用' : '');
 
     renderStatus(state.health);
     renderTasks(state.tasks);
@@ -434,6 +463,19 @@
   function init () {
     cacheDom();
     if (els.retryBtn) els.retryBtn.addEventListener('click', handleRetry);
+    if (els.tokenSave) {
+      const saveToken = () => {
+        const v = (els.tokenInput.value || '').trim();
+        if (!v) return;
+        localStorage.setItem(TOKEN_KEY, v);
+        els.tokenPrompt.style.display = 'none';
+        handleRetry();
+      };
+      els.tokenSave.addEventListener('click', saveToken);
+      els.tokenInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') saveToken();
+      });
+    }
     els.lastUpdated.textContent = 'Loading…';
     update().then(scheduleRefresh).catch(() => scheduleRefresh());
   }

@@ -230,7 +230,7 @@ citation:
 | `fail_fast` | `true` | `false`（单 Agent 失败不中断流水线） |
 | `researcher.max_workers` | 3 | 5 |
 | `researcher.cache_size` | 1000 | 2000 |
-| `admin_api.enabled` | —（由 CLI `--admin`/`--dashboard` 控制） | `true`（绑定 `0.0.0.0`，公网部署必须设置 `ADMIN_API_KEY`） |
+| `admin_api.host` / `admin_api.port` | `127.0.0.1` / `8910`（由 CLI 启停） | `0.0.0.0` / `8910`（**非回环绑定必须设置 `ADMIN_API_KEY`，否则拒绝启动**） |
 
 ```bash
 # 使用生产配置

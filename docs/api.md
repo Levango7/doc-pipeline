@@ -6,9 +6,11 @@
 
 ## 鉴权
 
-- 设置环境变量 `ADMIN_API_KEY` 后启用；未配置时仅本机访问、无鉴权
-- 请求携带 `Authorization: Bearer <key>` 或 `?token=<key>`
+- 设置环境变量 `ADMIN_API_KEY` 后启用；请求携带 `Authorization: Bearer <key>` 或 `?token=<key>`
+- **未配置 `ADMIN_API_KEY` 时进入本机信任模式**：绑定回环地址（`127.0.0.1` 等）时免鉴权访问；
+  绑定非回环地址（如 `0.0.0.0`）则**拒绝启动**（安全门，防止无凭证暴露公网）
 - `/health` 与静态资源（Dashboard）始终免鉴权
+- Dashboard 前端在收到 401 时会弹出 Token 输入框，保存于浏览器 localStorage 后自动重试
 
 ## 端点总览
 
@@ -80,7 +82,7 @@
 
 可用事件与行为见 README「事件钩子」章节。
 
-### 死信队列 / 流式
+### 死信队列 / 流式 / 版本管理
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -88,7 +90,14 @@
 | POST | `/dlq/{dlq_id}/replay` | 重放死信消息 |
 | GET | `/stream/metrics` | 流式推送指标快照（连接数/事件数等） |
 | GET | `/stream` | SSE 流式生成，query 参数：`query`（必填）、`title`、`task_id`；
-支持 `Last-Event-ID` 断线重连。返回 `text/event-stream`，免鉴权 |
+支持 `Last-Event-ID` 断线重连。返回 `text/event-stream`（需鉴权） |
+| GET | `/api/versions?file=<path>` | 文件版本历史 |
+| GET | `/api/versions/diff?file=<path>&v1=N&v2=M` | 对比两个版本 |
+| GET | `/api/versions/stats` | 版本管理统计 |
+| POST | `/api/versions/rollback` | 回滚到指定版本，JSON 体：`{"file": <path>, "version": <int>}` |
+
+注：`cancel/pause/resume/rerun` 类操作对不存在的任务返回 **404**；任务存在但状态不符时
+仍为 200 + `<action>: false`。
 
 ---
 

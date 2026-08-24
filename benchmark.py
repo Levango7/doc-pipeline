@@ -417,6 +417,9 @@ def main():
                 sys.exit(1)
             else:
                 print("PASSED: 无性能回归")
+                # 滚动更新 baseline：CI 缓存中的基线始终对齐最近一次通过的 main 运行
+                with open(output_path, "w", encoding="utf-8") as f:
+                    json.dump(all_results, f, indent=2, default=str, ensure_ascii=False)
         else:
             print("WARNING: 无 baseline 文件，跳过回归检测")
             # 首次运行，写入 baseline
