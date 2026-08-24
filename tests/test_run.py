@@ -215,25 +215,18 @@ class TestRoutingBranches:
                 # legacy 路径调用 orch.run 而非 orch.run_plan
                 mock_orch.run.assert_called_once()
 
-    def test_three_pass_mode(self, tmp_path):
-        """--three-pass 使用三阶段流水线"""
+    def test_three_pass_mode(self, tmp_path, capsys):
+        """--three-pass 已移除：应打印迁移指引并 exit 2"""
         from run import main
         input_file = tmp_path / "input.md"
         input_file.write_text("Kafka architecture")
 
         with patch("sys.argv", ["run.py", str(input_file), "--three-pass"]), \
-                patch("pipeline_core.three_pass_pipeline.ThreePassPipeline") as mock_tp_cls:
-            mock_tp = MagicMock()
-            mock_tp.generate.return_value = {
-                "status": "ok", "duration": 1.0,
-                "phases": {"p1": {"status": "ok", "duration": 0.3}},
-                "output_path": "out.md", "section_count": 5,
-                "content_length": 1000,
-            }
-            mock_tp_cls.return_value = mock_tp
-            with patch("builtins.print"), contextlib.suppress(SystemExit):
-                main()
-            mock_tp.generate.assert_called_once()
+                pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--pipeline docgen" in err
 
 
 # ─── output_json_result ────────────────────────────

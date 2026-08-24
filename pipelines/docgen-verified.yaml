@@ -1,0 +1,130 @@
+# Doc-Pipeline 声明式流水线配置 — 事实核查增强版
+# 基于 docgen.yaml，在 checker 之后插入 fact_checker（事实核查）节点。
+# 用法: python run.py input.md --pipeline docgen-verified
+_name: docgen-verified
+_version: "1.0"
+description: 自动文档生成流水线（Researcher → Fetcher → Writer → QualityGate → Checker → FactChecker → Layout → SafeWriter）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+# ── Agent 定义 ──────────────────────────────
+agents:
+  - name: researcher
+    version: "2.0"
+    timeout: 300
+    dependencies: []
+    pool_size: 2
+    rate_limit:
+      rate: 5
+      burst: 10
+    config:
+      search_engines:
+        - bocha
+        - tavily
+        - serper
+        - bing
+        - sogou
+        - "360"
+      max_results: 10
+
+  - name: fetcher
+    version: "1.0"
+    timeout: 120
+    dependencies: ["researcher"]
+    config:
+      max_downloads: 15
+      temp_dir: tmp_fetcher
+
+  - name: writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["fetcher"]
+    config:
+      prompt_profile: generic-tech
+
+  - name: quality_gate
+    version: "2.0"
+    timeout: 300
+    dependencies: ["writer"]
+    config:
+      quality_profile: technical-doc
+      threshold: 70
+      max_regenerations: 3
+      weights:
+        completeness: 0.25
+        structure: 0.20
+        readability: 0.15
+        citation: 0.20
+        depth: 0.20
+
+  - name: checker
+    version: "1.1"
+    timeout: 300
+    dependencies: ["quality_gate"]
+    config:
+      fail_fast: false
+
+  - name: fact_checker
+    version: "1.0"
+    timeout: 180
+    dependencies: ["checker"]
+    config:
+      max_claims: 30
+      llm_timeout: 30
+
+  - name: layout
+    version: "2.0"
+    timeout: 300
+    dependencies: ["fact_checker"]
+    config:
+      style: markdown
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["layout"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+# ── DAG 拓扑 ──────────────────────────────
+topology:
+  type: dag
+  levels:
+    - [researcher]
+    - [fetcher]
+    - [writer]
+    - [quality_gate]
+    - [checker]
+    - [fact_checker]
+    - [layout]
+    - [safe_writer]
+
+  edges:
+    - [researcher, fetcher]
+    - [fetcher, writer]
+    - [writer, quality_gate]
+    - [quality_gate, checker]
+    - [checker, fact_checker]
+    - [fact_checker, layout]
+    - [layout, safe_writer]
+
+# ── 流水线全局策略 ──────────────────────────
+pipeline:
+  timeout: 600
+  retry:
+    max_attempts: 3
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

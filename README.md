@@ -14,7 +14,7 @@
 | **检索** | Bocha + Tavily + Serper + Bing + Sogou + 360 六引擎、LRU+TTL 跨任务缓存 |
 | **抓取** | Async I/O（aiohttp 并发）/ 同步线程池降级、内容质量识别 |
 | **写作** | TF-IDF 向量语义匹配、骨架生成、LLM 润色、质量反馈闭环 |
-| **质量** | QualityGate v2（Profile 模板）、Style Enforcer、Citation Verifier、评分历史学习 |
+| **质量** | QualityGate v2（Profile 模板）、Style Enforcer、Citation Verifier、评分历史学习、**fact_checker 事实核查**（数字类声明 vs 检索源一致性，`--pipeline docgen-verified`） |
 | **弹性** | 熔断器、限流器、Agent Pool、背压、自动重生成、告警机制 |
 | **可观测** | 结构化日志（轮转）、Prometheus Metrics、Admin REST API、Dashboard、日志查询 |
 | **成本** | LLM 调用成本追踪（12 供应商定价）、预算熔断、`GET /api/cost` |

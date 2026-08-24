@@ -48,7 +48,6 @@ from .streaming import (
     unregister_callback,
 )
 from .task_queue import TaskQueue
-from .three_pass_pipeline import DocumentPlan, PassResult, ThreePassPipeline
 from .version_manager import VersionEntry, VersionManager, get_version_manager
 
 __all__ = [
@@ -66,7 +65,6 @@ __all__ = [
     "StreamEvent", "StreamCallback", "StreamMetrics",
     "register_callback", "get_callback", "unregister_callback",
     "create_executor", "is_process_executor", "SmartExecutor",
-    "ThreePassPipeline", "DocumentPlan", "PassResult",
     "DocumentEnhancer",
     "run_startup_check", "quick_check", "StartupReport",
     "EventHookManager", "get_hook_manager", "emit_event",
@@ -80,4 +78,4 @@ __all__ = [
     "QualityFeedback", "get_quality_feedback", "record_quality",
 ]
 
-__version__ = "3.5.0"
+__version__ = "3.6.0"

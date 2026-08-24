@@ -851,7 +851,7 @@ class DAGExecutor:
         支持池化节点名（如 researcher_pool_0）自动解析为 base name。
         QualityGate 重做后新生成的 content 也能正确获取。
         """
-        content_priority = ["layout", "quality_gate", "writer"]
+        content_priority = ["layout", "quality_gate", "writer", "fact_checker"]
         checked = set()
 
         def _try_get(name: str) -> str:

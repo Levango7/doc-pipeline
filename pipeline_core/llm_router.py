@@ -460,6 +460,10 @@ class LLMRouter:
         # 供应商定义表: (name, url_key, model_key, key_key, priority, is_cf)
         provider_defs = [
             ("cloudflare",  "LLM_API_URL",  "LLM_MODEL",  "LLM_API_KEY",  10, True),
+            ("openai",      "OPENAI_API_URL", "OPENAI_MODEL", "OPENAI_API_KEY", 12, False),
+            ("deepseek",    "DEEPSEEK_API_URL", "DEEPSEEK_MODEL", "DEEPSEEK_API_KEY", 13, False),
+            ("moonshot",    "MOONSHOT_API_URL", "MOONSHOT_MODEL", "MOONSHOT_API_KEY", 14, False),
+            ("qwen",        "QWEN_API_URL",   "QWEN_MODEL",   "QWEN_API_KEY",   15, False),
             ("xiaomi_mimo", "MIMO_API_URL", "MIMO_MODEL", "MIMO_API_KEY", 20, False),
             ("longcat",     "LONGCAT_API_URL","LONGCAT_MODEL","LONGCAT_API_KEY", 30, False),
             ("sensenova",   "SENSENOVA_API_URL","SENSENOVA_MODEL","SENSENOVA_API_KEY", 40, False),

@@ -13,7 +13,6 @@ import json
 import os
 import signal
 import sys
-import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -260,6 +259,14 @@ def _render_task_result(args_args: argparse.Namespace, task, task_id: str) -> No
     if task.error:
         print(f"\n错误: {task.error}")
 
+    # 降级警告：writer 报告了内容不足的章节时，stderr 显式提示
+    writer_result = (task.result or {}).get("writer") or {}
+    empty_sections = (writer_result.get("stats") or {}).get("empty_sections") or []
+    if empty_sections:
+        print(f"\n⚠️ WARNING: {len(empty_sections)} 个章节内容不足（降级占位）："
+              f"{'、'.join(empty_sections)}；建议配置 LLM API Key 后重新生成",
+              file=sys.stderr)
+
     print(f"{'='*60}")
 
     if args_args.report:
@@ -397,7 +404,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dashboard", action="store_true", help="启动管理 API + 仪表盘（隐含 --admin）")
     parser.add_argument("--daemon", action="store_true", help="守护进程模式：流水线执行完后保持 Admin API 常驻")
     parser.add_argument("--check", action="store_true", help="运行启动自检后退出")
-    parser.add_argument("--three-pass", action="store_true", help="使用三阶段流水线（研究→结构→精修）")
+    parser.add_argument("--three-pass", action="store_true", help="（已移除）三阶段流水线已并入 DAG 模式，此参数保留仅为兼容报错")
     parser.add_argument("--health-check", action="store_true", help="启动时运行 LLM 健康检查")
     parser.add_argument("--export", choices=["html", "word", "png"], help="导出格式（html/word/png）")
     parser.add_argument("--export-output", default=None, help="导出文件路径")
@@ -459,6 +466,13 @@ def main():
         orch.shutdown()
         return
 
+    # ─── 三阶段流水线模式（已移除，提供迁移指引）──────────
+    if args.three_pass:
+        print("[run] ERROR: --three-pass 已在 v3.6.0 移除（ThreePassPipeline 已废弃）。"
+              "其能力已由 DAG 模式覆盖且更完善：python run.py <input> --pipeline docgen",
+              file=sys.stderr)
+        sys.exit(2)
+
     # 快速自检（非阻塞，仅警告）
     try:
         from pipeline_core.bootstrap import quick_check
@@ -466,35 +480,6 @@ def main():
             print("[run] 启动自检发现错误，使用 --check 查看详情")
     except Exception:
         pass  # 自检失败不阻断启动
-
-    # ─── 三阶段流水线模式 ──────────────────────
-    if args.three_pass:
-        from pipeline_core.three_pass_pipeline import ThreePassPipeline
-        input_text = Path(args.input).read_text(encoding="utf-8").strip()
-        if not input_text:
-            print("[run] 输入文件为空")
-            return
-        output = args.output or f"output/three_pass_{int(time.time())}.md"
-        pipeline = ThreePassPipeline()
-        result = pipeline.generate(input_text, output_path=output)
-        print(f"\n{'='*60}")
-        print(f"三阶段流水线完成 | 状态: {result['status']}")
-        print(f"耗时: {result.get('duration', 0):.1f}s")
-        if result["status"] == "ok":
-            phases = result.get("phases", {})
-            for name, info in phases.items():
-                print(f"  {name}: {info['status']} ({info['duration']:.1f}s)")
-            print(f"输出: {result.get('output_path', '')}")
-            print(f"章节: {result.get('section_count', 0)} | 长度: {result.get('content_length', 0)} 字符")
-        else:
-            print(f"错误: {result.get('error', '')}")
-        print(f"{'='*60}")
-        if result["status"] == "ok" and output:
-            if args.fix_ascii:
-                _run_ascii_fix(output)
-            if args.export:
-                _run_export(output, args.export, args.export_output)
-        return
 
     # ─── 文档增强模式 ──────────────────────────
     if args.enhance:

@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] - 2026-08-24
+
+### Added（内容生产能力提升）
+- **fact_checker 事实核查 Agent（MVP）**：
+  - 从最终文档提取数字类可验证声明（百分比/带单位数值/年份/版本号，上限可配），
+    对照检索源做一致性核查：无 LLM 用归一化字符串匹配（零成本基线），有 LLM 用
+    批量语义判定（supported/refuted/unverifiable），LLM 失败自动回退字符串匹配
+  - 未核实声明在文档尾部附加「事实核查附注」（明确标注：启发式核查，
+    unverifiable ≠ 错误），核查报告同时写入节点结果供 API/MCP 消费
+  - 新增 `pipelines/docgen-verified.yaml`（8 层 DAG：checker → fact_checker → layout）；
+    **默认 docgen 流水线零改动**
+- **主流 LLM 供应商预置**：llm_router 新增 openai / deepseek / moonshot / qwen 四个
+  OpenAI 兼容供应商定义（此前仅国内二线云厂商），`.env.example` 补三行组配置示例；
+  Claude 原生接口非 OpenAI 格式，已在模板中说明经兼容网关接入
+
+### Fixed（降级透明化）
+- **空章节不再静默交付**：writer 无 LLM 路径下未能填充内容的章节，现在会在文档头部
+  插入「⚠️ 降级声明」块列出章节名与修复建议，CLI 渲染时同步输出 stderr 警告，
+  result.stats 带 empty_sections 字段供程序化消费
+- 移除 run.py 中一段历史遗留的不可达死代码（three_pass 分支内 except 块后的 ascii-fix）
+
+### Removed（Breaking）
+- **移除已废弃的 ThreePassPipeline**（该模块自带的 DeprecationWarning 声明
+  "不再维护，将在未来版本移除"）：删除模块、`--three-pass` CLI 参数、包导出。
+  迁移：`--pipeline docgen` 已覆盖同等能力且更完善；`--three-pass` 现在打印迁移指引并 exit 2
+- 删除 config.json / config.production.json 中零消费的死配置键 `writer.template_dir`
+  （writer 实际使用内置骨架模板，templates 目录从未存在）
+
+### 测试
+- 新增 tests/test_fact_checker.py（13 项）：声明提取/来源匹配/嵌套来源收集/
+  LLM 失败回退/附注渲染；docgen-verified.yaml 解析与 fact_checker 注册端到端验证
+
 ## [3.5.0] - 2026-08-24
 
 ### Fixed（第九轮审查修复：API 契约 / 鉴权可用性 / MCP / CICD）

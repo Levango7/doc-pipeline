@@ -11,7 +11,6 @@
       "min_score": 0.3
     },
   "writer": {
-    "template_dir": "templates",
     "similarity_threshold": 0.8
   },
   "safe_writer": {

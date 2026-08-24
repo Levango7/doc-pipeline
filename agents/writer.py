@@ -708,6 +708,7 @@ class WriterAgent(BaseAgent):
         # 每个章节填充内容（TF-IDF 语义匹配）
         all_refs = []
         global_seen_paras: set[str] = set()  # 全局段落去重，避免同一段落在多个章节中重复出现
+        empty_sections: list[str] = []  # 未能填充内容的章节（降级声明用）
         for sec in skeleton:
             content_parts.append(f"## {sec['heading']}")
             content_parts.append("")
@@ -719,6 +720,7 @@ class WriterAgent(BaseAgent):
             else:
                 content_parts.append("*（暂无可用的相关内容）*")
                 content_parts.append("")
+                empty_sections.append(sec.get("heading", ""))
             all_refs.extend(filled["references"])
             content_parts.append("---")
             content_parts.append("")
@@ -735,6 +737,17 @@ class WriterAgent(BaseAgent):
             content_parts.append("")
 
         content = "\n".join(content_parts)
+
+        # 降级声明：无 LLM 时空章节不再静默交付，在文档头部显式标记
+        if empty_sections and not self._llm_api_key:
+            warn_block = (
+                "> ⚠️ **降级声明**：以下章节未能从检索素材中提取到足够内容（当前为占位符）："
+                + "、".join(s for s in empty_sections if s)
+                + "。建议配置 LLM API Key（复制 .env.example 为 .env）后重新生成。\n\n"
+            )
+            content = content.replace("## 目录", warn_block + "## 目录", 1)
+            self.log_warning(
+                f"任务 {task_id}: {len(empty_sections)} 个章节内容不足（降级），已在文档头部声明")
 
         # LLM 重构：生成严谨技术文档结构（篇-章-节 + mermaid + 表格 + 代码块）
         if query and self._llm_api_key:
@@ -759,6 +772,7 @@ class WriterAgent(BaseAgent):
                 "sections": len(skeleton),
                 "word_count": len(content),
                 "char_count": len(content),
+                "empty_sections": empty_sections,
             }
         }
 
