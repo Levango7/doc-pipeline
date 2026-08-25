@@ -149,6 +149,14 @@ class ResearcherAgent(BaseAgent):
         parallel = payload.get("parallel", True)
         max_results = payload.get("max_results", 50)
 
+        # 从 DocumentSpec 增强查询：如果 spec.scope 存在，将其作为补充查询词
+        spec = payload.get("spec") or {}
+        if isinstance(spec, dict) and spec.get("scope"):
+            spec_scope = [s for s in spec["scope"] if s and len(s) >= 2]
+            if spec_scope and (not queries or len(queries) < 3):
+                queries = list(dict.fromkeys(spec_scope + (queries or [])))
+                self.log_info(f"从 DocumentSpec 提取 {len(spec_scope)} 个 scope 关键词作为查询词")
+
         # 从流水线配置覆盖运行时参数
         cfg = payload.get("config", {})
         engines_used = self._search_engines

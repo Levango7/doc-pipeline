@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] - 2026-08-25
+
+### Added（需求分析器）
+- **requirements_analyzer 需求分析 Agent**：流水线最前端的意图解析节点，把用户输入
+  解析为结构化 `DocumentSpec`（doc_type / scope / audience / depth / constraints /
+  sources / template / language），供下游 researcher 与 writer 消费：
+  - 双路径：有 LLM 走一次小调用生成 JSON（含枚举校验与置信度钳制，非法值回落默认），
+    无 LLM / 失败时回退规则引擎（类型·深度·读者提示词匹配 + 关键词提取 + URL/文件引用收集）
+  - 歧义检测：输入过短、类型不明、受众未指定时降低 confidence 并生成追问建议
+    （field/question/suggestion），confidence 低于阈值（默认 0.7，可配）标记
+    needs_clarification，追问条数上限可配（max_questions）
+  - 下游接线：dag_executor 将 spec 注入所有后续节点 payload；researcher 用 spec.scope
+    补充检索词；writer 用 doc_type 前缀标题、scope 兜底主题、audience 记录读者水平
+- 新增 `pipelines/docreq.yaml`（9 层 DAG，首层 requirements_analyzer）。
+  命名避开 `docgen*` 前缀以保持既有默认流水线解析顺序不变；
+  运行方式：`python run.py input.md --pipeline docreq`
+
+### 测试
+- 新增 tests/test_requirements_analyzer.py（24 项）：规则分析各维度、DocumentSpec
+  往返序列化、关键词提取去重/截断/停用词、handle 的 DAG 输入文件读取、LLM 成功/
+  失败回退/非法枚举回落、analyze() 便捷函数
+
 ## [3.6.0] - 2026-08-24
 
 ### Added（内容生产能力提升）

@@ -11,6 +11,7 @@
 | 类别 | 能力 |
 |------|------|
 | **编排** | DAG 并行执行、断点续传、可视化执行计划、SQLite 任务队列恢复 |
+| **需求** | **requirements_analyzer 需求分析器**（输入 → 结构化 DocumentSpec：类型/范围/读者/深度，置信度评分 + 追问建议，`--pipeline docreq`） |
 | **检索** | Bocha + Tavily + Serper + Bing + Sogou + 360 六引擎、LRU+TTL 跨任务缓存 |
 | **抓取** | Async I/O（aiohttp 并发）/ 同步线程池降级、内容质量识别 |
 | **写作** | TF-IDF 向量语义匹配、骨架生成、LLM 润色、质量反馈闭环 |

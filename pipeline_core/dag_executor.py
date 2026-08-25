@@ -325,6 +325,13 @@ class DAGExecutor:
         ctor_config = getattr(meta2, "config", None) or {}
         merged_config = {**ctor_config, **node.agent_config.config}
 
+        # 收集上游 requirements_analyzer 产出的 DocumentSpec（供下游消费）
+        spec_result = None
+        if "requirements_analyzer" in task.dag_nodes:
+            ra_result = task.dag_nodes["requirements_analyzer"].result
+            if isinstance(ra_result, dict):
+                spec_result = ra_result.get("spec")
+
         msg_payload = {
             "task_id": task.id,
             "input_file": input_file,
@@ -338,6 +345,7 @@ class DAGExecutor:
             "results": research_results,
             "articles": articles,
             "content": writer_content,
+            "spec": spec_result,
         }
 
         idempotency_key = f"{task.id}:{node.agent_name}:{task.dag_nodes[node.agent_name].attempts}"

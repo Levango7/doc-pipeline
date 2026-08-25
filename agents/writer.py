@@ -141,6 +141,7 @@ class WriterAgent(BaseAgent):
         )
         self.log_info(f"Prompt profile: {self._prompt_profile}")
         self._active_stream_callback = None  # 流式回调（handle_streaming 设置）
+        self._audience_level = "中级"  # 默认读者水平，可被 spec.audience 覆盖
 
         # 规则过渡句模板（0 成本兜底）
         self._transition_templates = [
@@ -563,6 +564,17 @@ class WriterAgent(BaseAgent):
         template_name = payload.get("template", "default")
         title = payload.get("title", "自动生成文档")
         query = payload.get("query", "")
+
+        # 从 DocumentSpec 增强标题和查询：优先使用 spec.doc_type 和 spec.scope
+        spec = payload.get("spec") or {}
+        if isinstance(spec, dict):
+            if spec.get("doc_type") and spec["doc_type"] != "其他":
+                title = f"{spec['doc_type']}：{title}"
+            if spec.get("scope") and not query:
+                query = " ".join(spec["scope"][:3])
+            if spec.get("audience"):
+                self._audience_level = spec["audience"]
+
         if not query:
             queries = payload.get("queries", [])
             query = queries[0] if queries else ""
