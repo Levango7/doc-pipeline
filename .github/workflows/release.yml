@@ -28,9 +28,10 @@ jobs:
           VERSION="${TAG_NAME#v}"
           echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
           # 从 CHANGELOG.md 提取对应版本段落（到下一个 ## 标题为止）
-          awk -v ver="[$VERSION]" '
-            $0 ~ "^## \\[" ver "\\]" {flag=1; next}
-            /^## \[/ {if (flag) exit}
+          # 用 index() 字面子串匹配而非正则——版本号中的 . [ ] 会被正则误解析
+          awk -v header="## [$VERSION]" '
+            index($0, header) == 1 {flag=1; next}
+            /^## / {if (flag) exit}
             flag {print}
           ' CHANGELOG.md > release_notes.md
           if [ ! -s release_notes.md ]; then
