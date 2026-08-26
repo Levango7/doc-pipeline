@@ -28,7 +28,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           # ruff/mypy 钉版本：浮动安装会在上游发新版引入新规则时随机打红 CI
-          pip install "pytest>=8.0" "pytest-cov>=5.0" "pytest-asyncio>=0.23" "ruff==0.16.4" "mypy==1.20.2" "bandit>=1.7.0" "pip-audit>=2.7.0"
+          # types-PyYAML: mypy 对已安装但无类型标注的包报 import-untyped，--ignore-missing-imports 不覆盖
+          pip install "pytest>=8.0" "pytest-cov>=5.0" "pytest-asyncio>=0.23" "ruff==0.16.4" "mypy==1.20.2" "types-PyYAML" "bandit>=1.7.0" "pip-audit>=2.7.0"
 
       - name: Lint (ruff)
         run: |
