@@ -66,6 +66,27 @@ class _BusinessFailBus:
         return {"status": "fail", "message": "business fail"}
 
 
+class _StopOnFirstCallBus:
+    """首次请求即触发指定停止信号 → 确定性模拟"节点已执行后收到取消/shutdown"。
+
+    替代 threading.Timer 定时方案：Timer 在慢环境（CI/--cov）下可能在
+    execute_level 入口前就置位信号，导致走到 CANCELLED 早退分支而非
+    重试中断路径，使断言 FAILED 变成竞态赌博。
+    """
+
+    def __init__(self, trigger):
+        self.calls = 0
+        self._trigger = trigger
+
+    def request(self, **kwargs):
+        self.calls += 1
+        try:
+            self._trigger.set()
+        except Exception:
+            pass
+        raise RuntimeError("boom")
+
+
 def _make_executor(global_stop=None, bus=None) -> DAGExecutor:
     return DAGExecutor(
         registry=_FakeRegistry(), bus=bus or _FailingBus(),
@@ -110,13 +131,12 @@ class TestPickleRoundtrip:
 
 class TestRetryCancellation:
     def test_retry_loop_stops_on_global_shutdown(self):
-        bus = _FailingBus()
         global_stop = threading.Event()
+        bus = _StopOnFirstCallBus(global_stop)
         ex = _make_executor(global_stop=global_stop, bus=bus)
         node = _make_node()
         task = _make_task(node)
 
-        threading.Timer(0.05, global_stop.set).start()
         start = time.monotonic()
         with create_executor(max_workers=2) as executor:
             ret = ex.execute_level(task, [node], "in.md", _make_plan(), executor)
@@ -129,12 +149,11 @@ class TestRetryCancellation:
         assert elapsed < 4.0
 
     def test_retry_loop_wakes_immediately_on_task_cancel(self):
-        bus = _FailingBus()
-        ex = _make_executor(bus=bus)
         node = _make_node()
         task = _make_task(node)
+        bus = _StopOnFirstCallBus(task.stop_event)
+        ex = _make_executor(bus=bus)
 
-        threading.Timer(0.2, task.stop_event.set).start()
         start = time.monotonic()
         with create_executor(max_workers=2) as executor:
             ret = ex.execute_level(task, [node], "in.md", _make_plan(), executor)
@@ -142,7 +161,8 @@ class TestRetryCancellation:
 
         assert ret is False
         assert bus.calls == 1
-        assert elapsed < 2.0
+        # stop_event.wait(delay) 应被立即唤醒（而非等满退避周期）
+        assert elapsed < 1.5
 
 
 class TestAsyncFailFastParity:
