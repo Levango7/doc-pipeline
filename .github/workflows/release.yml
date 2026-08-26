@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag and extract changelog
+        id: notes
+        shell: bash
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG_NAME" =~ ^v ]]; then
+            TAG_NAME="$(git describe --tags --abbrev=0)"
+          fi
+          VERSION="${TAG_NAME#v}"
+          echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          # 从 CHANGELOG.md 提取对应版本段落（到下一个 ## 标题为止）
+          awk -v ver="[$VERSION]" '
+            $0 ~ "^## \\[" ver "\\]" {flag=1; next}
+            /^## \[/ {if (flag) exit}
+            flag {print}
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "CHANGELOG 中未找到 [$VERSION] 段落，回退为空（由 generate_release_notes 兜底）"
+            echo "" > release_notes.md
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.notes.outputs.tag }}
+          body_path: release_notes.md
+          generate_release_notes: true
