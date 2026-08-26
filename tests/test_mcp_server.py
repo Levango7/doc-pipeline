@@ -42,12 +42,14 @@ class TestMCPServer:
             assert tool["inputSchema"]["type"] == "object"
 
     def test_generate_document_missing_query(self, server):
+        """业务失败（缺 query）→ MCP 规范的 result.content + isError:true，非 JSON-RPC error"""
         resp = server._handle_request({
             "jsonrpc": "2.0", "id": 4, "method": "tools/call",
             "params": {"name": "generate_document", "arguments": {}},
         })
-        assert "error" in resp
-        assert resp["error"]["code"] == -32602
+        assert "error" not in resp
+        assert resp["result"]["isError"] is True
+        assert "query" in resp["result"]["content"][0]["text"]
 
     def test_unknown_method(self, server):
         resp = server._handle_request({"jsonrpc": "2.0", "id": 5, "method": "unknown"})

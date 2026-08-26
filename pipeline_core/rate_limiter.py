@@ -34,7 +34,7 @@ class RateLimiter:
         self.name = name
 
         self._tokens = float(burst)
-        self._last_refill = time.time()
+        self._last_refill = time.monotonic()
         self._lock = threading.RLock()
         # P0 修复: Condition 必须关联 self._lock，否则 wait/notify 无法正确协调
         # （原 threading.Condition() 使用独立内部锁，导致 notify_all 无法唤醒
@@ -68,13 +68,13 @@ class RateLimiter:
                     self._total_blocked += 1
             return ok
 
-        deadline = None if timeout is None else time.time() + timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             got = self._try_acquire(tokens)
             if got:
                 return True
 
-            if deadline and time.time() >= deadline:
+            if deadline and time.monotonic() >= deadline:
                 with self._lock:
                     self._total_blocked += 1
                 return False
@@ -82,7 +82,7 @@ class RateLimiter:
             # 等待一个令牌的时间
             wait_time = tokens / max(self.rate, 1)
             if deadline:
-                wait_time = min(wait_time, deadline - time.time() + 0.001)
+                wait_time = min(wait_time, deadline - time.monotonic() + 0.001)
             if wait_time <= 0:
                 return False
             with self._condition:
@@ -98,10 +98,23 @@ class RateLimiter:
             return False
 
     def _refill(self):
-        now = time.time()
-        elapsed = now - self._last_refill
-        self._tokens = min(self.burst, self._tokens + elapsed * self.rate)
+        now = time.monotonic()
+        elapsed = max(0.0, now - self._last_refill)
+        self._tokens = min(float(self.burst), self._tokens + elapsed * self.rate)
         self._last_refill = now
+
+    def configure(self, rate: float | None = None, burst: int | None = None) -> None:
+        """热更新限流参数（None 表示保持不变）。
+
+        供 Registry.get_or_create 对已存在实例应用新配置，
+        使同名 agent 的速率/容量变更立即生效。
+        """
+        with self._lock:
+            if rate is not None:
+                self.rate = rate
+            if burst is not None:
+                self.burst = burst
+            self._condition.notify_all()
 
     def update_rate(self, new_rate: float):
         """动态调整速率"""
@@ -137,12 +150,24 @@ class RateLimiterRegistry:
         self._limiters: dict[str, RateLimiter] = {}
         self._lock = threading.RLock()
 
-    def get_or_create(self, name: str, rate: float = 10.0,
-                      burst: int = 20) -> RateLimiter:
+    def get_or_create(self, name: str, rate: float | None = None,
+                      burst: int | None = None) -> RateLimiter:
+        """按名称获取限流器，不存在则以默认 rate=10.0/burst=20 创建。
+
+        更新策略（update_if_exists 语义）：实例已存在时，将本次显式
+        传入的 rate/burst 通过 configure() 热更新到该实例并复用，
+        保证同名 agent 的限流配置变更立即生效；未传参数则保持原配置。
+        """
         with self._lock:
-            if name not in self._limiters:
-                self._limiters[name] = RateLimiter(rate=rate, burst=burst, name=name)
-            return self._limiters[name]
+            limiter = self._limiters.get(name)
+            if limiter is None:
+                limiter = RateLimiter(rate=10.0 if rate is None else rate,
+                                      burst=20 if burst is None else burst,
+                                      name=name)
+                self._limiters[name] = limiter
+            elif rate is not None or burst is not None:
+                limiter.configure(rate=rate, burst=burst)
+            return limiter
 
     def get(self, name: str) -> RateLimiter | None:
         with self._lock:

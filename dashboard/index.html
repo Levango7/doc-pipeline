@@ -60,6 +60,30 @@
     </div>
   </div>
 
+  <!-- FULL-WIDTH: New Task -->
+  <div class="card wide" id="panel-newtask">
+    <div class="card-header">
+      <h2>➕ 新建任务</h2>
+      <span id="newtask-status" class="badge">POST /api/tasks</span>
+    </div>
+    <div class="card-body">
+      <form id="newtask-form" class="newtask-form">
+        <label for="nt-query">Query（文档主题）</label>
+        <textarea id="nt-query" rows="2" placeholder="例如：Python asyncio 并发编程指南" required></textarea>
+        <div class="newtask-row">
+          <label for="nt-pipeline">Pipeline
+            <select id="nt-pipeline"></select>
+          </label>
+          <label for="nt-output">Output（可选）
+            <input id="nt-output" type="text" placeholder="output/my_doc.md">
+          </label>
+          <button id="nt-submit" type="submit">提交任务</button>
+        </div>
+        <div id="nt-msg" class="newtask-msg" hidden></div>
+      </form>
+    </div>
+  </div>
+
   <!-- BOTTOM-LEFT: Agents -->
   <div class="card" id="panel-agents">
     <div class="card-header">

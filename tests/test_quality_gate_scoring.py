@@ -295,6 +295,38 @@ class TestScoreTopicRelevance:
         # 缺失 1/2 = 50%，不归零（>50% 才归零）
         assert score >= 0
 
+    def test_english_question_words_not_proper_nouns(self):
+        """英文问句的 How/Use 不再被当专名（旧逻辑缺失超半数直接归零）"""
+        gate = _make_gate()
+        content = "# Redis 入门\n\nRedis 是一个高性能的内存键值数据库。"
+        score = gate._score_topic_relevance(content, ["How to Use Redis?"])
+        assert score > 0
+
+    def test_sentence_initial_capitalized_word_not_mandatory(self):
+        """仅句首出现的大写词（Kubernetes 句首）不再作为专名归零"""
+        gate = _make_gate()
+        content = "# Clusters\n\nClusters of nodes share resources efficiently."
+        score = gate._score_topic_relevance(content, ["Kubernetes clusters"])
+        assert score > 0
+
+    def test_real_proper_nouns_still_zero_when_missing(self):
+        """真实专名 Kubernetes/API 缺失仍触发归零"""
+        gate = _make_gate()
+        content = "# 文档\n\n这是完全无关的中文内容，不含任何关键词。"
+        score = gate._score_topic_relevance(
+            content, ["How to deploy Kubernetes API services?"]
+        )
+        assert score == 0.0
+
+    def test_real_proper_nouns_present_not_zeroed(self):
+        """文档覆盖 Kubernetes/API 时不得误归零"""
+        gate = _make_gate()
+        content = "# Kubernetes API Guide\n\nThe Kubernetes API server exposes the cluster."
+        score = gate._score_topic_relevance(
+            content, ["How to deploy Kubernetes API services?"]
+        )
+        assert score > 0
+
 
 # ─── 8. style 风格检查 ────────────────────────────
 

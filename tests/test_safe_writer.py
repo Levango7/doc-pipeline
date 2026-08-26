@@ -5,6 +5,7 @@
   - 每个测试方法聚焦一个行为
 """
 import datetime
+import os
 import sys
 from pathlib import Path
 
@@ -215,6 +216,61 @@ class TestSafeWrite:
         )
         assert result["status"] == "ok"
         assert target.read_bytes() == b"line1\r\nline2"
+
+
+# ─── 原子替换（os.replace） ────────────────────────────
+
+class TestAtomicReplace:
+    """Step 6 原子替换与 manifest 原子落盘"""
+
+    def test_replace_updates_target_content(self, tmp_path):
+        """替换后目标文件内容正确"""
+        target = tmp_path / "doc.txt"
+        target.write_text("old line stays same length\nsecond line here\n",
+                          encoding="utf-8")
+        result = safe_write(
+            str(target), "new line stays same length\nsecond line here\n",
+            backup_dir=str(tmp_path / "backups"),
+            show_diff=False,
+        )
+        assert result["status"] == "ok"
+        content = target.read_text(encoding="utf-8").replace("\r\n", "\n")
+        assert content == "new line stays same length\nsecond line here\n"
+        leftovers = [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == []
+
+    def test_interrupt_during_replace_keeps_old_target(self, tmp_path, monkeypatch):
+        """os.replace 中断模拟：目标文件保留旧版完好"""
+        import scripts.safe_writer as sw_module
+        target = tmp_path / "doc.txt"
+        old_content = "OLD CONTENT LINE\n" * 5
+        target.write_text(old_content, encoding="utf-8")
+
+        real_replace = os.replace
+
+        def flaky_replace(src, dst):
+            if Path(str(dst)) == Path(str(target)):
+                raise OSError("simulated interruption")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(sw_module.os, "replace", flaky_replace)
+        result = safe_write(
+            str(target), "NEW CONTENT LINE LONGER\n" * 6,
+            backup_dir=str(tmp_path / "backups"),
+            show_diff=False,
+        )
+        assert result["status"] == "error"
+        assert target.read_text(encoding="utf-8") == old_content
+
+    def test_save_manifest_atomic_roundtrip(self, tmp_path):
+        """manifest 原子写入后可正常加载且无残留临时文件"""
+        mpath = tmp_path / "manifest.json"
+        data = {"version": "4.0", "files": {"a.txt": {"backups": []}}}
+        save_manifest(str(mpath), dict(data))
+        loaded = load_manifest(str(mpath))
+        assert loaded["files"]["a.txt"]["backups"] == []
+        leftovers = list(tmp_path.glob(".manifest_*"))
+        assert leftovers == []
 
 
 # ─── cleanup_tiered 分级清理 ────────────────────────────

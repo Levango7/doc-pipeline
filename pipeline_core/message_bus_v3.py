@@ -91,6 +91,7 @@ class MessageBus:
             wait_for_delivery: 是否等待投递完成
             persist: 是否持久化到 SQLite（REQUEST/RESPONSE 热路径可跳过）
         """
+        deliver_now = False
         with self._lock:
             self._log.append(msg)
             if len(self._log) > self._max_log:
@@ -116,16 +117,18 @@ class MessageBus:
                 # 无幂等键，直接持久化
                 self._store.save_message(msg)
 
-            # 同步投递（REQUEST 类型需要同步等待，直接走回调）
-            if msg.msg_type == MessageType.REQUEST:
-                self._deliver(msg)
-            elif msg.msg_type == MessageType.EVENT:
+            # 同步投递（REQUEST 类型需要同步等待，直接走回调）；
+            # 实际投递移到锁外执行，防止订阅者回调持全局锁同步运行导致多线程停摆
+            if msg.msg_type == MessageType.EVENT:
                 # EVENT 通过工作队列异步投递
                 self._async_queue.put(msg)
             else:
-                self._deliver(msg)
+                deliver_now = True
 
             self._metrics.record_sent()
+
+        if deliver_now:
+            self._deliver(msg)
 
     def request(self, topic: str, from_a: str = "system", to_a: str = "",
                 payload: dict = None, timeout: float = 30,
@@ -134,8 +137,9 @@ class MessageBus:
         if payload is None:
             payload = {}
 
-        # 幂等检查（原子操作）
-        if idempotency_key and self._store and self._store.check_and_mark_idempotent(idempotency_key):
+        # 修复：幂等检查只读不烧键；标记延迟到确认有订阅者接手之后，
+        # 无订阅者/投递失败的路径不残留标记，同 key 重试可正常送达
+        if idempotency_key and self._store and self._store.is_idempotent(idempotency_key):
             return None  # 已存在，重复请求
 
         msg = Message(
@@ -159,22 +163,27 @@ class MessageBus:
             self._callbacks[msg.correlation_id] = handler
 
         self._metrics.record_sent()
-        self._deliver(msg)
+        handled, delivered_ok = self._deliver(msg)
+
+        if idempotency_key and self._store and handled and delivered_ok:
+            self._store.save_idempotent(idempotency_key)
+
+        if not (handled and delivered_ok):
+            # 无订阅者或投递失败（订阅者异常时 _deliver 已回覆含 error 的响应）
+            with self._lock:
+                self._callbacks.pop(msg.correlation_id, None)
+            return result[0]
 
         # 修复 P0：原代码 event.wait 超时后直接 pop callback 并返回 result[0]，
         # 存在竞态：超时瞬间响应可能已到达 handler 并写入 result[0]，但主线程
         # 未持锁检查，可能返回 None 丢失响应；或 handler 尚未执行，主线程 pop
         # callback 后响应永远丢失（且未进 DLQ）。
-        # 修复：超时后持锁检查 result；若已有响应则直接返回；否则 pop callback
-        # 并返回 None，由 _deliver 在 callback 缺失时将响应转入 DLQ。
+        # 修复：handler 先写 result 再 set event，收尾统一 pop callback 并返回
+        # result[0]（event 已 set 时允许 payload=None）；超时后到达的响应由
+        # _deliver 在 callback 缺失时转入 DLQ。
         event.wait(timeout=timeout)
 
         with self._lock:
-            # 持锁二次检查：若 handler 已在超时瞬间写入 result，返回真实响应
-            if result[0] is not None:
-                self._callbacks.pop(msg.correlation_id, None)
-                return result[0]
-            # 确实超时：移除 callback，后续到达的响应由 _deliver 路由到 DLQ
             self._callbacks.pop(msg.correlation_id, None)
 
         return result[0]
@@ -258,8 +267,14 @@ class MessageBus:
 
     # ─── 投递 ─────────────────────────────────
 
-    def _deliver(self, msg: Message):
-        """投递消息到订阅者（同步执行）"""
+    def _deliver(self, msg: Message) -> tuple[bool, bool]:
+        """投递消息到订阅者（同步执行）
+
+        Returns:
+            (handled, delivered_ok)
+            handled: 是否有订阅者/callback 接手该消息
+            delivered_ok: 接手的订阅者是否全部执行成功
+        """
         if msg.msg_type == MessageType.RESPONSE and msg.correlation_id:
             with self._lock:
                 cb = self._callbacks.pop(msg.correlation_id, None)
@@ -269,11 +284,13 @@ class MessageBus:
                     self._metrics.record_received()
                     if self._store and msg.msg_id:
                         self._store.mark_delivered(msg.msg_id)
+                    return True, True
                 except Exception as e:
                     self._metrics.record_failed()
                     if self._store:
                         self._store.move_to_dlq(msg, str(e))
                         self._metrics.record_dlq()
+                    return True, False
             else:
                 # 修复 P0：callback 不存在（request 已超时被 pop）时，
                 # 原代码直接 return 导致响应数据静默丢失。
@@ -287,7 +304,7 @@ class MessageBus:
                         self._metrics.record_dlq()
                     except Exception as e:
                         _logger.warning(f"[MessageBus] orphan response DLQ failed: {e}")
-            return
+                return False, False
 
         with self._lock:
             callbacks = list(self._subscribers.get(msg.topic, []))
@@ -295,10 +312,11 @@ class MessageBus:
         if not callbacks:
             if self._store and msg.msg_id:
                 self._store.mark_delivered(msg.msg_id)
-            return
+            return False, False
 
         delivered_ok = True
         replied = False
+        errors = []
         for callback, _priority in sorted(callbacks, key=lambda x: x[1]):
             try:
                 result = callback(msg)
@@ -310,16 +328,30 @@ class MessageBus:
 
             except Exception as e:
                 delivered_ok = False
+                errors.append(str(e) or e.__class__.__name__)
                 self._metrics.record_failed()
                 if self._store:
                     self._store.move_to_dlq(msg, str(e))
                     self._metrics.record_dlq()
+
+        # 修复：REQUEST 订阅者抛异常时立即回覆错误响应，避免等待方空等满 timeout
+        if msg.msg_type == MessageType.REQUEST and not replied and errors:
+            with self._lock:
+                has_waiter = bool(msg.correlation_id) and msg.correlation_id in self._callbacks
+            if has_waiter:
+                self.reply(msg, msg.from_agent or "unknown", {
+                    "error": "; ".join(errors),
+                    "status": "error",
+                    "topic": msg.topic,
+                })
 
         if delivered_ok and self._store and msg.msg_id and msg.msg_type != MessageType.EVENT:
             # EVENT 消息由 _process_loop 批量标记，此处仅处理非 EVENT（如 RESPONSE）
             self._store.mark_delivered(msg.msg_id)
             with self._backpressure_cv:
                 self._backpressure_cv.notify_all()
+
+        return True, delivered_ok
 
     def _process_loop(self):
         """异步事件处理循环（批量 drain 优化：一次取多条，减少锁竞争和 SQLite 写入）"""

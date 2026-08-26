@@ -8,6 +8,7 @@
 """
 import os
 import tempfile
+import time
 from pathlib import Path
 
 from agents.quality_gate import QualityGateAgent
@@ -228,8 +229,8 @@ class TestRegenLoop:
 class TestFailureIntegration:
     """agent.handle 异常 → 总线捕获进 DLQ，编排器不阻塞"""
 
-    def test_faulty_agent_request_returns_none(self):
-        """bus.request 调故障 agent → 异常被总线捕获 → 返回 None（非阻塞）"""
+    def test_faulty_agent_request_fast_error_response(self):
+        """bus.request 调故障 agent → 总线捕获异常 → 快速返回含 error 的响应（非阻塞）"""
         bus = MessageBus(db_path=os.path.join(tempfile.mkdtemp(), "fail_req.db"))
         fail_agent = _FailingAgent("fail-agent")
 
@@ -237,12 +238,16 @@ class TestFailureIntegration:
             return fail_agent.handle(msg)
         bus.subscribe("fail-agent.input", _wrapped)
 
-        # bus.request 不应阻塞或抛异常
+        # bus.request 不应阻塞或抛异常；故障时快速回覆错误响应
+        t0 = time.time()
         result = bus.request(
             topic="fail-agent.input", from_a="test", to_a="fail-agent",
             payload={"task_id": "t"}, timeout=5,
         )
-        assert result is None, f"故障 agent 的 request 应返回 None，实际 {result}"
+        elapsed = time.time() - t0
+        assert isinstance(result, dict) and result.get("status") == "error", \
+            f"故障 agent 的 request 应返回错误响应，实际 {result}"
+        assert elapsed < 5, f"应在 timeout 内快速失败，实际 {elapsed:.2f}s"
 
         # 验证：异常进了 DLQ
         dlq = bus.list_dlq()
@@ -298,10 +303,11 @@ class TestFailureIntegration:
         with open(input_file, "w") as f:
             f.write("query")
 
-        # 不应抛异常 → 返回 None
+        # 不应抛异常 → 返回 None/空 dict 或总线错误响应（均不阻塞）
         result = orch._execute_node_from_scheduler(task, node, input_file, plan)
-        assert result is None or result == dict(), \
-            f"故障 agent 执行应返回 None/空 dict，实际 {result}"
+        assert result is None or result == dict() or (
+            isinstance(result, dict) and result.get("status") == "error"
+        ), f"故障 agent 执行应返回 None/空 dict/错误响应，实际 {result}"
         assert fail_agent.call_count >= 1, "agent.handle 应被调过"
 
         bus.shutdown()

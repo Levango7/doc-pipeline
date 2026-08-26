@@ -3,6 +3,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import threading
 from pathlib import Path
@@ -22,6 +24,7 @@ class ConfigCenter:
         self._mtime: float = 0
         self._lock = threading.RLock()
         self._overrides: dict = {}
+        self.last_reload_error: str = ""
         self._load()
 
     def _load(self):
@@ -35,12 +38,22 @@ class ConfigCenter:
             "quality_gate": {"min_score": 70, "max_regenerations": 3},
             "llm": {"api_key_env": "LLM_API_KEY", "model": "@cf/moonshotai/kimi-k2.6"},
         }
+        previous = self._data
         self._data = defaults.copy()
 
         # 2. 加载配置文件
         if self._config_file and self._config_file.exists():
-            self._merge_file(self._config_file)
-            self._mtime = self._config_file.stat().st_mtime
+            try:
+                self._merge_file(self._config_file)
+                self.last_reload_error = ""
+            except Exception as e:
+                self._data = previous or defaults
+                self.last_reload_error = f"{type(e).__name__}: {e}"
+                logging.getLogger(__name__).warning(
+                    "配置文件加载失败，保留旧配置: %s", e
+                )
+                with contextlib.suppress(OSError):
+                    self._mtime = self._config_file.stat().st_mtime
 
         # 3. 环境变量覆盖（以 DOCPIPE_ 开头的环境变量）
         # 例如 DOCPIPE_LLM__API_KEY=xxx → data["llm"]["api_key"] = "xxx"

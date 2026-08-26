@@ -11,6 +11,7 @@ SafeWriter v4 - 安全写入工具（改进版）
 """
 
 import argparse
+import contextlib
 import datetime
 import difflib
 import hashlib
@@ -102,9 +103,19 @@ def save_manifest(path: str, data: dict, backup: bool = True):
     chk = hashlib.sha256(content_without_checksum.encode("utf-8")).hexdigest()
     data["checksum"] = chk
 
-    # 单次写入（包含 checksum）
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    # 单次写入（包含 checksum，tempfile+os.replace 原子落盘）
+    content_with_checksum = json.dumps(data, ensure_ascii=False, indent=2)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(Path(path).parent), prefix=".manifest_", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content_with_checksum)
+        os.replace(tmp_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
 
 
 def _verify_manifest_checksum(path: str) -> bool:
@@ -437,13 +448,13 @@ def safe_write(target: str, content: str,
             "backup": backup_path, "diff_preview": diff_txt
         }
 
-    # Step 6: 原子替换
+    # Step 6: 原子替换（os.replace 在 Windows 上原子覆盖已存在目标，无 remove+rename 中断窗口）
     try:
-        if os.path.exists(target):
-            os.remove(target)
-        os.rename(tmp_path, target)
+        os.replace(tmp_path, target)
     except Exception as e:
         print(f"[SafeWriter] ✗ 原子替换失败: {e}")
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
         return {"status": "error", "message": str(e)}
 
     # Step 7: 分级清理

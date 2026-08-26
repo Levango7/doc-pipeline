@@ -40,7 +40,6 @@ import os
 import re
 import threading
 import time
-import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -134,6 +133,81 @@ def _validate_task_id(task_id: str) -> bool:
     return bool(_TASK_ID_RE.match(task_id))
 
 
+# ─── 流式指标聚合 ─────────────────────────────
+# streaming.py 仅提供单回调粒度的 StreamMetrics，未提供全局聚合接口；
+# 此处在 admin_api 侧维护 task_id -> callback 注册表并汇总快照。
+
+class _StreamMetricsHub:
+    """聚合所有活跃 StreamCallback 的流式指标（线程安全）"""
+
+    _COUNTER_KEYS = ("events_emitted", "events_dropped", "chunks_emitted", "sections_emitted")
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._callbacks: dict[str, Any] = {}
+        self._started_at = time.time()
+
+    def track(self, task_id: str, callback: Any) -> None:
+        with self._lock:
+            self._callbacks[task_id] = callback
+
+    def untrack(self, task_id: str) -> None:
+        with self._lock:
+            self._callbacks.pop(task_id, None)
+
+    @staticmethod
+    def _cb_snapshot(cb: Any) -> dict:
+        try:
+            return dict(cb.metrics.snapshot())
+        except Exception:
+            return {}
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            callbacks = list(self._callbacks.values())
+        totals = {k: 0 for k in self._COUNTER_KEYS}
+        latency_weighted = 0.0
+        for cb in callbacks:
+            snap = self._cb_snapshot(cb)
+            if not snap:
+                continue
+            for k in self._COUNTER_KEYS:
+                totals[k] += int(snap.get(k, 0) or 0)
+            emitted = int(snap.get("events_emitted", 0) or 0)
+            if emitted > 0:
+                latency_weighted += float(snap.get("avg_latency", 0.0) or 0.0) * emitted
+        elapsed = time.time() - self._started_at
+        total_events = totals["events_emitted"]
+        return {
+            **totals,
+            "active_streams": len(callbacks),
+            "elapsed": elapsed,
+            "events_per_sec": (total_events / elapsed) if elapsed > 0 else 0.0,
+            "avg_latency": (latency_weighted / total_events) if total_events > 0 else 0.0,
+        }
+
+
+_STREAM_METRICS_HUB = _StreamMetricsHub()
+
+_EXTRA_CORS_ORIGINS = tuple(
+    o.strip() for o in os.environ.get("ADMIN_CORS_ORIGINS", "").split(",") if o.strip()
+)
+
+
+def track_stream_callback(task_id: str, callback: Any) -> None:
+    """登记活跃流回调（供 /stream/metrics 聚合）"""
+    _STREAM_METRICS_HUB.track(task_id, callback)
+
+
+def untrack_stream_callback(task_id: str) -> None:
+    _STREAM_METRICS_HUB.untrack(task_id)
+
+
+def stream_metrics_snapshot() -> dict:
+    """全部活跃流的指标快照"""
+    return _STREAM_METRICS_HUB.snapshot()
+
+
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     """多线程 HTTP 服务器 — 替代单线程 HTTPServer，避免慢请求阻塞所有连接"""
     daemon_threads = True
@@ -157,10 +231,51 @@ class AdminHandler(BaseHTTPRequestHandler):
             kv.split("=", 1) for kv in qs.split("&") if "=" in kv
         )
 
+    def _allowed_origin(self, origin: str | None) -> str | None:
+        """CORS 白名单判定。
+
+        仅放行：
+          - ADMIN_CORS_ORIGINS 环境变量显式配置的 Origin
+          - 与 Host 头完全一致的同源请求
+          - 回环地址（127.0.0.1/localhost/::1）且端口与本服务一致
+        其余一律拒绝（修复：原先无条件回 ACAO:* 导致任意网页可跨站调用本机 API）。
+        """
+        if not origin:
+            return None
+        origin = origin.strip()
+        if origin in _EXTRA_CORS_ORIGINS:
+            return origin
+        try:
+            parsed = urlparse(origin)
+        except Exception:
+            return None
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return None
+        host_header = (self.headers.get("Host") or "").strip()
+        if host_header and origin == f"{parsed.scheme}://{host_header}":
+            return origin
+        try:
+            server_port = self.server.server_address[1]  # type: ignore[index]
+        except Exception:
+            server_port = None
+        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        hostname = parsed.hostname.lower()
+        if hostname in ("127.0.0.1", "localhost", "::1") \
+                and server_port is not None and origin_port == server_port:
+            return origin
+        return None
+
+    def _apply_cors_headers(self):
+        """按白名单回显 Origin；非白名单请求不带 ACAO 头（浏览器侧拦截响应）"""
+        allowed = self._allowed_origin(self.headers.get("Origin"))
+        if allowed:
+            self.send_header("Access-Control-Allow-Origin", allowed)
+            self.send_header("Vary", "Origin")
+
     def _json(self, data: dict, status: int = 200):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._apply_cors_headers()
         self.end_headers()
         self.wfile.write(_fast_dumps(data, default=str).encode())
 
@@ -173,7 +288,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _text(self, text: str, status: int = 200):
         self.send_response(status)
         self.send_header("Content-Type", "text/plain")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._apply_cors_headers()
         self.end_headers()
         self.wfile.write(text.encode())
 
@@ -199,7 +314,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             ctype, _ = mimetypes.guess_type(str(file_path))
             self.send_response(200)
             self.send_header("Content-Type", ctype or "application/octet-stream")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._apply_cors_headers()
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
@@ -343,7 +458,11 @@ class AdminHandler(BaseHTTPRequestHandler):
             elif self.path == "/dlq":
                 self._handle_list_dlq()
             elif self.path.startswith("/dlq/") and self.path.endswith("/replay"):
-                dlq_id = int(self.path.split("/dlq/")[1].split("/")[0])
+                raw_id = self.path.split("/dlq/")[1].split("/")[0]
+                try:
+                    dlq_id = int(raw_id)
+                except ValueError:
+                    return self._json({"error": f"invalid dlq id: {raw_id!r}"}, 400)
                 self._handle_replay_dlq(dlq_id)
             elif self.path.split("?", 1)[0] == "/api/versions/stats":
                 self._handle_versions_stats()
@@ -381,8 +500,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "not found"}, 404)
         except Exception as e:
-            traceback.print_exc()
-            self._json({"error": str(e)}, 500)
+            _logger.exception("[AdminAPI] GET %s 处理异常: %s", self.path, e)
+            self._json({"error": "internal server error"}, 500)
 
     def do_POST(self):
         try:
@@ -434,7 +553,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._handle_versions_rollback(file_path, version)
                 return
             elif self.path.startswith("/dlq/") and self.path.endswith("/replay"):
-                dlq_id = int(self.path.split("/dlq/")[1].split("/")[0])
+                raw_id = self.path.split("/dlq/")[1].split("/")[0]
+                try:
+                    dlq_id = int(raw_id)
+                except ValueError:
+                    return self._json({"error": f"invalid dlq id: {raw_id!r}"}, 400)
                 self._handle_replay_dlq(dlq_id)
                 return
             elif self.path == "/api/config":
@@ -455,14 +578,25 @@ class AdminHandler(BaseHTTPRequestHandler):
 
             self._json({"error": "method not allowed"}, 405)
         except Exception as e:
-            traceback.print_exc()
-            self._json({"error": str(e)}, 500)
+            _logger.exception("[AdminAPI] POST %s 处理异常: %s", self.path, e)
+            self._json({"error": "internal server error"}, 500)
 
     def do_OPTIONS(self):
+        """CORS 预飞：仅白名单 Origin 放行（同源 / 回环同端口 / ADMIN_CORS_ORIGINS）"""
+        origin = self.headers.get("Origin")
+        allowed = self._allowed_origin(origin)
+        if origin and not allowed:
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error": "origin not allowed"}')
+            return
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        if allowed:
+            self.send_header("Access-Control-Allow-Origin", allowed)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
 
     def do_DELETE(self):
@@ -476,12 +610,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return
             self._json({"error": "method not allowed"}, 405)
         except Exception as e:
-            traceback.print_exc()
-            self._json({"error": str(e)}, 500)
+            _logger.exception("[AdminAPI] DELETE %s 处理异常: %s", self.path, e)
+            self._json({"error": "internal server error"}, 500)
 
     def _handle_health(self):
         if not self.orch:
-            return self._json({"status": "error", "message": "orchestrator not set"})
+            return self._json({"error": "orchestrator not set"}, 503)
         h = self.orch.bus.health()
         h["registry_agents"] = len(self.orch.registry.list())
         h["tasks_running"] = len(self.orch.list_tasks())
@@ -489,7 +623,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def _handle_metrics(self):
         if not self.orch:
-            return self._text("orchestrator not set\n")
+            return self._json({"error": "orchestrator not set"}, 503)
         metrics = getattr(self.orch, "_metrics", None)
         if metrics and hasattr(metrics, "to_prometheus"):
             self._prometheus(metrics.to_prometheus())
@@ -555,6 +689,64 @@ class AdminHandler(BaseHTTPRequestHandler):
             "error": getattr(task, "error", None),
         })
 
+    def _attach_stream_callback(self, task_id: str):
+        """为 API 提交的任务挂接流式回调（供 GET /stream?task_id= 订阅实时进度）"""
+        try:
+            from .streaming import StreamCallback, register_callback
+            writer_agent = self._find_streaming_agent()
+            if writer_agent is None:
+                return None
+            callback = StreamCallback()
+            writer_agent._active_stream_callback = callback
+            register_callback(task_id, callback)
+            track_stream_callback(task_id, callback)
+            return callback
+        except Exception:
+            return None
+
+    def _detach_stream_callback(self, task_id: str, callback) -> None:
+        if callback is None:
+            return
+        with contextlib.suppress(Exception):
+            from .streaming import unregister_callback
+            unregister_callback(task_id)
+        untrack_stream_callback(task_id)
+        with contextlib.suppress(Exception):
+            writer_agent = self._find_streaming_agent()
+            if writer_agent is not None \
+                    and getattr(writer_agent, "_active_stream_callback", None) is callback:
+                writer_agent._active_stream_callback = None
+        with contextlib.suppress(Exception):
+            callback.close()
+
+    def _schedule_input_cleanup(self, task_id: str, input_file: Path,
+                                callback=None, max_wait_seconds: int = 1800):
+        """wait=false 时后台线程仍会读取输入文件，待任务终态后再清理临时文件。"""
+        orch = self.orch
+
+        def _reap():
+            deadline = time.time() + max_wait_seconds
+            active = True
+            while time.time() < deadline:
+                task = None
+                with contextlib.suppress(Exception):
+                    task = orch.get_task(task_id) if orch else None
+                if task is None:
+                    active = False
+                    break
+                status = str(getattr(task.status, "value", task.status))
+                if status not in ("pending", "running", "paused"):
+                    active = False
+                    break
+                time.sleep(2.0)
+            self._detach_stream_callback(task_id, callback)
+            if not active:
+                with contextlib.suppress(OSError):
+                    input_file.unlink()
+
+        threading.Thread(target=_reap, daemon=True,
+                         name=f"tmp-clean-{task_id}").start()
+
     def _handle_submit_task(self, body: bytes):
         """提交新文档生成任务
 
@@ -589,8 +781,6 @@ class AdminHandler(BaseHTTPRequestHandler):
         import tempfile
         import uuid
         task_id = str(uuid.uuid4())[:8]
-        input_file = Path(tempfile.gettempdir()) / f"task_{task_id}.md"
-        input_file.write_text(f"# {title}\n\n## 查询\n\n{query}\n", encoding="utf-8")
 
         try:
             from .scheduler import Scheduler
@@ -599,10 +789,18 @@ class AdminHandler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json({"error": f"failed to parse pipeline '{pipeline_name}': {e}"}, 400)
 
+        input_file = Path(tempfile.gettempdir()) / f"task_{task_id}.md"
+        input_file.write_text(f"# {title}\n\n## 查询\n\n{query}\n", encoding="utf-8")
+
+        callback = self._attach_stream_callback(task_id)
+
         try:
             task = self.orch.run_plan(plan, input_file=str(input_file),
                                       task_id=task_id, wait=wait)
         except Exception as e:
+            self._detach_stream_callback(task_id, callback)
+            with contextlib.suppress(OSError):
+                input_file.unlink()
             return self._json({"error": f"pipeline execution failed: {e}"}, 500)
 
         response = {
@@ -631,8 +829,14 @@ class AdminHandler(BaseHTTPRequestHandler):
                     with contextlib.suppress(Exception):
                         response["output_content"] = Path(val).read_text(encoding="utf-8")
                     break
+
+            self._detach_stream_callback(task_id, callback)
+            with contextlib.suppress(OSError):
+                input_file.unlink()
         else:
             response["message"] = "task started, poll GET /tasks/{task_id} for status"
+            # 后台线程仍会读取输入文件 → 任务结束后由 reaper 清理
+            self._schedule_input_cleanup(task_id, input_file, callback)
 
         self._json(response)
 
@@ -942,7 +1146,10 @@ class AdminHandler(BaseHTTPRequestHandler):
         params = parse_qs(urlparse(self.path).query)
         level = params.get("level", [None])[0]
         category = params.get("category", [None])[0]
-        limit = int(params.get("limit", ["50"])[0])
+        try:
+            limit = int(params.get("limit", ["50"])[0])
+        except ValueError:
+            return self._json({"error": "limit 必须为整数"}, 400)
         from .alert_manager import get_alerts
         self._json({"alerts": get_alerts(level=level, category=category, limit=limit)})
 
@@ -955,8 +1162,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         params = parse_qs(urlparse(self.path).query)
         level_filter = params.get("level", [None])[0]
         agent_filter = params.get("agent", [None])[0]
-        since_seconds = int(params.get("since", ["3600"])[0])
-        limit = int(params.get("limit", ["100"])[0])
+        try:
+            since_seconds = int(params.get("since", ["3600"])[0])
+            limit = int(params.get("limit", ["100"])[0])
+        except ValueError:
+            return self._json({"error": "since/limit 必须为整数"}, 400)
 
         log_dir = Path("logs")
         if not log_dir.exists():
@@ -1033,32 +1243,83 @@ class AdminHandler(BaseHTTPRequestHandler):
         ok = mgr.unregister(hook_id)
         self._json({"unregistered": ok, "hook_id": hook_id})
 
-    def _send_sse(self, event_type: str, data: dict, event_id: int = 0) -> None:
-        """写出一条 SSE 帧（客户端断开时静默忽略）"""
-        payload = _fast_dumps({"type": event_type, "data": data})
-        id_line = f"id: {event_id}\n" if event_id else ""
+    _SSE_HEARTBEAT_SECONDS = 15.0
+    _BROKEN_PIPE_CANCEL_THRESHOLD = 3
+
+    def _send_sse(self, event) -> bool:
+        """写出一条 SSE 帧（统一走 StreamEvent.to_dict() 序列化，含 ts/section/total）。
+
+        返回 False 表示客户端连接已断开（BrokenPipe/ConnectionReset）。
+        """
+        payload = _fast_dumps(event.to_dict(), default=str)
+        frame = f"id: {event.event_id}\ndata: {payload}\n\n"
         try:
-            self.wfile.write(f"{id_line}data: {payload}\n\n".encode())
+            self.wfile.write(frame.encode())
             self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return False
+
+    def _send_heartbeat(self) -> bool:
+        """SSE 注释帧心跳（迭代空转时保活连接）"""
+        try:
+            self.wfile.write(b": keep-alive\n\n")
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return False
+
+    def _cancel_for_broken_pipe(self, task_id: str):
+        """客户端连续断管 → 取消任务止损 LLM 配额"""
+        _logger.warning("[AdminAPI] SSE 客户端连续断开，取消任务 %s 止损", task_id)
+        cancel = getattr(self.orch, "cancel", None) if self.orch else None
+        if callable(cancel):
+            with contextlib.suppress(Exception):
+                cancel(task_id)
+
+    def _pump_sse(self, callback, task_id: str) -> None:
+        """推送回调事件流：空闲 15s 发送心跳帧；连续 BrokenPipe 达阈值则取消任务并停止。"""
+        broken = 0
+        last_frame = time.time()
+        while True:
+            events = callback.get_events()
+            for ev in events:
+                if self._send_sse(ev):
+                    broken = 0
+                    last_frame = time.time()
+                else:
+                    broken += 1
+                if ev.event_type in ("complete", "error"):
+                    return
+                if broken >= self._BROKEN_PIPE_CANCEL_THRESHOLD:
+                    self._cancel_for_broken_pipe(task_id)
+                    return
+            if callback.is_closed():
+                return
+            if time.time() - last_frame >= self._SSE_HEARTBEAT_SECONDS:
+                if self._send_heartbeat():
+                    last_frame = time.time()
+                else:
+                    broken += 1
+                    if broken >= self._BROKEN_PIPE_CANCEL_THRESHOLD:
+                        self._cancel_for_broken_pipe(task_id)
+                        return
+                    last_frame = time.time()
+                continue
+            time.sleep(0.2)
 
     def _stream_replay(self, task_id: str, query: str,
                        existing_callback, last_event_id: int) -> None:
         """SSE 重连：replay 错过的事件后继续监听，直到 complete/error"""
-        self._send_sse("connected", {"task_id": task_id, "query": query,
-                                     "resumed_from": last_event_id, "reconnect": True})
+        from .streaming import StreamEvent
+        self._send_sse(StreamEvent("connected", {"task_id": task_id, "query": query,
+                                                 "resumed_from": last_event_id,
+                                                 "reconnect": True}))
         missed_events = existing_callback.get_events_since(last_event_id)
         for event in missed_events:
-            self._send_sse(event.event_type, event.to_dict().get("data", {}),
-                           event.event_id)
-        self._send_sse("resumed", {"replayed": len(missed_events)})
-
-        for event in existing_callback:
-            self._send_sse(event.event_type, event.to_dict().get("data", {}),
-                           event.event_id)
-            if event.event_type in ("complete", "error"):
-                break
+            self._send_sse(event)
+        self._send_sse(StreamEvent("resumed", {"replayed": len(missed_events)}))
+        self._pump_sse(existing_callback, task_id)
 
     def _find_streaming_agent(self):
         """查找具备 handle_streaming 能力的 writer agent 实例"""
@@ -1118,11 +1379,9 @@ class AdminHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
 
-        # 指标查询端点
+        # 指标查询端点（聚合所有活跃流的 StreamMetrics，而非新建实例恒报零）
         if parsed.path == "/stream/metrics":
-            from pipeline_core.streaming import StreamMetrics
-            metrics = StreamMetrics()
-            self._json(metrics.snapshot())
+            self._json(stream_metrics_snapshot())
             return
 
         task_id = params.get("task_id", ["stream"])[0]
@@ -1136,7 +1395,18 @@ class AdminHandler(BaseHTTPRequestHandler):
             with contextlib.suppress(ValueError):
                 last_event_id = int(last_event_id_header)
 
-        if not query:
+        from pipeline_core.streaming import (
+            StreamCallback,
+            StreamEvent,
+            get_callback,
+            register_callback,
+            unregister_callback,
+        )
+
+        # 已有活跃流：直接挂接订阅（replay 历史后续推），不再重复起流水线
+        existing_callback = get_callback(task_id) if task_id != "stream" else None
+
+        if not query and existing_callback is None:
             self._json({"error": "missing 'query' parameter"}, 400)
             return
 
@@ -1145,39 +1415,31 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._apply_cors_headers()
         self.end_headers()
 
-        from pipeline_core.streaming import (
-            StreamCallback,
-            get_callback,
-            register_callback,
-            unregister_callback,
-        )
-
-        # SSE 重连: 存在同一 task_id 的活跃流则 replay 后继续监听
-        existing_callback = get_callback(task_id) if last_event_id > 0 else None
         if existing_callback:
             self._stream_replay(task_id, query, existing_callback, last_event_id)
             return
 
         # 首次连接
-        self._send_sse("connected", {"task_id": task_id, "query": query,
-                                     "resumed_from": 0, "reconnect": False})
+        self._send_sse(StreamEvent("connected", {"task_id": task_id, "query": query,
+                                                 "resumed_from": 0, "reconnect": False}))
 
         if not self.orch:
-            self._send_sse("error", {"error": "orchestrator not set"})
+            self._send_sse(StreamEvent("error", {"error": "orchestrator not set"}))
             return
 
         try:
             # 获取 writer agent 实例
             writer_agent = self._find_streaming_agent()
             if not writer_agent:
-                self._send_sse("error", {"error": "writer agent not found"})
+                self._send_sse(StreamEvent("error", {"error": "writer agent not found"}))
                 return
 
             callback = StreamCallback()
             register_callback(task_id, callback)
+            track_stream_callback(task_id, callback)
 
             # 加载 prompt 模板获取章节数，用于 on_start 通知
             try:
@@ -1197,12 +1459,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             worker = self._start_stream_worker(
                 writer_agent, task_id, input_file, callback)
 
-            # 流式推送事件（带 event_id）
-            for event in callback:
-                self._send_sse(event.event_type, event.to_dict().get("data", {}),
-                               event.event_id)
-                if event.event_type in ("complete", "error"):
-                    break
+            # 流式推送事件（心跳 + 断管止损），直到 complete/error
+            self._pump_sse(callback, task_id)
 
             # 等待后台生成线程完整结束，确保 complete/error 事件已推送给客户端；
             # timeout=120s 防止流水线挂死时 HTTP 线程永久阻塞（daemon 线程，
@@ -1211,11 +1469,13 @@ class AdminHandler(BaseHTTPRequestHandler):
             if worker.is_alive():
                 _logger.warning("[AdminAPI] 流式任务 %s 后台线程 %ss 未结束，提前断开",
                                 task_id, 120)
-            unregister_callback(task_id)
 
         except Exception as e:
-            self._send_sse("error", {"error": str(e)})
+            self._send_sse(StreamEvent("error", {"error": "internal server error"}))
+            _logger.exception("[AdminAPI] 流式任务 %s 异常: %s", task_id, e)
+        finally:
             unregister_callback(task_id)
+            untrack_stream_callback(task_id)
 
 
 class AdminAPI:

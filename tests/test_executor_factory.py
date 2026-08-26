@@ -1,8 +1,12 @@
 """执行器工厂 + ProcessPoolExecutor pickle 兼容性验证 + SmartExecutor 智能切换。"""
 import pickle
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 
+import pytest
+
+import pipeline_core.executor_factory as ef
 from pipeline_core.executor_factory import (
     SmartExecutor,
     _estimate_task_cost,
@@ -303,3 +307,102 @@ class TestPicklableCheck:
         def local_func(x):
             return x + 1
         assert not _is_picklable(local_func)
+
+
+# ── BrokenProcessPool 自愈测试辅助 ──
+
+class _FakeProcessPool(ProcessPoolExecutor):
+    """不发子进程的假进程池：可配置前 N 次 submit/map 抛 BrokenProcessPool"""
+
+    def __init__(self, max_workers: int = 4, fail_times: int = 0):
+        self.max_workers = max_workers
+        self._fail_times = fail_times
+        self.submit_count = 0
+
+    def submit(self, fn, *args, **kwargs):
+        self.submit_count += 1
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise BrokenProcessPool()
+        future: Future = Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except Exception as exc:
+            future.set_exception(exc)
+        return future
+
+    def map(self, fn, *iterables, timeout=None, chunksize=1):
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise BrokenProcessPool()
+        return iter([fn(*combo) for combo in zip(*iterables, strict=True)])
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False):
+        pass
+
+
+class TestBrokenProcessPoolRecovery:
+    """进程池单例 BrokenProcessPool 自愈（防 P1 回归）"""
+
+    @staticmethod
+    def _make_factory(created: list, fail_first: int = 0, fail_all: int | None = None):
+        """模拟单例语义的工厂：缓存当前实例；fail_all 时每个新实例都持续失败"""
+        def _factory(max_workers: int = 4) -> _FakeProcessPool:
+            existing = ef._process_pool_singleton
+            if existing is not None:
+                return existing
+            pool = _FakeProcessPool(max_workers=max_workers,
+                                    fail_times=fail_all if fail_all is not None
+                                    else (fail_first if not created else 0))
+            ef._process_pool_singleton = pool
+            created.append(pool)
+            return pool
+        return _factory
+
+    def test_submit_rebuilds_once_and_retries_success(self, monkeypatch):
+        created: list[_FakeProcessPool] = []
+        monkeypatch.setattr(ef, "_get_or_create_process_pool", self._make_factory(created, 1))
+        monkeypatch.setattr(ef, "_process_pool_singleton", None)
+
+        with SmartExecutor(max_workers=2, cost_threshold=0.01) as pool:
+            result = pool.submit(_square, 6).result()
+
+        assert result == 36
+        assert pool.used_process
+        assert len(created) == 2
+        assert created[0].submit_count == 1
+        assert created[1].submit_count == 1
+
+    def test_submit_second_failure_raises(self, monkeypatch):
+        created: list[_FakeProcessPool] = []
+        monkeypatch.setattr(ef, "_get_or_create_process_pool", self._make_factory(created, fail_all=999))
+        monkeypatch.setattr(ef, "_process_pool_singleton", None)
+
+        executor = SmartExecutor(max_workers=2, cost_threshold=0.01)
+        with pytest.raises(BrokenProcessPool):
+            executor.submit(_square, 6)
+
+        assert len(created) == 2
+
+    def test_map_rebuilds_and_retries(self, monkeypatch):
+        created: list[_FakeProcessPool] = []
+        monkeypatch.setattr(ef, "_get_or_create_process_pool", self._make_factory(created, 1))
+        monkeypatch.setattr(ef, "_process_pool_singleton", None)
+
+        with SmartExecutor(max_workers=2, cost_threshold=0.01) as pool:
+            results = list(pool.map(_square, [2, 3, 4]))
+
+        assert results == [4, 9, 16]
+        assert len(created) == 2
+
+    def test_recovered_singleton_is_reused_after_rebuild(self, monkeypatch):
+        created: list[_FakeProcessPool] = []
+        monkeypatch.setattr(ef, "_get_or_create_process_pool", self._make_factory(created, 1))
+        monkeypatch.setattr(ef, "_process_pool_singleton", None)
+
+        with SmartExecutor(max_workers=2, cost_threshold=0.01) as pool:
+            pool.submit(_square, 2).result()
+            pool.submit(_square, 3).result()
+
+        assert len(created) == 2
+        assert created[1].submit_count == 2

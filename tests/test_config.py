@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -198,3 +199,60 @@ class TestReload:
         )
         c.reload()
         assert c.get("llm.model") == "gpt-5"
+
+
+class TestHotReloadFaultTolerance:
+    """热更新遇到半写/损坏配置文件时的容错行为。"""
+
+    @staticmethod
+    def _touch(p: Path, offset: float) -> None:
+        ts = time.time() + offset
+        os.utime(p, (ts, ts))
+
+    def test_truncated_json_keeps_old_values(self, tmp_json_config: Path):
+        c = ConfigCenter(config_file=str(tmp_json_config))
+        assert c.get("llm.model") == "gpt-4"
+        tmp_json_config.write_text('{"llm": {"model": "gpt-5"', encoding="utf-8")
+        self._touch(tmp_json_config, 10)
+        assert c.get("llm.model") == "gpt-4"
+        assert c.last_reload_error
+        assert "JSON" in c.last_reload_error
+
+    def test_corrupt_file_not_reparsed_repeatedly(self, tmp_json_config: Path, monkeypatch):
+        """mtime 已刷新，同一文件版本多次 get() 只解析一次、不重复报错"""
+        c = ConfigCenter(config_file=str(tmp_json_config))
+        assert c.get("llm.model") == "gpt-4"
+        tmp_json_config.write_text("{broken", encoding="utf-8")
+        self._touch(tmp_json_config, 10)
+        counter = {"n": 0}
+        orig_merge = c._merge_file
+
+        def counting(path):
+            counter["n"] += 1
+            return orig_merge(path)
+
+        monkeypatch.setattr(c, "_merge_file", counting)
+        for _ in range(5):
+            assert c.get("llm.model") == "gpt-4"
+            assert c.last_reload_error
+        assert counter["n"] == 1
+
+    def test_recovery_after_file_restored(self, tmp_json_config: Path):
+        c = ConfigCenter(config_file=str(tmp_json_config))
+        tmp_json_config.write_text('{"llm": {"mod', encoding="utf-8")
+        self._touch(tmp_json_config, 10)
+        assert c.get("llm.model") == "gpt-4"
+        assert c.last_reload_error
+        tmp_json_config.write_text(
+            json.dumps({"llm": {"model": "gpt-9"}}), encoding="utf-8"
+        )
+        self._touch(tmp_json_config, 20)
+        assert c.get("llm.model") == "gpt-9"
+        assert c.last_reload_error == ""
+
+    def test_initial_load_failure_falls_back_to_defaults(self, tmp_path: Path):
+        p = tmp_path / "broken.json"
+        p.write_text("{oops", encoding="utf-8")
+        c = ConfigCenter(config_file=str(p))
+        assert c.get("llm.model") == "@cf/moonshotai/kimi-k2.6"
+        assert c.last_reload_error

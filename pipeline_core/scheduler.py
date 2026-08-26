@@ -225,14 +225,13 @@ class Scheduler:
             for name in level:
                 cfg = agent_map[name]
                 deps = [d for d in cfg.dependencies if d in agent_map]
-                valid_deps = [d for d in deps if d in appeared]
-                if len(valid_deps) != len(deps):
-                    missing = set(deps) - set(valid_deps)
+                invalid_deps = [d for d in deps if d not in appeared]
+                if invalid_deps:
                     raise ValueError(
-                        f"Agent [{name}] 的依赖 {missing} 不在其前置层级中，"
-                        f"topology levels={levels_raw}"
+                        f"Agent [{name}] 的依赖 {set(invalid_deps)} 不在其前置层级中"
+                        f"（同层依赖禁止，会并行执行读到空结果），topology levels={levels_raw}"
                     )
-                appeared.add(name)
+            appeared.update(level)
 
         # ── 3. 构建 ExecutionNode ──
         appeared.clear()

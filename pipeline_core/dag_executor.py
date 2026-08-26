@@ -6,6 +6,7 @@ import copy
 import re
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -278,99 +279,106 @@ class DAGExecutor:
             self.registry.set_status(base_agent, AgentStatus.STOPPED)
             return {"error": f"Agent {base_agent} 被限流"}
 
-        # 查询词提取（所有节点共享完整 queries；researcher 按池分片）
         try:
-            all_queries = self._extract_queries(input_file, node)
-        except Exception:
-            all_queries = [node.agent_config.config.get("default_query", "Python 异步编程")]
-        meta2 = self.registry.get_meta(base_agent)
-        if getattr(meta2, "extracts_queries", False) and pool_size > 1 and len(all_queries) >= pool_size:
-            queries = all_queries[pool_idx::pool_size]
-        else:
-            queries = all_queries
+            # 查询词提取（所有节点共享完整 queries；researcher 按池分片）
+            try:
+                all_queries = self._extract_queries(input_file, node)
+            except Exception:
+                all_queries = [node.agent_config.config.get("default_query", "Python 异步编程")]
+            meta2 = self.registry.get_meta(base_agent)
+            if getattr(meta2, "extracts_queries", False) and pool_size > 1 and len(all_queries) >= pool_size:
+                queries = all_queries[pool_idx::pool_size]
+            else:
+                queries = all_queries
 
-        output_file = (
-            node.agent_config.config.get("output")
-            or plan.raw.get("pipeline", {}).get("output")
-            or f"output/{task.id}_result.md"
-        )
-
-        # 合并依赖结果：对池化 agent 自动合并所有 pool 实例的结果
-        dep_results_raw = {
-            dep: task.dag_nodes[dep].result for dep in node.dependencies if dep in task.dag_nodes
-        }
-        research_results = self._get_dep_list_results(task, node.dependencies, "results")
-        articles = self._get_dep_list_results(task, node.dependencies, "articles")
-        writer_content = self._get_latest_content(task, node.dependencies)
-
-        # 保留 _raw 结构供需要完整 dict 的场景，同时正确填充 dep_results[base]
-        dep_results = {}  # type: ignore[var-annotated]
-        for dep in node.dependencies:
-            if dep in task.dag_nodes:
-                dep_node = task.dag_nodes[dep]
-                if dep_node.result and isinstance(dep_node.result, dict):
-                    base = dep.split("_pool_")[0] if "_pool_" in dep else dep
-                    dep_results.setdefault(f"_{dep}_raw", {}).update(dep_node.result)
-                    if base not in dep_results:
-                        dep_results[base] = []
-                    # 将 dep_node.result 的内容合并到 dep_results[base]
-                    for key, val in dep_node.result.items():
-                        if isinstance(val, list):
-                            dep_results[base].extend(val)
-                        else:
-                            dep_results[base].append({key: val})
-
-        # 三层配置合并：agent 构造配置（config.json，来自 meta.config）为基底，
-        # 流水线 YAML 节点 config 覆盖其上；agent 内仍可在运行时读取 payload 做最终覆盖
-        ctor_config = getattr(meta2, "config", None) or {}
-        merged_config = {**ctor_config, **node.agent_config.config}
-
-        # 收集上游 requirements_analyzer 产出的 DocumentSpec（供下游消费）
-        spec_result = None
-        if "requirements_analyzer" in task.dag_nodes:
-            ra_result = task.dag_nodes["requirements_analyzer"].result
-            if isinstance(ra_result, dict):
-                spec_result = ra_result.get("spec")
-
-        msg_payload = {
-            "task_id": task.id,
-            "input_file": input_file,
-            "config": merged_config,
-            "pipeline": plan.pipeline_name,
-            "node": node.agent_name,
-            "dependencies_results": dep_results_raw,
-            "queries": queries,
-            "target_file": output_file,
-            "target": output_file,
-            "results": research_results,
-            "articles": articles,
-            "content": writer_content,
-            "spec": spec_result,
-        }
-
-        idempotency_key = f"{task.id}:{node.agent_name}:{task.dag_nodes[node.agent_name].attempts}"
-
-        result = self.bus.request(
-            topic=f"{base_agent}.input",
-            from_a="orchestrator",
-            to_a=base_agent,
-            payload=msg_payload,
-            timeout=node.timeout,
-            idempotency_key=idempotency_key,
-        )
-
-        # ── QualityGate 自动重做循环（外提为独立方法）──
-        meta = self.registry.get_meta(node.agent_name)
-        if getattr(meta, "supports_regeneration", False) and isinstance(result, dict):
-            result = self._handle_regeneration(
-                task, node, result, msg_payload,
-                regenerate_agent=getattr(meta, "regeneration_target", "writer"),
-                recheck_agent=getattr(meta, "regeneration_recheck", "quality_gate"),
-                max_gen=node.agent_config.config.get("max_regenerations", 3),
+            output_file = (
+                node.agent_config.config.get("output")
+                or plan.raw.get("pipeline", {}).get("output")
+                or f"output/{task.id}_result.md"
             )
 
-        self.registry.set_status(base_agent, AgentStatus.STOPPED)
-        return result or {}
+            # 合并依赖结果：对池化 agent 自动合并所有 pool 实例的结果
+            dep_results_raw = {
+                dep: task.dag_nodes[dep].result for dep in node.dependencies if dep in task.dag_nodes
+            }
+            research_results = self._get_dep_list_results(task, node.dependencies, "results")
+            articles = self._get_dep_list_results(task, node.dependencies, "articles")
+            writer_content = self._get_latest_content(task, node.dependencies)
+
+            # 保留 _raw 结构供需要完整 dict 的场景，同时正确填充 dep_results[base]
+            dep_results = {}  # type: ignore[var-annotated]
+            for dep in node.dependencies:
+                if dep in task.dag_nodes:
+                    dep_node = task.dag_nodes[dep]
+                    if dep_node.result and isinstance(dep_node.result, dict):
+                        base = dep.split("_pool_")[0] if "_pool_" in dep else dep
+                        dep_results.setdefault(f"_{dep}_raw", {}).update(dep_node.result)
+                        if base not in dep_results:
+                            dep_results[base] = []
+                        # 将 dep_node.result 的内容合并到 dep_results[base]
+                        for key, val in dep_node.result.items():
+                            if isinstance(val, list):
+                                dep_results[base].extend(val)
+                            else:
+                                dep_results[base].append({key: val})
+
+            # 三层配置合并：agent 构造配置（config.json，来自 meta.config）为基底，
+            # 流水线 YAML 节点 config 覆盖其上；agent 内仍可在运行时读取 payload 做最终覆盖
+            ctor_config = getattr(meta2, "config", None) or {}
+            merged_config = {**ctor_config, **node.agent_config.config}
+
+            # 收集上游 requirements_analyzer 产出的 DocumentSpec（供下游消费）
+            spec_result = None
+            if "requirements_analyzer" in task.dag_nodes:
+                ra_result = task.dag_nodes["requirements_analyzer"].result
+                if isinstance(ra_result, dict):
+                    spec_result = ra_result.get("spec")
+
+            msg_payload = {
+                "task_id": task.id,
+                "input_file": input_file,
+                "config": merged_config,
+                "pipeline": plan.pipeline_name,
+                "node": node.agent_name,
+                "dependencies_results": dep_results_raw,
+                "queries": queries,
+                "target_file": output_file,
+                "target": output_file,
+                "results": research_results,
+                "articles": articles,
+                "content": writer_content,
+                "spec": spec_result,
+            }
+
+            node_state = task.dag_nodes[node.agent_name]
+            idempotency_key = f"{task.id}:{node.agent_name}:{node_state.attempts}"
+            if getattr(node_state, "_bypass_idempotency", False):
+                idempotency_key = f"{idempotency_key}:r{uuid.uuid4().hex[:8]}"
+
+            result = self.bus.request(
+                topic=f"{base_agent}.input",
+                from_a="orchestrator",
+                to_a=base_agent,
+                payload=msg_payload,
+                timeout=node.timeout,
+                idempotency_key=idempotency_key,
+            )
+
+            # ── QualityGate 自动重做循环（外提为独立方法）──
+            meta = self.registry.get_meta(node.agent_name)
+            if getattr(meta, "supports_regeneration", False) and isinstance(result, dict):
+                result = self._handle_regeneration(
+                    task, node, result, msg_payload,
+                    regenerate_agent=getattr(meta, "regeneration_target", "writer"),
+                    recheck_agent=getattr(meta, "regeneration_recheck", "quality_gate"),
+                    max_gen=node.agent_config.config.get("max_regenerations", 3),
+                )
+
+            self.registry.set_status(base_agent, AgentStatus.STOPPED)
+            return result or {}
+        except Exception:
+            self.registry.set_status(base_agent, AgentStatus.ERROR)
+            raise
 
     def _handle_regeneration(self, task, node, result: dict,
                              msg_payload: dict,
@@ -440,11 +448,14 @@ class DAGExecutor:
 
     @staticmethod
     def _business_failure(result) -> tuple[bool, str]:
-        """Agent 返回业务失败（status ∈ blocked/fail）时返回 (True, 错误消息)"""
+        """Agent 返回业务失败（status ∈ blocked/fail 或携带 error 键）时返回 (True, 错误消息)"""
         if isinstance(result, dict):
             sem_status = result.get("status")
             if sem_status in ("blocked", "fail"):
                 raw = result.get("message", result.get("error", f"Agent returned {sem_status}"))
+                return True, "" if raw is None else str(raw)
+            if "error" in result:
+                raw = result.get("error")
                 return True, "" if raw is None else str(raw)
         return False, ""
 
@@ -476,6 +487,67 @@ class DAGExecutor:
         self._set_task_output(task, node.agent_name, result)
         self._circuit_breaker_success(node)
 
+    def _merge_resumed_nodes(self, task) -> None:
+        """断点续传：把 checkpoint 恢复的节点状态合并进重建后的 DAG（每任务一次）"""
+        if getattr(task, "_resume_merge_done", False):
+            return
+        snaps = getattr(task, "_resumed_node_snapshots", None)
+        task._resume_merge_done = True
+        if snaps is None:
+            return
+        task._resumed_from_checkpoint = True
+        for name, snap in (snaps or {}).items():
+            dag_node = task.dag_nodes.get(name)
+            if dag_node is None:
+                continue
+            dag_node.attempts = int(snap.get("attempts", 0) or 0)
+            dag_node.error = str(snap.get("error", "") or "")
+            dag_node.result = snap.get("result") or {}
+            finished_at = snap.get("finished_at", 0) or 0
+            if finished_at:
+                dag_node.finished_at = float(finished_at)
+            if snap.get("status") == "success" and dag_node.result:
+                dag_node.status = "success"
+            else:
+                dag_node.status = "pending"
+        for dag_node in task.dag_nodes.values():
+            if dag_node.status != "success" and dag_node.attempts == 0:
+                dag_node._bypass_idempotency = True
+
+    def _reuse_completed_node(self, task, node, dag_node, plan) -> bool:
+        """断点续传：已完成且结果非空的节点直接复用结果注入下游，不提交 bus.request"""
+        if dag_node.status != "success" or not dag_node.result:
+            return False
+        from .pipeline import StepResult
+
+        started_at = dag_node.started_at or time.time()
+        step_result = StepResult(
+            step_name=node.agent_name,
+            agent_name=node.agent_name,
+            status="success",
+            started_at=started_at,
+            finished_at=time.time(),
+            result=dict(dag_node.result),
+        )
+        self._set_task_output(task, node.agent_name, dag_node.result)
+        self._record_step_result(task, plan, node, step_result)
+        self._log("info", "断点续传：复用已完成节点", task_id=task.id, node=node.agent_name)
+        return True
+
+    def _cancel_unstarted_siblings(self, task, plan, futures: dict, processed: set) -> None:
+        """fail_fast/熔断中断后：未启动的兄弟节点置 cancelled 并记录 step_result"""
+        for future, (node, dag_node, step_result) in futures.items():
+            if future in processed:
+                continue
+            if not future.cancel():
+                continue
+            dag_node.status = "cancelled"
+            dag_node.error = "cancelled"
+            dag_node.finished_at = time.time()
+            step_result.status = "cancelled"
+            step_result.error = "cancelled"
+            self._record_step_result(task, plan, node, step_result)
+
     def _submit_level_futures(self, task, level: list, input_file: str,
                               plan, executor: ThreadPoolExecutor) -> dict:
         """提交层级内所有节点到执行器，返回 {future: (node, dag_node, step_result)}"""
@@ -486,6 +558,9 @@ class DAGExecutor:
         for node in level:
             dag_node = task.dag_nodes.get(node.agent_name)
             if dag_node is None:
+                continue
+
+            if self._reuse_completed_node(task, node, dag_node, plan):
                 continue
 
             dag_node.status = "running"
@@ -637,14 +712,18 @@ class DAGExecutor:
         返回 True 表示层级成功完成，False 表示需要中断（fail_fast）。"""
         from .pipeline import TaskStatus
 
+        self._merge_resumed_nodes(task)
+
         if task.stop_event.is_set() or (self._stop_event and self._stop_event.is_set()):
             task.status = TaskStatus.CANCELLED
             return False
 
         futures = self._submit_level_futures(task, level, input_file, plan, executor)
+        processed: set = set()
 
         for future in as_completed(futures):
             node, dag_node, step_result = futures[future]
+            processed.add(future)
             try:
                 result = future.result()
 
@@ -676,8 +755,7 @@ class DAGExecutor:
                         # 已在运行的节点不会被中断。设置 task.stop_event 软中断，
                         # 让运行中的节点在下次检查 stop_event 时主动退出。
                         task.stop_event.set()
-                        for f in futures:
-                            f.cancel()
+                        self._cancel_unstarted_siblings(task, plan, futures, processed)
                         break
 
                     fail_fast = getattr(plan, "fail_fast", True)
@@ -685,8 +763,7 @@ class DAGExecutor:
                         task.status = TaskStatus.FAILED
                         # 修复 P0：同上，设置 stop_event 软中断已运行节点。
                         task.stop_event.set()
-                        for f in futures:
-                            f.cancel()
+                        self._cancel_unstarted_siblings(task, plan, futures, processed)
                         break
 
             finally:
@@ -706,6 +783,8 @@ class DAGExecutor:
         """
         from .pipeline import StepResult, TaskStatus
 
+        self._merge_resumed_nodes(task)
+
         if task.stop_event.is_set() or (self._stop_event and self._stop_event.is_set()):
             task.status = TaskStatus.CANCELLED
             return False
@@ -715,6 +794,8 @@ class DAGExecutor:
         for node in level:
             dag_node = task.dag_nodes.get(node.agent_name)
             if dag_node is None:
+                continue
+            if self._reuse_completed_node(task, node, dag_node, plan):
                 continue
             dag_node.status = "running"
             dag_node.started_at = time.time()

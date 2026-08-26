@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security（深度审计修复 — 3路并行审计，~45项发现）
+
+- **P0 SSRF 全裸修复**：fetcher sync/async 出网请求接入新增 `pipeline_core/url_guard.py`
+  （私网/环回/云元数据/DNS解析逐记录校验），redirect 改手动循环逐跳校验（上限5跳）；
+  公网302跳内网/169.254元数据端点路径封死（58项新测试）
+- **P0 断点续传静默数据损坏**：checkpoint load 恢复 DAG 节点状态，execute_level 跳过已完成节点
+  不再重发 bus.request；resume 后 attempts==0 节点绕过持久化幂等键；save 改原子写且失败上浮
+- **P0 成本控制双失灵**：`check_budget()` 接线进 llm_router chat/chat_async 调用前（超预算抛
+  BudgetExceededError）；chat_async 补记成本（writer 主力路径不再漏记）；PRICING 补
+  openai/deepseek/moonshot/qwen/default；响应 usage 字段优先计费
+- **P1 error字典被判成功**：`{"error":...}` 结果进入业务失败通道（此前下游拿空数据绿色DONE）
+- **P1 message_bus 持锁投递地雷拆除**：REQUEST/RESPONSE 移到锁外 deliver；订阅者异常立即回覆
+  错误响应（消灭单节点空烧 node.timeout×max_retries≈20分钟）
+- **P1 scheduler 同层依赖校验漏洞**：同层依赖现在正确报错（此前并行执行确定性读到空上游结果）
+- **P1 熔断器/限流器切 time.monotonic()**：NTP 回拨不再把令牌桶扣成负值持续拒流
+- **P1 进程池 BrokenProcessPool 自愈**：销毁中毒单例重建并重试一次，子进程崩溃不再永久毒化 auto 模式
+- **P1 CORS 敞口收口**：Origin 白名单（同源/回环/ADMIN_CORS_ORIGINS env），移除通配 ACAO:*
+- **P1 pipeline.started 事件配置脱敏**：api_key/token/secret/password 叶子值 ***redacted***
+  （此前明文落盘消息库并广播 webhook）
+- **P1 CLI 契约**：--pipeline 拼错报错列出可用名退出码2（此前静默改跑第一个yaml）；
+  任务 FAILED 进程退出码 1（此前恒 exit 0）
+- **P1 config 热更新半写容错** / **version_manager 索引原子写+损坏安全模式（不清零历史）** /
+  rollback 写回前自动保存当前内容 / quality_gate 英文功能词不再误判专名（消灭无谓三轮重烧） /
+  scripts/safe_writer 对齐 os.replace 原子替换
+
+### Fixed
+
+- `/stream/metrics` 恒为零的功能性失效（改为跨任务聚合快照）
+- SSE 统一 StreamEvent 序列化（ts/section/total 上线）+ 15s 心跳帧 + 客户端断连取消流水线止损
+- MCP 业务失败改 isError:true 语义；get_task 校验 task_id；generate_document 支持 output；
+  流水线目录锚点统一项目根；mcp_ 临时输入文件清理
+- Admin API 错误格式统一（503/400 语义、兜底不泄内部异常）；task_{id}.md 输入临时文件清理
+- openapi_spec：TaskInfo 枚举补 paused、/stream/metrics 内容类型、补 / 与 Last-Event-ID 声明
+- streaming pause 自旋空转（Event→Condition）；Registry get_or_create 支持配置热更新
+- dashboard：API_BASE 同源化、progress 百分比换算修正
+
+### Added
+
+- **dashboard 新建任务卡片**：query/pipeline(下拉含 docreq)/output 表单提交 POST /api/tasks，
+  running 任务展开 EventSource 实时章节进度——docreq/docgen-verified 获得 UI 触达
+- `pipeline_core/url_guard.py` 共享 URL 安全校验模块
+- 新增测试 ~200 项（642→840 passed），ruff/mypy 零告警
 ## [3.7.0] - 2026-08-25
 
 ### Added（需求分析器）

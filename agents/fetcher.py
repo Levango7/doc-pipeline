@@ -9,15 +9,19 @@ Fetcher Agent v1 - 知识内容获取器
   - 返回处理后内容的元数据
 """
 import asyncio
+import contextlib
 import hashlib
+import os
 import re
+import secrets
 import tempfile
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+from pipeline_core.url_guard import validate_public_http_url
 
 # Async I/O 支持（可选）
 try:
@@ -56,6 +60,17 @@ LARGE_ARTICLE_THRESHOLD = 50000  # 50KB
 MAX_DOWNLOADS = 20
 # 单页面超时
 PAGE_TIMEOUT = 10
+# 手动重定向上限（每跳重新过 SSRF 校验）
+MAX_REDIRECTS = 5
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+
+class _DownloadAbort(Exception):
+    """不可恢复的下载终止（SSRF 拒绝 / 终态 HTTP 状态），不重试"""
+
+
+class _DownloadRetry(Exception):
+    """临时性下载失败，可重试"""
 
 
 class FetcherAgent(BaseAgent):
@@ -83,9 +98,8 @@ class FetcherAgent(BaseAgent):
         # 下载量统计
         self._stats = {"attempted": 0, "success": 0, "failed": 0, "filtered": 0}
         self._stats_lock = threading.Lock()
-        # 持久化 aiohttp 连接池（复用 TCP 连接，减少握手开销）
+        # aiohttp session 按调用创建/关闭（不跨事件循环复用），此字段仅保留兼容引用
         self._aio_session: aiohttp.ClientSession | None = None
-        self._aio_session_lock = threading.Lock()
         try:
             from selectolax.parser import HTMLParser  # noqa: F401
             self._use_selectolax = True
@@ -230,20 +244,14 @@ class FetcherAgent(BaseAgent):
         return articles
 
     async def _fetch_all_async(self, results: list, query: str, task_id: str, task_dir: Path) -> list:
-        """异步模式：aiohttp 并发下载（复用持久化连接池）"""
+        """异步模式：aiohttp 并发下载（session 每次调用内创建，finally 关闭，避免跨 loop 失效）"""
         workers = self.config.get("download_workers", 5)
         semaphore = asyncio.Semaphore(workers)
         timeout = aiohttp.ClientTimeout(total=PAGE_TIMEOUT)
-
-        # 复用持久化 ClientSession（减少 TCP 握手开销）
-        session = await self._get_or_create_session(timeout)
-        own_session = False
-        if session is None:
-            session = aiohttp.ClientSession(
-                headers=self._base_headers, timeout=timeout
-            )
-            own_session = True
-
+        connector = aiohttp.TCPConnector(limit=20, limit_per_host=5)
+        session = aiohttp.ClientSession(
+            headers=self._base_headers, timeout=timeout, connector=connector
+        )
         try:
             tasks = [
                 self._fetch_article_async(session, semaphore, r, query, task_id, task_dir, idx)
@@ -251,32 +259,8 @@ class FetcherAgent(BaseAgent):
             ]
             articles = await asyncio.gather(*tasks)
         finally:
-            if own_session:
-                await session.close()
+            await session.close()
         return [a for a in articles if a]
-
-    async def _get_or_create_session(self, timeout) -> "aiohttp.ClientSession | None":
-        """获取或创建持久化 aiohttp ClientSession（线程安全）"""
-        if not USE_ASYNC:
-            return None
-        if self._aio_session is not None and not self._aio_session.closed:
-            return self._aio_session
-        # 创建新 session（在事件循环中调用）
-        self._aio_session = aiohttp.ClientSession(
-            headers=self._base_headers, timeout=timeout,
-            connector=aiohttp.TCPConnector(
-                limit=20,           # 最大并发连接
-                limit_per_host=5,   # 单主机最大连接
-                ttl_dns_cache=300,  # DNS 缓存 5 分钟
-            ),
-        )
-        return self._aio_session
-
-    async def _close_aio_session(self):
-        """关闭持久化连接池"""
-        if self._aio_session is not None and not self._aio_session.closed:
-            await self._aio_session.close()
-        self._aio_session = None
 
     async def _fetch_article_async(self, session, semaphore, result, query, task_id, task_dir, idx=0):
         """异步下载单页（带 UA 轮换 + 重试）
@@ -288,6 +272,10 @@ class FetcherAgent(BaseAgent):
         url = result.get("url", "") if isinstance(result, dict) else getattr(result, "url", "")
         title = result.get("title", "") if isinstance(result, dict) else getattr(result, "title", "")
         if not url:
+            return None
+        ok, reason = validate_public_http_url(url)
+        if not ok:
+            self.log_debug(f"  跳过不安全 URL({reason}): {str(url)[:60]}")
             return None
 
         with self._stats_lock:
@@ -325,18 +313,9 @@ class FetcherAgent(BaseAgent):
             ua = self._ua_pool[(idx + attempt) % len(self._ua_pool)]
             try:
                 headers = {**self._base_headers, "User-Agent": ua}
-                async with semaphore, session.get(url, headers=headers, allow_redirects=True) as resp:
-                    if resp.status != 200:
-                        last_err = f"HTTP {resp.status}"
-                        if resp.status in (403, 429, 503):
-                            continue
-                        with self._stats_lock:
-                            self._stats["failed"] += 1
-                        self.log_debug(f"  {last_err}: {url[:60]}")
-                        return None
-                    html = await resp.text()
-
+                html = await self._download_html_async(session, semaphore, url, headers)
                 plain_text = self._extract_text(html)
+
                 if not self._is_content_usable(plain_text, url, query):
                     with self._stats_lock:
                         self._stats["filtered"] += 1
@@ -348,6 +327,11 @@ class FetcherAgent(BaseAgent):
                     with self._stats_lock:
                         self._stats["success"] += 1
                     return article
+            except _DownloadAbort as e:
+                with self._stats_lock:
+                    self._stats["failed"] += 1
+                self.log_debug(f"  下载中止(安全拒绝): {url[:60]} - {e}")
+                return None
             except TimeoutError:
                 last_err = "超时"
                 continue
@@ -359,6 +343,31 @@ class FetcherAgent(BaseAgent):
         self.log_debug(f"  下载失败(重试{self._retry}次): {url[:60]} - {last_err}")
         return None
 
+    async def _download_html_async(self, session, semaphore, url: str, headers: dict) -> str:
+        """异步 GET：手动跟随重定向（≤MAX_REDIRECTS 跳），每跳重新过 SSRF 校验"""
+        current = url
+        for _ in range(MAX_REDIRECTS + 1):
+            ok, reason = validate_public_http_url(current)
+            if not ok:
+                raise _DownloadAbort(f"SSRF 拒绝({reason}): {current[:80]}")
+            async with semaphore, session.get(current, headers=headers, allow_redirects=False) as resp:
+                if resp.status in _REDIRECT_STATUSES:
+                    loc = resp.headers.get("Location", "")
+                    if not loc:
+                        raise _DownloadAbort(f"HTTP {resp.status} 缺少 Location")
+                    nxt = urljoin(current, loc)
+                    if urlparse(nxt).scheme.lower() not in ("http", "https"):
+                        raise _DownloadAbort(f"重定向到非 http/https 已中止: {nxt[:80]}")
+                    current = nxt
+                    continue
+                if resp.status != 200:
+                    if resp.status in (403, 429, 503):
+                        raise _DownloadRetry(f"HTTP {resp.status}")
+                    raise _DownloadAbort(f"HTTP {resp.status}")
+                text: str = await resp.text()
+                return text
+        raise _DownloadAbort(f"重定向超过 {MAX_REDIRECTS} 跳上限")
+
     def _fetch_article(self, result, query: str, task_id: str, task_dir: Path, idx=0) -> dict | None:
         """下载单个页面（同步），提取正文，保存到本地（带 UA 轮换 + 重试）
 
@@ -369,6 +378,10 @@ class FetcherAgent(BaseAgent):
         url = result.get("url", "") if isinstance(result, dict) else getattr(result, "url", "")
         title = result.get("title", "") if isinstance(result, dict) else getattr(result, "title", "")
         if not url:
+            return None
+        ok, reason = validate_public_http_url(url)
+        if not ok:
+            self.log_debug(f"  跳过不安全 URL({reason}): {str(url)[:60]}")
             return None
 
         with self._stats_lock:
@@ -405,19 +418,8 @@ class FetcherAgent(BaseAgent):
             ua = self._ua_pool[(idx + attempt) % len(self._ua_pool)]
             try:
                 headers = {**self._base_headers, "User-Agent": ua}
-                with requests.get(url, timeout=PAGE_TIMEOUT, headers=headers,
-                                 allow_redirects=True) as r:
-                    if r.status_code != 200:
-                        last_err = f"HTTP {r.status_code}"
-                        if r.status_code in (403, 429, 503):
-                            continue
-                        with self._stats_lock:
-                            self._stats["failed"] += 1
-                        self.log_debug(f"  {last_err}: {url[:60]}")
-                        return None
-
-                    html = r.text
-                    plain_text = self._extract_text(html)
+                html = self._download_html_sync(url, headers)
+                plain_text = self._extract_text(html)
 
                 if not self._is_content_usable(plain_text, url, query):
                     with self._stats_lock:
@@ -430,6 +432,11 @@ class FetcherAgent(BaseAgent):
                     with self._stats_lock:
                         self._stats["success"] += 1
                     return article
+            except _DownloadAbort as e:
+                with self._stats_lock:
+                    self._stats["failed"] += 1
+                self.log_debug(f"  下载中止(安全拒绝): {url[:60]} - {e}")
+                return None
             except requests.Timeout:
                 last_err = "超时"
                 continue
@@ -441,11 +448,40 @@ class FetcherAgent(BaseAgent):
         self.log_debug(f"  下载失败(重试{self._retry}次): {url[:60]} - {last_err}")
         return None
 
+    def _download_html_sync(self, url: str, headers: dict) -> str:
+        """同步 GET：手动跟随重定向（≤MAX_REDIRECTS 跳），每跳重新过 SSRF 校验"""
+        import requests
+
+        current = url
+        for _ in range(MAX_REDIRECTS + 1):
+            ok, reason = validate_public_http_url(current)
+            if not ok:
+                raise _DownloadAbort(f"SSRF 拒绝({reason}): {current[:80]}")
+            with requests.get(current, timeout=PAGE_TIMEOUT, headers=headers,
+                              allow_redirects=False) as r:
+                if r.status_code in _REDIRECT_STATUSES:
+                    loc = r.headers.get("Location", "")
+                    if not loc:
+                        raise _DownloadAbort(f"HTTP {r.status_code} 缺少 Location")
+                    nxt = urljoin(current, loc)
+                    if urlparse(nxt).scheme.lower() not in ("http", "https"):
+                        raise _DownloadAbort(f"重定向到非 http/https 已中止: {nxt[:80]}")
+                    current = nxt
+                    continue
+                if r.status_code != 200:
+                    if r.status_code in (403, 429, 503):
+                        raise _DownloadRetry(f"HTTP {r.status_code}")
+                    raise _DownloadAbort(f"HTTP {r.status_code}")
+                return r.text
+        raise _DownloadAbort(f"重定向超过 {MAX_REDIRECTS} 跳上限")
+
     def _save_article(self, title: str, url: str, plain_text: str,
                       query: str, task_dir: Path) -> dict | None:
-        """将提取的正文保存到本地文件，返回文章元数据（同步写入，供 async 用 to_thread 包装）"""
+        """将提取的正文保存到本地文件，返回文章元数据（同目录临时文件 + os.replace 原子落盘）"""
         safe_name = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fff-]', '_', title)[:60] or hashlib.sha256(url.encode()).hexdigest()[:12]
         file_path = task_dir / f"{safe_name}.txt"
+        if file_path.exists():
+            file_path = task_dir / f"{safe_name}_{secrets.token_hex(4)}.txt"
         file_content = (
             f"标题: {title}\n"
             f"来源: {url}\n"
@@ -453,7 +489,16 @@ class FetcherAgent(BaseAgent):
             f"{'='*60}\n\n"
             f"{plain_text}"
         )
-        file_path.write_text(file_content, encoding="utf-8")
+        tmp_fd, tmp_name = tempfile.mkstemp(dir=str(task_dir), prefix=f"{safe_name}.", suffix=".tmp")
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(file_content)
+            os.replace(str(tmp_path), str(file_path))
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink(missing_ok=True)
+            raise
         return {
             "title": title,
             "url": url,
@@ -607,10 +652,12 @@ class FetcherAgent(BaseAgent):
         """清理指定任务的临时文件，返回清理的文件数量"""
         import shutil
         count = 0
+        if not task_id:
+            return 0
         if not self._temp_dir.exists():
             return 0
         for item in self._temp_dir.iterdir():
-            if task_id in item.name:
+            if item.name == task_id or item.name.startswith(task_id + "_"):
                 try:
                     if item.is_dir():
                         shutil.rmtree(item)
@@ -646,18 +693,14 @@ class FetcherAgent(BaseAgent):
         return count
 
     def on_stop(self):
-        """Agent 停止时关闭 aiohttp 持久化连接池，释放 TCP 连接和 DNS 缓存。
-
-        覆盖 BaseAgent.on_stop()，确保持久化 ClientSession 被正确关闭，
-        避免 TCP 连接泄漏和事件循环资源未释放。
-        """
+        """Agent 停止钩子 —— aiohttp session 已改为按调用创建/关闭，此处仅兜底清理残留引用"""
         super().on_stop()
         if self._aio_session is not None and not self._aio_session.closed:
             try:
                 loop = asyncio.new_event_loop()
-                loop.run_until_complete(self._close_aio_session())
+                loop.run_until_complete(self._aio_session.close())
                 loop.close()
-                self.log_info("aiohttp 持久化连接池已关闭")
+                self.log_info("aiohttp session 已关闭")
             except Exception as e:
                 self.log_info(f"关闭 aiohttp session 异常（将由 GC 回收）: {e}")
-                self._aio_session = None
+        self._aio_session = None

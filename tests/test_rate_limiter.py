@@ -1,5 +1,9 @@
 """RateLimiter — burst, acquire, timeout, sliding window"""
+import threading
 import time
+
+import pipeline_core.rate_limiter as rl_mod
+from pipeline_core.rate_limiter import RateLimiter
 
 
 class TestRateLimiterBasics:
@@ -97,3 +101,100 @@ class TestRateLimiterStats:
         s = rl.stats()
         assert s["total_acquired"] == 2
         assert s["total_blocked"] == 0
+
+
+class _FakeClock:
+    def __init__(self, start: float):
+        self.now = start
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class TestRateLimiterClockRollback:
+    """monotonic 时间基准 + 回拨防护（防 P1 回归）"""
+
+    def test_rollback_does_not_negative_tokens(self, monkeypatch):
+        clock = _FakeClock(1000.0)
+        monkeypatch.setattr(rl_mod, "time", clock)
+        rl = RateLimiter(rate=10, burst=5, name="rl_rollback")
+
+        for _ in range(5):
+            assert rl.acquire(1.0, block=False) is True
+        assert rl.available < 0.01
+
+        tokens_before = rl._tokens
+        clock.now -= 100.0
+        assert rl.available >= 0.0
+        assert rl._tokens >= tokens_before - 1e-9
+
+        for _ in range(20):
+            clock.now -= 10.0
+            assert rl.available >= 0.0
+        assert rl.available >= 0.0
+
+    def test_recovery_after_rollback(self, monkeypatch):
+        clock = _FakeClock(2000.0)
+        monkeypatch.setattr(rl_mod, "time", clock)
+        rl = RateLimiter(rate=10, burst=5, name="rl_recover")
+
+        for _ in range(5):
+            rl.acquire(1.0, block=False)
+        assert rl.available < 0.01
+
+        clock.now -= 50.0
+        clock.now += 1.0
+        available = rl.available
+        assert 0.0 <= available < 11.0
+        clock.now += 2.0
+        assert rl.available > available or rl.available >= 5.0
+        assert rl.acquire(1.0, block=False) is True
+
+    def test_blocking_acquire_deadline_monotonic(self, monkeypatch):
+        clock = _FakeClock(3000.0)
+        monkeypatch.setattr(rl_mod, "time", clock)
+        rl = RateLimiter(rate=0.001, burst=1, name="rl_deadline")
+
+        assert rl.acquire(1.0, block=False) is True
+
+        stop = threading.Event()
+
+        def _advance():
+            while not stop.is_set():
+                clock.now += 0.05
+                time.sleep(0.005)
+
+        t = threading.Thread(target=_advance, daemon=True)
+        t.start()
+        try:
+            ok = rl.acquire(1.0, block=True, timeout=0.2)
+        finally:
+            stop.set()
+            t.join(timeout=1)
+        assert ok is False
+        assert rl.stats()["total_blocked"] == 1
+
+
+class TestRateLimiterRegistryUpdate:
+    """Registry.get_or_create 热更新语义（防 P2 回归）"""
+
+    def test_get_or_create_updates_existing_params(self, rate_limiters):
+        rl = rate_limiters.get_or_create("rl_hot", rate=5, burst=4)
+        rl2 = rate_limiters.get_or_create("rl_hot", rate=50, burst=40)
+        assert rl is rl2
+        assert rl.rate == 50
+        assert rl.burst == 40
+
+    def test_get_or_create_no_args_keeps_config(self, rate_limiters):
+        rl = rate_limiters.get_or_create("rl_keep", rate=7, burst=3)
+        rl2 = rate_limiters.get_or_create("rl_keep")
+        assert rl is rl2
+        assert rl.rate == 7
+        assert rl.burst == 3
+
+    def test_get_or_create_partial_update(self, rate_limiters):
+        rl = rate_limiters.get_or_create("rl_partial", rate=7, burst=3)
+        rl2 = rate_limiters.get_or_create("rl_partial", burst=30)
+        assert rl is rl2
+        assert rl.rate == 7
+        assert rl.burst == 30

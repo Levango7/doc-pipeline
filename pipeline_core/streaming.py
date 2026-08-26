@@ -137,8 +137,9 @@ class StreamCallback:
         self._total_sections = 0
         self._start_time = time.time()
         self.metrics = StreamMetrics()
-        # 背压控制
-        self._paused = threading.Event()
+        # 背压控制（Condition 使 pause 真正阻塞生产者，避免忙等自旋）
+        self._pause_condition = threading.Condition()
+        self._paused = False
         # 事件历史（用于 SSE 重连，保留最近 N 个事件）
         self._history: list[StreamEvent] = []
         self._history_max = 500
@@ -194,9 +195,10 @@ class StreamCallback:
               section_index: int = -1, total_sections: int = 0):
         if self._closed.is_set():
             return
-        # 背压：如果消费者暂停，等待恢复
-        while self._paused.is_set() and not self._closed.is_set():
-            self._paused.wait(0.1)
+        # 背压：如果消费者暂停，阻塞等待恢复（close 时 notify 唤醒退出）
+        with self._pause_condition:
+            while self._paused and not self._closed.is_set():
+                self._pause_condition.wait()
         if self._closed.is_set():
             return
 
@@ -222,14 +224,18 @@ class StreamCallback:
 
     def pause(self):
         """暂停事件生产（消费者处理不过来时调用）"""
-        self._paused.set()
+        with self._pause_condition:
+            self._paused = True
 
     def resume(self):
         """恢复事件生产"""
-        self._paused.clear()
+        with self._pause_condition:
+            self._paused = False
+            self._pause_condition.notify_all()
 
     def is_paused(self) -> bool:
-        return self._paused.is_set()
+        with self._pause_condition:
+            return self._paused
 
     # ── SSE 重连支持 ──────────────────────────
 
@@ -240,6 +246,8 @@ class StreamCallback:
 
     def close(self):
         self._closed.set()
+        with self._pause_condition:
+            self._pause_condition.notify_all()
         with contextlib.suppress(queue.Full):
             self._queue.put_nowait(None)  # sentinel
 

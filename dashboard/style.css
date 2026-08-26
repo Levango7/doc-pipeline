@@ -113,6 +113,10 @@ body {
   min-height: 0;
 }
 
+.card.wide {
+  grid-column: 1 / -1;
+}
+
 .card-header {
   display: flex;
   align-items: center;
@@ -311,6 +315,130 @@ body {
   color: var(--text-muted);
   font-family: var(--font-mono);
   margin-left: 6px;
+}
+
+/* Expandable running rows + live SSE progress */
+.tasks-table tbody tr.expandable {
+  cursor: pointer;
+}
+
+.stream-row td {
+  background: rgba(15, 52, 96, 0.25);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.live-stream {
+  padding: 6px 4px;
+}
+
+.live-label {
+  font-size: 0.7rem;
+  color: var(--status-error);
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+}
+
+.live-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-bar {
+  flex: 1;
+  height: 8px;
+}
+
+.live-section {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}
+
+/* --- New Task form ---------------------------------------- */
+.newtask-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.newtask-form > label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.newtask-form textarea,
+.newtask-form select,
+.newtask-form input[type="text"] {
+  background: rgba(15, 52, 96, 0.35);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  padding: 8px 10px;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  width: 100%;
+}
+
+.newtask-form textarea {
+  resize: vertical;
+  min-height: 48px;
+}
+
+.newtask-form textarea:focus,
+.newtask-form select:focus,
+.newtask-form input[type="text"]:focus {
+  outline: 1px solid var(--highlight);
+  border-color: var(--highlight);
+}
+
+.newtask-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.newtask-row label {
+  flex: 1;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#nt-submit {
+  padding: 9px 24px;
+  border: 1px solid var(--highlight);
+  background: rgba(233, 69, 96, 0.15);
+  color: var(--highlight);
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  transition: background 0.2s;
+}
+
+#nt-submit:hover:not(:disabled) {
+  background: rgba(233, 69, 96, 0.3);
+}
+
+#nt-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.newtask-msg {
+  font-size: 0.75rem;
+  color: var(--status-ok);
+  font-family: var(--font-mono);
+}
+
+.newtask-msg.is-error {
+  color: var(--status-error);
 }
 
 /* --- Agents List ------------------------------------------ */

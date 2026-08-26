@@ -28,10 +28,23 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_DB = os.path.join(Path(__file__).parent.parent.absolute(), "bus_data", "cost.db")
 
+
+class BudgetExceededError(RuntimeError):
+    """预算熔断：已花费达到预算上限，拒绝 LLM 调用"""
+    def __init__(self, message: str = "预算已耗尽"):
+        super().__init__(message)
+        self.total_cost: float | None = None
+        self.budget: float | None = None
+
+
 # 供应商定价表（USD per 1K tokens）— prompt / completion
-# 来源：各供应商官方定价页 2026-07
+# 来源：各供应商官方定价页 2026-07；标注「近似值」的条目为牌价折算，实际以账单为准
 PRICING = {
     "cloudflare": (0.00063, 0.00252),    # Kimi K2.6 via CF
+    "openai": (0.0025, 0.01),            # GPT-4o 牌价 $2.5/$10 每 1M tokens（近似值）
+    "deepseek": (0.00027, 0.0011),       # DeepSeek-V3 chat 牌价 $0.27/$1.10 每 1M tokens（近似值）
+    "moonshot": (0.0006, 0.0025),        # Kimi K2 官方牌价 $0.6/$2.5 每 1M tokens（近似值）
+    "qwen": (0.0004, 0.0012),            # Qwen Plus 牌价 $0.4/$1.2 每 1M tokens，与 bailian 同源（近似值）
     "xiaomi_mimo": (0.00014, 0.00056),   # MiMo-7B
     "longcat": (0.00014, 0.00056),       # LongCat-Flash
     "sensenova": (0.001, 0.002),         # DeepSeek V4 Flash
@@ -43,6 +56,7 @@ PRICING = {
     "dahl": (0.0005, 0.0015),            # Dahl
     "siliconflow": (0.00014, 0.00056),   # Qwen 2.5 7B
     "ollama": (0.0, 0.0),                # 本地模型免费
+    "default": (0.001, 0.002),           # 无前缀通用供应商兜底，与 DEFAULT_PRICE 一致
 }
 DEFAULT_PRICE = (0.001, 0.002)  # 未知供应商默认定价
 
@@ -102,16 +116,31 @@ class CostTracker:
             self._budget = max_cost
 
     def total_cost(self) -> float:
-        """已花费总额"""
-        with self._get_conn() as conn:
+        """已花费总额（实例锁保证与 record 写入互斥，读值原子）
+
+        残余窗口：check_budget 的「读总额→比对」与并发 record 之间无在途预留，
+        高并发下多个调用可同时通过检查，存在轻微超预算可能（check-then-act）。
+        """
+        with self._lock, self._get_conn() as conn:
             row = conn.execute("SELECT COALESCE(SUM(cost), 0) FROM cost_log").fetchone()
             return row[0] if row else 0
 
     def check_budget(self) -> bool:
-        """检查是否在预算内"""
+        """检查是否在预算内（未设置预算或预算为 0 时恒为 True）"""
         if self._budget <= 0:
             return True
         return self.total_cost() < self._budget
+
+    def ensure_budget(self) -> None:
+        """预算熔断：超预算抛 BudgetExceededError；未设置预算(0)时放行"""
+        total = self.total_cost()
+        if not self.check_budget():
+            err = BudgetExceededError(
+                f"预算已耗尽: 已花费 {total:.4f} USD, 上限 {self._budget:.4f} USD"
+            )
+            err.total_cost = total
+            err.budget = self._budget
+            raise err
 
     def record(self, provider: str, prompt_tokens: int, completion_tokens: int,
                cost: float = None, task_id: str = "", model: str = ""):

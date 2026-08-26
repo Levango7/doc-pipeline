@@ -8,7 +8,9 @@
   // ----------------------------------------------------------
   // Configuration
   // ----------------------------------------------------------
-  const API_BASE = 'http://127.0.0.1:8910';
+  const API_BASE = (location.protocol === 'http:' || location.protocol === 'https:')
+    ? location.origin
+    : 'http://127.0.0.1:8910';
   const REFRESH_MS = 5000;
 
   // ----------------------------------------------------------
@@ -47,6 +49,14 @@
     els.tasksPanel     = $('#panel-tasks .card-body');
     els.agentsPanel    = $('#panel-agents .card-body');
     els.metricsPanel   = $('#panel-metrics .card-body');
+
+    // New task form
+    els.newTaskForm    = $('#newtask-form');
+    els.ntQuery        = $('#nt-query');
+    els.ntPipeline     = $('#nt-pipeline');
+    els.ntOutput       = $('#nt-output');
+    els.ntSubmit       = $('#nt-submit');
+    els.ntMsg          = $('#nt-msg');
 
     // Badge counters
     els.badgeTasks     = $('#badge-tasks');
@@ -253,9 +263,8 @@
     for (const t of tasks) {
       const sCls = statusClass(t.status);
       const emoji = statusEmoji(t.status);
-      const progress = t.progress != null ? t.progress : 0;
-      const steps = t.steps != null ? t.steps : 100;
-      const pct = Math.min(100, Math.max(0, Math.round((progress / (steps || 100)) * 100)));
+      const progress = t.progress != null ? Number(t.progress) || 0 : 0;
+      const pct = Math.min(100, Math.max(0, Math.round(progress)));
 
       const tdId = elt('td', 'task-id', t.id == null ? '' : String(t.id));
       tdId.title = tdId.textContent;
@@ -277,11 +286,20 @@
       tdProgress.appendChild(wrap);
 
       const tr = elt('tr');
+      tr.dataset.taskId = t.id == null ? '' : String(t.id);
       tr.appendChild(tdId);
       tr.appendChild(elt('td', 'task-pipeline', t.pipeline || '—'));
       tr.appendChild(tdStatus);
       tr.appendChild(tdProgress);
+      if ((t.status || '').toLowerCase() === 'running') {
+        tr.classList.add('expandable');
+        tr.title = '点击展开实时进度';
+        tr.addEventListener('click', () => toggleLiveStream(String(t.id)));
+      }
       tbody.appendChild(tr);
+      if (liveStreams.has(String(t.id))) {
+        tbody.appendChild(liveStreams.get(String(t.id)).row);
+      }
     }
 
     table.appendChild(thead);
@@ -382,6 +400,179 @@
   }
 
   // ----------------------------------------------------------
+  // Live SSE progress (running task rows)
+  // ----------------------------------------------------------
+  const liveStreams = new Map();
+
+  function toggleLiveStream (id) {
+    if (liveStreams.has(id)) {
+      closeLiveStream(id, 0);
+      return;
+    }
+    const cell = elt('td');
+    cell.colSpan = 4;
+    const wrap = elt('div', 'live-stream');
+    wrap.appendChild(elt('div', 'live-label', '🔴 实时进度 · ' + id));
+    const meta = elt('div', 'live-meta');
+    const bar = elt('div', 'progress-wrap live-bar');
+    const fill = elt('div', 'progress-fill running');
+    fill.style.width = '0%';
+    bar.appendChild(fill);
+    const text = elt('span', 'progress-text', '0%');
+    const sectionName = elt('span', 'live-section', '等待章节事件…');
+    meta.appendChild(bar);
+    meta.appendChild(text);
+    meta.appendChild(sectionName);
+    wrap.appendChild(meta);
+    cell.appendChild(wrap);
+    const row = elt('tr', 'stream-row');
+    row.appendChild(cell);
+
+    const token = getToken();
+    const url = API_BASE + '/stream?task_id=' + encodeURIComponent(id)
+      + (token ? '&token=' + encodeURIComponent(token) : '');
+    const es = new EventSource(url);
+
+    liveStreams.set(id, { es, row, fill, text, sectionName });
+
+    es.onmessage = (e) => {
+      let msg;
+      try { msg = JSON.parse(e.data); } catch (_) { return; }
+      handleLiveEvent(id, msg);
+    };
+    es.onerror = () => {
+      sectionName.textContent = '⚠ 连接断开';
+      closeLiveStream(id, 0);
+    };
+  }
+
+  function handleLiveEvent (id, msg) {
+    const h = liveStreams.get(id);
+    if (!h) return;
+    const d = (msg && msg.data) || {};
+    switch (msg && msg.type) {
+      case 'section': {
+        const total = Number(msg.total) > 0 ? Number(msg.total) : 0;
+        const idx = Number(msg.section) >= 0 ? Number(msg.section) : 0;
+        const pctv = total ? Math.min(100, Math.max(0, Math.round(((idx + 1) / total) * 100))) : 0;
+        h.fill.style.width = pctv + '%';
+        h.text.textContent = pctv + '%';
+        h.sectionName.textContent = '✍️ ' + (d.section_name || ('section ' + (idx + 1)))
+          + (d.char_count != null ? ' · ' + formatNum(d.char_count) + ' chars' : '');
+        break;
+      }
+      case 'progress': {
+        const total = Number(d.total) > 0 ? Number(d.total) : (Number(msg.total) || 0);
+        const cur = Number(d.current) || 0;
+        const pctv = total ? Math.min(100, Math.max(0, Math.round((cur / total) * 100))) : 0;
+        h.fill.style.width = pctv + '%';
+        h.text.textContent = pctv + '%';
+        if (d.message) h.sectionName.textContent = d.message;
+        break;
+      }
+      case 'complete':
+        h.fill.style.width = '100%';
+        h.fill.className = 'progress-fill done';
+        h.text.textContent = '100%';
+        h.sectionName.textContent = '✅ 完成';
+        closeLiveStream(id, 1500);
+        break;
+      case 'error':
+        h.fill.className = 'progress-fill failed';
+        h.sectionName.textContent = '❌ ' + (d.error || '生成失败');
+        closeLiveStream(id, 1500);
+        break;
+      default:
+        break;
+    }
+  }
+
+  function closeLiveStream (id, keepRowMs) {
+    const h = liveStreams.get(id);
+    if (!h) return;
+    liveStreams.delete(id);
+    setTimeout(() => {
+      try { h.es.close(); } catch (_) { /* noop */ }
+      if (h.row.parentNode) h.row.parentNode.removeChild(h.row);
+    }, keepRowMs || 0);
+  }
+
+  // ----------------------------------------------------------
+  // New task form
+  // ----------------------------------------------------------
+  async function postJson (url, body) {
+    const token = getToken();
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.status === 401) {
+      requestToken();
+      throw new Error('HTTP 401（需要 API Token）');
+    }
+    if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+    return data;
+  }
+
+  async function loadPipelines () {
+    if (!els.ntPipeline) return;
+    try {
+      const info = await fetchJson(API_BASE + '/api/pipeline');
+      const files = (info && info.pipeline_files) || [];
+      els.ntPipeline.replaceChildren();
+      for (const f of files) {
+        const name = String(f).replace(/\.ya?ml$/i, '');
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        els.ntPipeline.appendChild(opt);
+      }
+    } catch (err) {
+      console.warn('[Dashboard] 加载流水线列表失败:', err);
+    }
+  }
+
+  function showTaskMsg (text, isError) {
+    if (!els.ntMsg) return;
+    els.ntMsg.hidden = false;
+    els.ntMsg.textContent = text;
+    els.ntMsg.classList.toggle('is-error', !!isError);
+  }
+
+  async function submitTask (ev) {
+    ev.preventDefault();
+    if (!els.ntQuery || !els.ntSubmit) return;
+    const query = (els.ntQuery.value || '').trim();
+    if (!query) {
+      showTaskMsg('请填写 Query', true);
+      return;
+    }
+    const body = { query };
+    if (els.ntPipeline && els.ntPipeline.value) body.pipeline = els.ntPipeline.value;
+    const output = (els.ntOutput && els.ntOutput.value || '').trim();
+    if (output) body.output = output;
+
+    els.ntSubmit.disabled = true;
+    showTaskMsg('提交中…', false);
+    try {
+      const resp = await postJson(API_BASE + '/api/tasks', body);
+      showTaskMsg('✅ 已提交任务 ' + (resp.task_id || '')
+        + '（' + (resp.status || 'pending') + '）', false);
+      els.ntQuery.value = '';
+      update().catch(() => {});
+    } catch (err) {
+      showTaskMsg('❌ 提交失败：' + (err.message || err), true);
+    } finally {
+      els.ntSubmit.disabled = false;
+    }
+  }
+
+  // ----------------------------------------------------------
   // Main update loop
   // ----------------------------------------------------------
   async function update () {
@@ -463,6 +654,8 @@
   function init () {
     cacheDom();
     if (els.retryBtn) els.retryBtn.addEventListener('click', handleRetry);
+    if (els.newTaskForm) els.newTaskForm.addEventListener('submit', submitTask);
+    loadPipelines();
     if (els.tokenSave) {
       const saveToken = () => {
         const v = (els.tokenInput.value || '').trim();

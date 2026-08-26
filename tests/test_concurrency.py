@@ -84,8 +84,11 @@ class TestRequestConcurrency:
         """50 并发 bus.request → 全部响应"""
         bus = MessageBus(enable_persistence=False)
         counter = {"calls": 0}
+        clock = threading.Lock()
+
         def echo(msg):
-            counter["calls"] += 1
+            with clock:
+                counter["calls"] += 1
             return {"echo": msg.payload.get("seq"), "ok": True}
         bus.subscribe("echo.input", echo)
 

@@ -40,6 +40,24 @@ AGENT_TAGS = ["quality", "gate"]
 QUALITY_DIR = Path(__file__).parent.parent / "pipelines" / "quality"
 DEFAULT_PROFILE = "technical-doc.yaml"
 
+# 英文功能词/泛文档词表：这些词即使首字母大写也不是专名，不计入 mandatory
+_TOPIC_FN_WORDS = frozenset({
+    "how", "what", "why", "when", "where", "who", "whose", "whom", "which",
+    "whether", "the", "and", "or", "but", "nor", "so", "yet", "if", "then",
+    "this", "that", "these", "those", "there", "here", "it", "its",
+    "is", "are", "was", "were", "be", "been", "being", "am", "do", "does",
+    "did", "done", "can", "could", "should", "would", "will", "shall",
+    "may", "might", "must", "use", "used", "using", "usage", "user",
+    "best", "top", "guide", "tutorial", "introduction", "overview",
+    "summary", "review", "basics", "basic", "example", "examples",
+    "step", "steps", "tips", "setup", "install", "installing",
+    "getting", "started", "learn", "learning", "with", "without",
+    "within", "into", "onto", "about", "from", "for", "over", "under",
+    "again", "all", "any", "both", "each", "more", "most", "other",
+    "some", "such", "only", "same", "than", "very", "just", "also",
+})
+_TOPIC_MIN_WORD_LEN = 4
+
 
 def load_profile(profile_name: str) -> dict:
     """加载 Quality Profile YAML"""
@@ -221,7 +239,7 @@ class QualityGateAgent(BaseAgent):
     def _score_topic_relevance(self, content: str, queries: list[str]) -> float:
         """主题相关度：文档是否真的在讲 query 主题（而非跑题）
 
-        - 英文专有名词（首字母大写、长度>=3）为 mandatory token，缺失则直接归零
+        - 英文专名候选（非句首大写词或全大写缩略语、排除功能词表）为 mandatory token，缺失过多则归零
         - 中文按 2-gram 拆分，避免整句不匹配
         无 query 时返回中性分（不惩罚）。
         """
@@ -235,12 +253,23 @@ class QualityGateAgent(BaseAgent):
         tokens: set[str] = set()
         mandatory: set[str] = set()  # 专有名词：缺失则归零
         for q in queries:
-            # 英文专有名词：首字母大写、长度>=3（如 Kafka, Python, Docker, JavaScript）
-            for prop in re.findall(r"\b[A-Z][a-zA-Z]{2,}\b", q):
+            # 句首词集合：仅句首出现的大写词多为普通词引导（How/What...），不算专名
+            sent_initial: set[str] = set()
+            for seg in re.split(r"[。？！；.?!;\n]", q):
+                m_first = re.search(r"[A-Za-z][A-Za-z0-9]*", seg)
+                if m_first:
+                    sent_initial.add(m_first.group(0).lower())
+            # 英文专有名词候选：首字母大写且长度>=4、排除功能词表；
+            # 非句首位置出现或全大写缩略语（API/K8s）才计入 mandatory
+            for m_prop in re.finditer(r"\b[A-Z][a-zA-Z0-9]{2,}\b", q):
+                prop = m_prop.group(0)
                 pl = prop.lower()
-                if pl not in stop:
-                    mandatory.add(pl)
-                    tokens.add(pl)
+                if len(pl) < _TOPIC_MIN_WORD_LEN or pl in _TOPIC_FN_WORDS:
+                    continue
+                if pl in sent_initial and not prop.isupper():
+                    continue
+                mandatory.add(pl)
+                tokens.add(pl)
             # 普通英文词
             for w in re.findall(r"[a-zA-Z]{2,}", q.lower()):
                 if w not in stop:

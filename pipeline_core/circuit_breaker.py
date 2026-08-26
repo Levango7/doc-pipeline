@@ -31,9 +31,25 @@ class CircuitBreaker:
         self.failure_count = 0
         self.success_count = 0
         self.last_failure_time = 0.0
-        self.last_state_change = time.time()
+        self.last_state_change = time.monotonic()
         self.half_open_attempts = 0
         self._lock = threading.RLock()
+
+    def configure(self, failure_threshold: int | None = None,
+                  recovery_timeout: float | None = None,
+                  half_open_max_tests: int | None = None) -> None:
+        """热更新熔断参数（None 表示保持不变）。
+
+        供 Registry.get_or_create 对已存在实例应用新配置，
+        使同名 agent 的配置变更立即生效，无需重建熔断器。
+        """
+        with self._lock:
+            if failure_threshold is not None:
+                self.failure_threshold = failure_threshold
+            if recovery_timeout is not None:
+                self.recovery_timeout = recovery_timeout
+            if half_open_max_tests is not None:
+                self.half_open_max_tests = half_open_max_tests
 
     def record_success(self):
         """记录成功"""
@@ -57,7 +73,7 @@ class CircuitBreaker:
         transition = None
         with self._lock:
             self.failure_count += 1
-            self.last_failure_time = time.time()
+            self.last_failure_time = time.monotonic()
 
             if self.state == CircuitState.HALF_OPEN or self.state == CircuitState.CLOSED and self.failure_count >= self.failure_threshold:
                 transition = self._transition_to(CircuitState.OPEN)
@@ -77,7 +93,7 @@ class CircuitBreaker:
             if self.state == CircuitState.CLOSED:
                 allowed = True
             elif self.state == CircuitState.OPEN:
-                elapsed = time.time() - self.last_state_change
+                elapsed = time.monotonic() - self.last_state_change
                 if elapsed >= self.recovery_timeout:
                     transition = self._transition_to(CircuitState.HALF_OPEN)
                     self.half_open_attempts = 0
@@ -109,7 +125,7 @@ class CircuitBreaker:
         if self.state != new_state:
             old_state = self.state
             self.state = new_state
-            self.last_state_change = time.time()
+            self.last_state_change = time.monotonic()
             # 进入 OPEN 时重置 success 计数
             if new_state == CircuitState.OPEN:
                 self.success_count = 0
@@ -152,6 +168,7 @@ class CircuitBreaker:
 
     def to_dict(self) -> dict:
         with self._lock:
+            now = time.monotonic()
             return {
                 "name": self.name,
                 "state": self.state.value,
@@ -161,7 +178,7 @@ class CircuitBreaker:
                 "recovery_timeout": self.recovery_timeout,
                 "last_failure_time": self.last_failure_time,
                 "last_state_change": self.last_state_change,
-                "uptime": time.time() - (self.last_state_change or time.time()),
+                "uptime": now - (self.last_state_change or now),
             }
 
 
@@ -173,10 +190,20 @@ class CircuitBreakerRegistry:
         self._lock = threading.RLock()
 
     def get_or_create(self, name: str, **kwargs) -> CircuitBreaker:
+        """按名称获取熔断器，不存在则创建。
+
+        更新策略（update_if_exists 语义）：实例已存在时，将本次显式
+        传入的参数通过 configure() 热更新到该实例并复用，保证同名
+        agent 的阈值/超时配置变更立即生效；未传参数则保持原配置。
+        """
         with self._lock:
-            if name not in self._breakers:
-                self._breakers[name] = CircuitBreaker(name=name, **kwargs)
-            return self._breakers[name]
+            breaker = self._breakers.get(name)
+            if breaker is None:
+                breaker = CircuitBreaker(name=name, **kwargs)
+                self._breakers[name] = breaker
+            elif kwargs:
+                breaker.configure(**kwargs)
+            return breaker
 
     def get(self, name: str) -> CircuitBreaker | None:
         with self._lock:

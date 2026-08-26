@@ -26,8 +26,12 @@
 from __future__ import annotations
 
 import contextlib
+import os
+import re
 import sys
 import tempfile
+import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -43,6 +47,39 @@ except ImportError:  # pragma: no cover
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "doc-pipeline"
+
+# 项目根锚（与 generate_document / list_pipelines 共用，消除同文件内分叉）
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# task_id 仅允许字母、数字、下划线、连字符（对齐 admin_api._validate_task_id）
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _validate_task_id(task_id: str) -> bool:
+    """校验 task_id 仅含字母/数字/下划线/连字符（防止路径遍历）。"""
+    if not task_id or len(task_id) > 128:
+        return False
+    return bool(_TASK_ID_RE.match(task_id))
+
+
+def _validate_output_path(path_str: str, base_dir: str | None = None) -> tuple[bool, str]:
+    """校验输出路径必须落在 base_dir 范围内（白名单校验逻辑拷贝自 admin_api）。
+
+    Returns:
+        (ok, reason): ok=True 表示通过；ok=False 时 reason 为拒绝原因。
+    """
+    if not path_str:
+        return True, ""  # 空路径不校验（交由默认逻辑）
+    base = Path(base_dir or os.getcwd()).resolve()
+    try:
+        target = Path(path_str).resolve()
+    except (OSError, ValueError) as e:
+        return False, f"路径解析失败: {e}"
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return False, f"路径 {path_str!r} 不在允许目录 {base!s} 内"
+    return True, ""
 
 TOOLS = [
     {
@@ -68,6 +105,10 @@ TOOLS = [
                     "type": "boolean",
                     "description": "是否同步等待完成（可选，默认 false，建议 false 后用 get_task 轮询）",
                     "default": False,
+                },
+                "output": {
+                    "type": "string",
+                    "description": "输出文件相对路径（可选，须落在项目根目录白名单内；wait=true 时同步落盘）",
                 },
             },
             "required": ["query"],
@@ -191,11 +232,16 @@ class MCPServer:
     def _tool_generate_document(self, req_id: Any, args: dict) -> dict:
         query = args.get("query", "").strip()
         if not query:
-            return self._error(req_id, -32602, "Missing 'query' argument")
+            return self._tool_error(req_id, "Missing 'query' argument")
 
         title = args.get("title", query)
         pipeline_name = args.get("pipeline", "docgen")
         wait = bool(args.get("wait", False))
+        output_arg = str(args.get("output", "") or "")
+
+        ok, reason = _validate_output_path(output_arg, base_dir=str(PROJECT_ROOT))
+        if not ok:
+            return self._tool_error(req_id, f"Invalid output path: {reason}")
 
         if not self.orch:
             return self._error(req_id, -32603, "Orchestrator not initialized")
@@ -209,13 +255,21 @@ class MCPServer:
             sched = Scheduler()
             plan = sched.parse(pipeline_name)
         except Exception as e:
-            return self._error(req_id, -32603, f"Failed to parse pipeline: {e}")
+            with contextlib.suppress(OSError):
+                input_file.unlink()
+            return self._tool_error(req_id, f"Failed to parse pipeline: {e}")
+
+        target_path = None
+        if output_arg:
+            candidate = Path(output_arg)
+            target_path = candidate if candidate.is_absolute() else PROJECT_ROOT / candidate
 
         try:
             task = self.orch.run_plan(plan, input_file=str(input_file),
                                       task_id=task_id, wait=wait)
         except Exception as e:
-            return self._error(req_id, -32603, f"Pipeline failed: {e}")
+            self._cleanup_temp_input(input_file)
+            return self._tool_error(req_id, f"Pipeline failed: {e}")
 
         result = {
             "task_id": task.id,
@@ -228,29 +282,91 @@ class MCPServer:
         if wait:
             result["result_keys"] = list(getattr(task, "result", {}).keys())
             result["error"] = getattr(task, "error", None)
-            for key in ("safe_writer", "safewriter", "layout", "checker"):
-                val = getattr(task, "result", {}).get(key)
-                path = None
-                if isinstance(val, dict):
-                    path = val.get("output_path") or val.get("path") or val.get("file")
-                elif isinstance(val, str) and val.endswith(".md"):
-                    path = val
-                if path and Path(path).exists():
-                    result["output_path"] = path
-                    with contextlib.suppress(Exception):
-                        result["output_content"] = Path(path).read_text(encoding="utf-8")
-                    break
+            path, content = self._extract_output_content(task)
+            if path is not None:
+                result["output_path"] = str(path)
+            if content is not None:
+                result["output_content"] = content
+            self._write_output_target(result, content, target_path)
+            self._cleanup_temp_input(input_file)
+        else:
+            result["message"] = "task started, poll get_task for status"
+            watcher = threading.Thread(
+                target=self._watch_and_finalize,
+                args=(str(task.id), input_file, target_path),
+                daemon=True,
+            )
+            watcher.start()
 
         return self._tool_result(req_id, result)
 
+    @staticmethod
+    def _extract_output_content(task) -> tuple[Path | None, str | None]:
+        """从任务结果中提取输出路径与最终文档内容（与 admin_api 同样的 key 约定）"""
+        result = dict(getattr(task, "result", {}) or {})
+        for key in ("safe_writer", "safewriter", "layout", "checker"):
+            val = result.get(key)
+            path = None
+            if isinstance(val, dict):
+                path = val.get("output_path") or val.get("path") or val.get("file")
+            elif isinstance(val, str) and val.endswith(".md"):
+                path = val
+            if path and Path(path).exists():
+                try:
+                    return Path(path), Path(path).read_text(encoding="utf-8")
+                except Exception:
+                    return Path(path), None
+        return None, None
+
+    @staticmethod
+    def _write_output_target(result: dict, content: str | None,
+                             target_path: Path | None) -> None:
+        if target_path is None or not content:
+            return
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(content, encoding="utf-8")
+            result["output_written"] = str(target_path)
+        except OSError as e:
+            result["output_write_error"] = str(e)
+
+    def _cleanup_temp_input(self, input_file: Path) -> None:
+        with contextlib.suppress(OSError):
+            input_file.unlink()
+
+    def _watch_and_finalize(self, task_id: str, input_file: Path,
+                            target_path: Path | None,
+                            max_wait_seconds: int = 3600) -> None:
+        """wait=false：后台等待任务终态 → 落盘 output（若有）→ 清理临时输入文件"""
+        deadline = time.time() + max_wait_seconds
+        task = None
+        while time.time() < deadline:
+            with contextlib.suppress(Exception):
+                task = self.orch.get_task(task_id) if self.orch else None
+            if task is None:
+                break
+            status = str(getattr(task.status, "value", task.status))
+            if status not in ("pending", "running", "paused"):
+                break
+            time.sleep(2.0)
+        self._cleanup_temp_input(input_file)
+        if target_path is not None and task is not None \
+                and str(getattr(task.status, "value", task.status)) == "done":
+            _, content = self._extract_output_content(task)
+            if content:
+                empty: dict = {}
+                self._write_output_target(empty, content, target_path)
+
     def _tool_get_task(self, req_id: Any, args: dict) -> dict:
         task_id = args.get("task_id", "")
+        if not _validate_task_id(task_id):
+            return self._tool_error(req_id, f"Invalid task_id: {task_id!r}")
         if not self.orch:
             return self._error(req_id, -32603, "Orchestrator not initialized")
 
         task = self.orch.get_task(task_id)
         if not task:
-            return self._error(req_id, -32602, f"Task not found: {task_id}")
+            return self._tool_error(req_id, f"Task not found: {task_id}")
 
         result = {
             "id": task.id,
@@ -281,9 +397,9 @@ class MCPServer:
         return self._tool_result(req_id, result)
 
     def _tool_list_pipelines(self, req_id: Any, args: dict) -> dict:
-        pipelines_dir = Path(__file__).parent.parent / "pipelines"
+        pipelines_dir = PROJECT_ROOT / "pipelines"
         pipelines = []
-        for f in pipelines_dir.glob("*.yaml"):
+        for f in sorted(pipelines_dir.glob("*.yaml")):
             if not f.name.startswith("test_"):
                 pipelines.append({"name": f.stem, "file": str(f)})
         return self._tool_result(req_id, {"pipelines": pipelines})
@@ -311,13 +427,25 @@ class MCPServer:
             }
             return self._tool_result(req_id, result)
         except Exception as e:
-            return self._error(req_id, -32603, f"Failed to parse pipeline: {e}")
+            return self._tool_error(req_id, f"Failed to parse pipeline: {e}")
 
     def _ok(self, req_id: Any, result: dict) -> dict:
         return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
     def _error(self, req_id: Any, code: int, message: str) -> dict:
         return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+    def _tool_error(self, req_id: Any, message: str) -> dict:
+        """工具执行失败：按 MCP 规范返回 result.content + isError:true（业务失败
+        不再误用 JSON-RPC error，协议层错误仍走 _error）。"""
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "content": [{"type": "text", "text": f"Error: {message}"}],
+                "isError": True,
+            },
+        }
 
     def _tool_result(self, req_id: Any, data: dict) -> dict:
         return {
@@ -338,10 +466,9 @@ def run_mcp_server(orch=None):
     """启动 MCP server（stdio 模式）"""
     if orch is None:
         from . import PipelineOrchestrator
-        project_root = Path(__file__).parent.parent
         orch = PipelineOrchestrator(
-            agents_dir=str(project_root / "agents"),
-            checkpoint_dir=str(project_root / "checkpoints"),
+            agents_dir=str(PROJECT_ROOT / "agents"),
+            checkpoint_dir=str(PROJECT_ROOT / "checkpoints"),
         )
         orch.register_agents()
 

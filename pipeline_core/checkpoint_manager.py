@@ -1,9 +1,13 @@
 """检查点管理器 —— 负责断点续传、检查点保存/加载/清理"""
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
+import tempfile
 import time
+import warnings
 from pathlib import Path
 
 # 安全修复 (P0): task_id 路径遍历防护 —— 仅允许字母/数字/下划线/连字符
@@ -24,6 +28,7 @@ class CheckpointManager:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._logger = logger
+        self.save_failure_count = 0
 
     def _log(self, level: str, msg: str, **kw):
         """结构化日志记录"""
@@ -31,49 +36,68 @@ class CheckpointManager:
             self._logger.log(level, msg, **kw)
 
     def save(self, task, full_state: bool = False, agent_snapshots: dict = None):
-        """保存断点"""
+        """保存断点（原子写：同目录 tempfile + os.replace；失败上浮 RuntimeWarning 并计数）"""
         # 安全修复 (P0): task_id 路径遍历防护
         if not _validate_task_id(task.id):
             raise ValueError(f"无效的 task_id: {task.id!r}")
+        data = task.to_dict()
+        if full_state:
+            data["_result"] = {
+                k: v for k, v in task.result.items()
+            }
+            data["_steps"] = [
+                {
+                    "step_name": s.step_name,
+                    "agent_name": s.agent_name,
+                    "status": s.status,
+                    "started_at": s.started_at,
+                    "finished_at": s.finished_at,
+                    "error": s.error,
+                }
+                for s in task.steps
+            ]
+            data["_dag_nodes"] = {
+                name: {
+                    "status": n.status,
+                    "error": n.error,
+                    "attempts": n.attempts,
+                    "started_at": n.started_at,
+                    "finished_at": n.finished_at,
+                    "result": n.result,
+                }
+                for name, n in (task.dag_nodes or {}).items()
+            }
+        if agent_snapshots:
+            data["agent_snapshots"] = agent_snapshots
+        final_path = Path(task.checkpoint_file)
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(final_path.parent), prefix=final_path.name + ".", suffix=".tmp"
+        )
         try:
-            data = task.to_dict()
-            if full_state:
-                data["_result"] = {
-                    k: v for k, v in task.result.items()
-                }
-                data["_steps"] = [
-                    {
-                        "step_name": s.step_name,
-                        "agent_name": s.agent_name,
-                        "status": s.status,
-                        "started_at": s.started_at,
-                        "finished_at": s.finished_at,
-                        "error": s.error,
-                    }
-                    for s in task.steps
-                ]
-                data["_dag_nodes"] = {
-                    name: {
-                        "status": n.status,
-                        "error": n.error,
-                        "attempts": n.attempts,
-                        "result_keys": list(n.result.keys()),
-                    }
-                    for name, n in (task.dag_nodes or {}).items()
-                }
-            if agent_snapshots:
-                data["agent_snapshots"] = agent_snapshots
-            with open(task.checkpoint_file, "w", encoding="utf-8") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(final_path))
         except Exception as e:
-            self._log("error", "保存断点失败", error=str(e))
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            self.save_failure_count += 1
+            self._log("error", "保存断点失败", task_id=task.id,
+                      error=str(e), failures=self.save_failure_count)
+            warnings.warn(
+                f"checkpoint save failed for task {task.id}: {e}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def load(self, task_id: str):
-        """加载断点（仅恢复基础信息），返回 (task, agent_snapshots) 元组"""
+        """加载断点（基础信息 + DAG 节点状态），返回 (task, agent_snapshots) 元组"""
         # 安全修复 (P0): task_id 路径遍历防护
         if not _validate_task_id(task_id):
             raise ValueError(f"无效的 task_id: {task_id!r}")
-        from .pipeline import PipelineTask, TaskStatus
+        from .pipeline import PipelineTask, TaskNode, TaskStatus
 
         checkpoint_file = self.checkpoint_dir / f"{task_id}.json"
         if not checkpoint_file.exists():
@@ -104,6 +128,30 @@ class CheckpointManager:
                 current_step=len(data.get("steps", [])),
             )
             task.result = data.get("_result", {})
+
+            restored_nodes = {}
+            for name, snap in (data.get("_dag_nodes") or {}).items():
+                if not isinstance(snap, dict):
+                    continue
+                restored_nodes[name] = {
+                    "status": snap.get("status", "pending"),
+                    "attempts": int(snap.get("attempts", 0) or 0),
+                    "error": snap.get("error", "") or "",
+                    "result": snap.get("result") or {},
+                    "finished_at": snap.get("finished_at", 0) or 0,
+                }
+            if "_dag_nodes" in data:
+                task.dag_nodes = {}
+                for name, snap in restored_nodes.items():
+                    node = TaskNode(name=name, agent_name=name)
+                    node.status = snap["status"]
+                    node.attempts = snap["attempts"]
+                    node.error = snap["error"]
+                    node.result = dict(snap["result"])
+                    node.finished_at = float(snap["finished_at"] or 0)
+                    task.dag_nodes[name] = node
+                task._resumed_node_snapshots = restored_nodes
+
             agent_snapshots = data.get("agent_snapshots", {})
             return task, agent_snapshots
         except Exception as e:

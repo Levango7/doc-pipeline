@@ -132,6 +132,14 @@ def _load_config(args_args: argparse.Namespace, project_root: Path) -> dict:
     return {}
 
 
+def _available_pipeline_names() -> list[str]:
+    """列出 pipelines/ 目录下可用的流水线名（yaml 文件 stem）"""
+    pipelines_dir = Path(__file__).parent / "pipelines"
+    if not pipelines_dir.exists():
+        return []
+    return sorted(p.stem for p in pipelines_dir.glob("*.yaml"))
+
+
 def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestrator,
                            config: dict) -> tuple[Any, bool]:
     """尝试从 YAML 文件解析 pipeline plan；失败时返回 (None, False) 表示应走 legacy 路径"""
@@ -143,10 +151,12 @@ def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestr
         pipeline_files = [Path(args_args.pipeline_file)]
     else:
         pipelines_dir = base_dir / "pipelines"
-        if pipelines_dir.exists():
-            pipeline_files = sorted(pipelines_dir.glob(f"{args_args.pipeline}*.yaml"))
-            if not pipeline_files:
-                pipeline_files = sorted(pipelines_dir.glob("*.yaml"))
+        pipeline_files = sorted(pipelines_dir.glob(f"{args_args.pipeline}*.yaml"))
+        if not pipeline_files:
+            available = ", ".join(_available_pipeline_names())
+            print(f"[run] ERROR: 未找到流水线 '{args_args.pipeline}'"
+                  f"（pipelines/ 下可用: {available or '无'}）", file=sys.stderr)
+            sys.exit(2)
 
     for pf in pipeline_files:
         if pf.exists():
@@ -157,6 +167,18 @@ def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestr
             except Exception as e:
                 print(f"[run] 加载 {pf.name} 失败: {e}")
     return (None, False)
+
+
+_TASK_EXIT_CODES = {"failed": 1, "cancelled": 2}
+
+
+def _task_exit_code(task) -> int:
+    """按任务终态映射进程退出码：failed=1、cancelled=2、其余=0"""
+    try:
+        status = task.status.value if hasattr(task.status, "value") else str(task.status)
+    except Exception:
+        return 0
+    return _TASK_EXIT_CODES.get(str(status).lower(), 0)
 
 
 def _print_task_summary(args_args: argparse.Namespace, orch: PipelineOrchestrator,
@@ -282,8 +304,8 @@ def _render_task_result(args_args: argparse.Namespace, task, task_id: str) -> No
 
 
 def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
-                     config: dict) -> None:
-    """执行单任务：构建 plan/task、等待结果、输出报告"""
+                     config: dict):
+    """执行单任务：构建 plan/task、等待结果、输出报告。返回终态 task（预览/中断返回 None）"""
     task_id = args_args.task_id or str(uuid.uuid4())[:8]
 
     use_legacy = args_args.legacy
@@ -347,9 +369,10 @@ def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
         return
 
     if not _poll_task_progress(orch, args_args, task, task_id):
-        return
+        return None
 
     _render_task_result(args_args, task, task_id)
+    return task
 
 
 def _run_daemon(orch: PipelineOrchestrator) -> None:
@@ -386,7 +409,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("input", nargs="?", default=None, help="输入文件")
     parser.add_argument("--task-id", "-t", default=None, help="任务ID（默认自动生成）")
-    parser.add_argument("--pipeline", "-p", default="docgen", help="流水线名称")
+    _pipeline_names = _available_pipeline_names()
+    parser.add_argument("--pipeline", "-p", default="docgen",
+                        choices=_pipeline_names or None,
+                        help="流水线名称（可选值来自 pipelines/ 目录）")
     parser.add_argument("--pipeline-file", "-f", default=None, help="pipeline YAML 配置路径")
     parser.add_argument("--queries", "-q", nargs="*", help="检索词（多个）")
     parser.add_argument("--agent", "-a", action="append", help="指定运行的 Agent")
@@ -531,8 +557,9 @@ def main():
 
     # 纯服务模式：无输入文件，仅常驻 Admin API（任务经 POST /api/tasks 提交）
     service_only = args.input is None
+    finished_task = None
     if not service_only:
-        _run_single_task(args, orch, config)
+        finished_task = _run_single_task(args, orch, config)
 
     # ─── 管理 API / 仪表盘 / 守护进程 ──────────────
     want_server = args.admin or args.dashboard or args.daemon or service_only
@@ -569,6 +596,11 @@ def main():
             _run_daemon(orch)
 
     orch.shutdown()
+
+    # 任务终态映射退出码（failed=1 / cancelled=2），服务模式与既有语义不受影响
+    exit_code = _task_exit_code(finished_task) if finished_task is not None else 0
+    if exit_code:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

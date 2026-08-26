@@ -17,10 +17,12 @@
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,17 @@ def _get_or_create_process_pool(max_workers: int = 4) -> ProcessPoolExecutor:
         if _process_pool_singleton is None:
             _process_pool_singleton = ProcessPoolExecutor(max_workers=max_workers)
         return _process_pool_singleton
+
+
+def _discard_broken_pool(pool: Executor | None) -> None:
+    """销毁损坏的进程池单例（仅当仍是当前单例时），防止并发重建竞态。"""
+    global _process_pool_singleton
+    with _pool_lock:
+        if pool is not None and _process_pool_singleton is pool:
+            _process_pool_singleton = None
+    if pool is not None:
+        with contextlib.suppress(Exception):
+            pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _estimate_task_cost(func: Callable, args: tuple, kwargs: dict) -> float:
@@ -150,16 +163,32 @@ class SmartExecutor:
         return self._thread_pool
 
     def submit(self, fn: Callable, *args, **kwargs):
-        """提交任务，自动选择执行器。"""
+        """提交任务，自动选择执行器。ProcessPool 提交遇 BrokenProcessPool 时销毁重建并重试一次。"""
         executor = self._select_executor(fn, n_tasks=1)
         self._submitted_count += 1
+        if self._used_process and executor is not self._thread_pool:
+            try:
+                return executor.submit(fn, *args, **kwargs)
+            except BrokenProcessPool:
+                logger.warning("ProcessPool broken (BrokenProcessPool), rebuilding singleton and retrying once")
+                _discard_broken_pool(executor)
+                retry_pool = _get_or_create_process_pool(self.max_workers)
+                return retry_pool.submit(fn, *args, **kwargs)
         return executor.submit(fn, *args, **kwargs)
 
     def map(self, fn: Callable, *iterables, timeout=None, chunksize=1):
-        """批量提交，自动选择执行器。"""
+        """批量提交，自动选择执行器。ProcessPool 遇 BrokenProcessPool 时销毁重建并重试一次。"""
         n_tasks = min(len(it) for it in iterables) if iterables else 1
         executor = self._select_executor(fn, n_tasks=n_tasks)
         self._submitted_count += n_tasks
+        if self._used_process and executor is not self._thread_pool:
+            try:
+                return executor.map(fn, *iterables, timeout=timeout, chunksize=chunksize)
+            except BrokenProcessPool:
+                logger.warning("ProcessPool broken (BrokenProcessPool), rebuilding singleton and retrying once")
+                _discard_broken_pool(executor)
+                retry_pool = _get_or_create_process_pool(self.max_workers)
+                return retry_pool.map(fn, *iterables, timeout=timeout, chunksize=chunksize)
         return executor.map(fn, *iterables, timeout=timeout, chunksize=chunksize)
 
     def shutdown(self, wait: bool = True):

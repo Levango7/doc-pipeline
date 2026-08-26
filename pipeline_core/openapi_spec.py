@@ -24,7 +24,7 @@ def _schemas() -> dict:
             "type": "object",
             "properties": {
                 "id": {"type": "string"},
-                "status": {"type": "string", "enum": ["pending", "running", "done", "failed", "cancelled"]},
+                "status": {"type": "string", "enum": ["pending", "running", "paused", "done", "failed", "cancelled"]},
                 "pipeline": {"type": "string"},
                 "result": {"type": "object"},
                 "output_content": {"type": "string", "nullable": True},
@@ -51,8 +51,19 @@ def _schemas() -> dict:
 
 
 def _system_paths() -> dict:
-    """系统级端点：健康检查 / 指标"""
+    """系统级端点：根索引 / 健康检查 / 指标"""
     return {
+        "/": {
+            "get": {
+                "summary": "API 索引（纯文本端点列表，非仪表盘；仪表盘在 /index.html）",
+                "responses": {
+                    "200": {
+                        "description": "纯文本索引",
+                        "content": {"text/plain": {"schema": {"type": "string"}}},
+                    },
+                },
+            },
+        },
         "/health": {
             "get": {
                 "summary": "健康检查",
@@ -335,7 +346,12 @@ def _ops_paths() -> dict:
         "/stream/metrics": {
             "get": {
                 "summary": "流式推送指标快照（连接数/事件数等）",
-                "responses": {"200": {"description": "text/event-stream"}},
+                "responses": {
+                    "200": {
+                        "description": "流式指标快照",
+                        "content": {"application/json": {"schema": {"type": "object"}}},
+                    },
+                },
             },
         },
         "/stream": {
@@ -345,6 +361,13 @@ def _ops_paths() -> dict:
                     {"name": "query", "in": "query", "required": True, "schema": {"type": "string"}},
                     {"name": "title", "in": "query", "schema": {"type": "string"}},
                     {"name": "task_id", "in": "query", "schema": {"type": "string"}},
+                    {
+                        "name": "Last-Event-ID",
+                        "in": "header",
+                        "required": False,
+                        "schema": {"type": "string"},
+                        "description": "SSE 重连续点：携带最后接收的事件 id，服务端从断点续推",
+                    },
                 ],
                 "responses": {"200": {"description": "text/event-stream"}},
             },

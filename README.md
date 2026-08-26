@@ -68,7 +68,7 @@ python run.py test_input.md --plan
 # 从断点恢复
 python run.py test_input.md --resume --task-id <id>
 
-# 启动 Dashboard（默认 http://127.0.0.1:8910）
+# 启动 Dashboard（默认 http://127.0.0.1:8910，入口 /index.html）
 python run.py test_input.md --dashboard
 ```
 
@@ -249,7 +249,7 @@ python run.py input.md -c config.production.json -o output/doc.md
 | `/health` | GET | 总线 + Registry 健康状态（免鉴权） |
 | `/metrics` | GET | Prometheus 格式指标 |
 | `/tasks` | GET | 任务列表 |
-| `/tasks` | POST | 提交新任务（同步/异步，外部 Agent 调度入口） |
+| `/api/tasks` | POST | 提交新任务（同步/异步，外部 Agent 调度入口） |
 | `/tasks/<id>` | GET | 单任务详情（含 result/output_content/output_path） |
 | `/tasks/<id>/cancel` | POST | 取消任务 |
 | `/tasks/<id>/rerun` | POST | 重跑流水线（复用 last plan） |
@@ -258,13 +258,16 @@ python run.py input.md -c config.production.json -o output/doc.md
 | `/dlq/<id>/replay` | POST | 重放死信 |
 | `/api/cost` | GET | LLM 成本统计（按供应商/Agent/时间维度） |
 | `/api/cost/budget` | POST | 设置预算上限（超限自动熔断） |
-| `/api/alerts` | GET | 告警历史查询（level/category/since 过滤） |
-| `/api/logs` | GET | 结构化日志查询（level/agent/since/keyword 过滤） |
+| `/api/alerts` | GET | 告警历史查询（level/category/limit 过滤） |
+| `/api/logs` | GET | 结构化日志查询（level/agent/since/limit 过滤） |
 | `/api/quality/feedback` | GET | 质量评分历史 + 弱项模式分析 |
 | `/api/config/reload` | POST | 配置热更新（通知所有 Agent on_config_update） |
 | `/api/openapi.json` | GET | OpenAPI 3.0 规范 |
 | `/api/dashboard` | GET | Dashboard 数据 |
-| `/` | GET | 静态仪表盘（若 `--dashboard`） |
+| `/stream` | GET | SSE 流式推送文档生成进度（支持 Last-Event-ID 重连） |
+| `/stream/metrics` | GET | 流式指标快照（JSON） |
+| `/` | GET | API 纯文本索引（**非仪表盘**） |
+| `/index.html` | GET | 静态仪表盘入口（若 `--dashboard` 启动） |
 
 ### 鉴权
 
@@ -286,7 +289,7 @@ python run.py input.md --admin
 python run.py --mcp
 ```
 
-提供 5 个 tools：`submit_task`、`get_task_status`、`get_task_result`、`list_tasks`、`get_system_health`。
+提供 5 个 tools：`generate_document`、`get_task`、`list_tasks`、`list_pipelines`、`get_pipeline_info`。
 
 ### 事件钩子（Event Hooks）
 
@@ -344,7 +347,7 @@ docker run -p 8910:8910 -v $(pwd)/checkpoints:/app/checkpoints doc-pipeline
 python -m pytest tests/ -v
 ```
 
-**588 个测试全部通过**（另有 6 个 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
+**650+ 个测试全部通过**（另有若干 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
 
 ```bash
 # 运行真实端到端测试（需要网络 + LLM API Key）
@@ -414,7 +417,7 @@ doc-pipeline/
 │       ├── technical-doc.yaml
 │       └── tutorial.yaml
 ├── dashboard/           # 前端仪表盘
-├── tests/               # 588 个测试（+ 6 个 e2e）
+├── tests/               # 650+ 个测试（另有 e2e）
 ├── checkpoints/         # 断点 + 日志（自动轮转）
 ├── versions/            # 文档版本存储
 ├── run.py               # CLI 入口
@@ -439,7 +442,7 @@ doc-pipeline/
 | LLM 额度消耗 | 0（质量门控跳过，规则兜底） | mock |
 | 消息总线吞吐 | 批量 drain 50 条/轮 | — |
 | 缓存命中 | 125 万 ops/s | — |
-| 测试覆盖 | 588 tests (+ 6 e2e) | — |
+| 测试覆盖 | 650+ tests (+ e2e) | — |
 
 ### 生产模式预期耗时（config.production.json）
 

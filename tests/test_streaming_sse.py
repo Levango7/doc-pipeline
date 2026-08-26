@@ -175,6 +175,86 @@ class TestStreamCallback:
         cb.close()
 
 
+class _CountingCallback(StreamCallback):
+    """统计 _emit 进入次数，用于区分挂起与忙等自旋"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.emit_attempts = 0
+
+    def _emit(self, *args, **kwargs):
+        self.emit_attempts += 1
+        super()._emit(*args, **kwargs)
+
+
+class TestBackpressureBlocking:
+    """pause 后生产者真正挂起（Condition），resume/close 唤醒（防 P2 自旋回归）"""
+
+    def test_pause_blocks_producer_without_spin(self):
+        cb = _CountingCallback()
+        cb.pause()
+        produced = threading.Event()
+
+        def _produce():
+            for i in range(200):
+                cb.on_chunk(f"chunk_{i}")
+            produced.set()
+
+        t = threading.Thread(target=_produce, daemon=True)
+        t.start()
+        time.sleep(0.15)
+        assert not produced.is_set()
+        assert cb.emit_attempts <= 2
+        assert len(cb.get_events()) == 0
+
+        cb.resume()
+        t.join(timeout=5)
+        assert produced.is_set()
+        assert not t.is_alive()
+        assert len(cb._history) == 200
+        cb.close()
+
+    def test_close_wakes_paused_producer(self):
+        cb = StreamCallback()
+        cb.pause()
+        done = threading.Event()
+
+        def _emit():
+            cb.on_start(1, "Doc")
+            done.set()
+
+        t = threading.Thread(target=_emit, daemon=True)
+        t.start()
+        time.sleep(0.05)
+        assert t.is_alive()
+
+        cb.close()
+        t.join(timeout=2)
+        assert not t.is_alive()
+        assert done.is_set()
+
+    def test_resume_notifies_blocked_producer_promptly(self):
+        cb = _CountingCallback()
+        cb.pause()
+        emitted = threading.Event()
+
+        def _emit():
+            cb.on_start(2, "Doc")
+            emitted.set()
+
+        t = threading.Thread(target=_emit, daemon=True)
+        t.start()
+        time.sleep(0.05)
+        assert not emitted.is_set()
+
+        resume_at = time.monotonic()
+        cb.resume()
+        t.join(timeout=2)
+        assert emitted.is_set()
+        assert time.monotonic() - resume_at < 1.0
+        cb.close()
+
+
 class TestSSEReconnection:
     """SSE 重连（Last-Event-ID）测试"""
 

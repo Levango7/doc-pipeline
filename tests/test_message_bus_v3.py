@@ -1,7 +1,8 @@
 ﻿"""MessageBus v3 — pub/sub, backpressure, DLQ, health"""
+import threading
 import time
 
-from pipeline_core.message_bus_v3 import MessageBus
+from pipeline_core.message_bus_v3 import Message, MessageBus, MessageType
 
 
 class TestMessageBusBasics:
@@ -145,3 +146,140 @@ class TestMessageBusLifecycle:
         bus.publish("resilient.topic", "s", {"x": 1})
         time.sleep(0.2)
         assert len(ok) == 1, "working callback should still receive"
+
+
+class TestMessageBusRequestRobustness:
+    """REQUEST/RESPONSE 审计修复：锁外投递、错误回覆、幂等键生命周期"""
+
+    def test_send_request_callback_nested_request_no_deadlock(self):
+        """send(REQUEST) 回调内再发 bus.request() 时，其他线程不被全局锁停摆"""
+        import os
+        import tempfile
+
+        db = os.path.join(tempfile.mkdtemp(), "dl_probe.db")
+        bus = MessageBus(db_path=db)
+        gate = threading.Event()
+        nested_entered = threading.Event()
+
+        def gated(msg):
+            nested_entered.set()
+            gate.wait(timeout=5)
+            return {"g": 1}
+
+        def outer(msg):
+            return {"outer": "done", "gate_res": bus.request(
+                "dl.gate", "outer", "gate", {"x": 1}, timeout=5)}
+
+        bus.subscribe("dl.gate", gated)
+        bus.subscribe("dl.outer", outer)
+        bus.subscribe("dl.free", lambda m: {"free": True})
+
+        req = Message(topic="dl.outer", payload={"p": 1},
+                      msg_type=MessageType.REQUEST, from_agent="t")
+        t1 = threading.Thread(target=bus.send, args=(req,), daemon=True)
+        watchdog = threading.Timer(6.0, gate.set)
+        watchdog.daemon = True
+        watchdog.start()
+        t1.start()
+        try:
+            assert nested_entered.wait(timeout=2), "嵌套回调未进入"
+
+            t0 = time.time()
+            probe = bus.request("dl.free", "main", "free", {}, timeout=3)
+            elapsed = time.time() - t0
+            assert probe == {"free": True}, f"探针请求失败: {probe}"
+            assert elapsed < 2.5, f"主线程被全局锁停摆 {elapsed:.2f}s"
+        finally:
+            gate.set()
+            t1.join(timeout=7)
+            watchdog.cancel()
+        assert not t1.is_alive(), "send 线程未结束"
+        bus.shutdown()
+
+    def test_subscriber_crash_returns_error_response_quickly(self, bus):
+        """订阅者抛异常 → request 方远小于 timeout 内收到含 error 的响应，DLQ 保留"""
+        def failing(m):
+            raise ValueError("boom-crash")
+
+        bus.subscribe("err.req", failing)
+        t0 = time.time()
+        result = bus.request("err.req", "tester", "agent", {"x": 1}, timeout=30)
+        elapsed = time.time() - t0
+        assert isinstance(result, dict), f"应返回错误 dict，实际 {result}"
+        assert "boom-crash" in str(result.get("error"))
+        assert result.get("status") == "error"
+        assert elapsed < 5, f"应远小于 timeout，实际 {elapsed:.2f}s"
+        dlq = bus.list_dlq()
+        assert len(dlq) >= 1, "异常仍应进 DLQ"
+
+    def test_partial_failure_still_returns_working_reply(self, bus):
+        """多订阅者部分失败：正常订阅者的回复优先返回，异常仍进 DLQ"""
+        def failing(m):
+            raise ValueError("secondary-boom")
+
+        bus.subscribe("mix.req", failing, priority=10)
+        bus.subscribe("mix.req", lambda m: {"ok": True}, priority=90)
+
+        result = bus.request("mix.req", "t", "a", {"x": 1}, timeout=10)
+        assert result == {"ok": True}
+        assert len(bus.list_dlq()) >= 1
+
+    def test_none_payload_response_returns_immediately(self, bus):
+        """payload=None 的响应即时返回，不空等 timeout"""
+        def replier(m):
+            bus.reply(m, "none-agent", None)
+            return None
+
+        bus.subscribe("none.payload", replier)
+        t0 = time.time()
+        result = bus.request("none.payload", "t", "a", {"x": 1}, timeout=10)
+        elapsed = time.time() - t0
+        assert result is None
+        assert elapsed < 5, f"payload=None 应即时返回，实际 {elapsed:.2f}s"
+
+    def test_idempotency_key_not_burned_when_no_subscriber(self, bus):
+        """无订阅者不烧幂等键：注册订阅者后同 key 重试正常送达"""
+        r1 = bus.request("ghost.topic", "t", "a", {"n": 1}, timeout=1,
+                         idempotency_key="idem-ghost-001")
+        assert r1 is None
+
+        got = []
+
+        def sub(m):
+            got.append(m)
+            return {"ok": True}
+
+        bus.subscribe("ghost.topic", sub)
+        r2 = bus.request("ghost.topic", "t", "a", {"n": 1}, timeout=5,
+                         idempotency_key="idem-ghost-001")
+        assert r2 == {"ok": True}, f"同 key 重试应正常送达，实际 {r2}"
+        assert len(got) == 1
+
+    def test_idempotency_key_marked_after_successful_delivery(self, bus):
+        """投递成功后幂等键生效：同 key 重复请求被去重秒回 None"""
+        calls = []
+        bus.subscribe("idem.ok", lambda m: calls.append(m) or {"ok": True})
+
+        r1 = bus.request("idem.ok", "t", "a", {}, timeout=5,
+                         idempotency_key="idem-ok-001")
+        assert r1 == {"ok": True}
+        r2 = bus.request("idem.ok", "t", "a", {}, timeout=5,
+                         idempotency_key="idem-ok-001")
+        assert r2 is None, "成功投递后同 key 应被去重返回 None"
+        assert len(calls) == 1, "重复请求不应再次触达订阅者"
+
+    def test_failed_delivery_does_not_mark_idempotency_key(self, bus):
+        """订阅者全挂：key 不标记，订阅者恢复后同 key 重试成功"""
+        def failing(m):
+            raise RuntimeError("always-fails")
+
+        bus.subscribe("idem.fail", failing)
+        r1 = bus.request("idem.fail", "t", "a", {}, timeout=10,
+                         idempotency_key="idem-fail-001")
+        assert isinstance(r1, dict) and r1.get("status") == "error"
+
+        bus.unsubscribe("idem.fail", failing)
+        bus.subscribe("idem.fail", lambda m: {"recovered": True})
+        r2 = bus.request("idem.fail", "t", "a", {}, timeout=5,
+                         idempotency_key="idem-fail-001")
+        assert r2 == {"recovered": True}, f"失败路径不应烧 key，实际 {r2}"

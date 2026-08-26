@@ -21,14 +21,38 @@ VersionManager - 文档版本管理
 """
 from __future__ import annotations
 
+import contextlib
 import difflib
 import hashlib
 import json
+import logging
 import os
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+class VersionIndexCorrupted(Exception):
+    """版本索引损坏（已重命名 .corrupt-* 保留现场，禁止据此清理版本内容）"""
+
+
+def _atomic_write_text(path: Path, content: str):
+    """临时文件 + os.replace 原子写文本，避免半写文件"""
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, str(path))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
 
 # ─── 安全防护辅助 ─────────────────────────────
 # 安全修复 (P0): rollback 路径白名单校验，防止任意文件写入
@@ -98,21 +122,40 @@ class VersionManager:
         return self._file_dir(file_path) / "index.json"
 
     def _load_index(self, file_path: str) -> list[dict]:
-        """加载版本索引"""
+        """加载版本索引；损坏时保留现场并抛 VersionIndexCorrupted（绝不静默返回空）"""
         idx_path = self._index_path(file_path)
         if not idx_path.exists():
             return []
         try:
             with open(idx_path, encoding="utf-8") as f:
                 return json.load(f)  # type: ignore[no-any-return]
-        except (json.JSONDecodeError, OSError):
-            return []
+        except (json.JSONDecodeError, OSError) as e:
+            corrupt_path = idx_path.with_name(
+                f"{idx_path.name}.corrupt-{int(time.time())}"
+            )
+            try:
+                os.replace(str(idx_path), str(corrupt_path))
+            except OSError:
+                corrupt_path = idx_path
+            raise VersionIndexCorrupted(
+                f"版本索引损坏，已重命名为 {corrupt_path.name}: {e}"
+            ) from e
 
     def _save_index(self, file_path: str, index: list[dict]):
-        """保存版本索引"""
-        idx_path = self._index_path(file_path)
-        with open(idx_path, "w", encoding="utf-8") as f:
-            json.dump(index, f, ensure_ascii=False, indent=2)
+        """保存版本索引（原子写）"""
+        _atomic_write_text(
+            self._index_path(file_path),
+            json.dumps(index, ensure_ascii=False, indent=2),
+        )
+
+    def _max_disk_version(self, file_dir: Path, suffix: str) -> int:
+        """扫描磁盘上已存在的内容文件，返回最大版本号"""
+        max_v = 0
+        for p in file_dir.glob(f"v*{suffix}"):
+            stem = p.stem[1:]
+            if stem.isdigit():
+                max_v = max(max_v, int(stem))
+        return max_v
 
     def _next_version(self, index: list[dict]) -> int:
         """计算下一个版本号"""
@@ -136,12 +179,22 @@ class VersionManager:
             版本信息 dict
         """
         with self._lock:
-            index = self._load_index(file_path)
-            version = self._next_version(index)
+            safe_mode = False
+            try:
+                index = self._load_index(file_path)
+            except VersionIndexCorrupted as e:
+                # 索引不可信 → 安全模式：只增不清理，绝不 unlink 旧版本内容
+                logger.warning("版本索引损坏，进入安全模式（只增不清理）: %s", e)
+                index = []
+                safe_mode = True
 
-            # 存储版本内容
             file_dir = self._file_dir(file_path)
             suffix = Path(file_path).suffix or ".md"
+            version = self._next_version(index)
+            if safe_mode:
+                version = max(version, self._max_disk_version(file_dir, suffix) + 1)
+
+            # 存储版本内容
             content_filename = f"v{version}{suffix}"
             content_path = file_dir / content_filename
             content_bytes = content.encode("utf-8")
@@ -166,8 +219,8 @@ class VersionManager:
 
             index.append(entry.to_dict())
 
-            # 清理超出限制的旧版本
-            if len(index) > self._max_versions:
+            # 清理超出限制的旧版本（安全模式下跳过：索引不可信时不删除任何内容）
+            if not safe_mode and len(index) > self._max_versions:
                 removed = index[:len(index) - self._max_versions]
                 index = index[len(index) - self._max_versions:]
                 for old in removed:
@@ -253,10 +306,15 @@ class VersionManager:
         if content is None:
             return {"status": "error", "message": f"版本 v{version} 不存在或内容已清理"}
 
-        # 写回原文件
         target = Path(file_path)
+        current = target.read_text(encoding="utf-8") if target.exists() else None
+        if current is not None and current != content:
+            # 写回前先把当前内容提交为新版本，保证写回目标永远存在于历史中
+            self.commit(file_path, current, message="回滚前自动保存当前内容")
+
+        # 原子写回原文件
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        _atomic_write_text(target, content)
 
         # 创建新版本记录（标记为回滚）
         new_entry = self.commit(

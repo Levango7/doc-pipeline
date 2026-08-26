@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import time
 import uuid
@@ -32,6 +33,29 @@ from .observability import get_logger, get_metrics
 if TYPE_CHECKING:
     from .registry import AgentMeta
     from .scheduler import ExecutionNode, ExecutionPlan
+
+
+_REDACT_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)")
+
+
+def _redact_config(config):
+    """递归脱敏配置副本：敏感键的叶子值替换为 ***redacted***，不影响原 config 对象"""
+    if not isinstance(config, dict):
+        return config
+    redacted = {}
+    for key, value in config.items():
+        if isinstance(value, dict):
+            redacted[key] = _redact_config(value)
+        elif isinstance(value, list):
+            redacted[key] = [
+                _redact_config(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        elif _REDACT_KEY_RE.search(str(key)):
+            redacted[key] = "***redacted***"
+        else:
+            redacted[key] = value
+    return redacted
 
 
 class TaskStatus(Enum):
@@ -432,7 +456,7 @@ class PipelineOrchestrator:
             "task_id": task.id,
             "pipeline": pipeline_name,
             "input_file": input_file,
-            "config": config,
+            "config": _redact_config(config),
         })
 
         def run_steps():

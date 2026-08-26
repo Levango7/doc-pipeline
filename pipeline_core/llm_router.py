@@ -145,8 +145,12 @@ class LLMProvider:
 
 def _call_llm(provider: LLMProvider, messages: list[dict],
               max_tokens: int = 4096, temperature: float = 0.3,
-              timeout: int = None) -> str:
-    """底层 LLM 调用（自动适配 Cloudflare 格式）"""
+              timeout: int = None, usage_out: dict = None) -> str:
+    """底层 LLM 调用（自动适配 Cloudflare 格式）
+
+    Args:
+        usage_out: 可选 dict，响应含 usage 字段时回填 prompt_tokens/completion_tokens
+    """
     timeout = timeout or provider.timeout
     is_cf = provider.is_cloudflare or "/ai/run" in provider.api_url
 
@@ -179,6 +183,12 @@ def _call_llm(provider: LLMProvider, messages: list[dict],
     if is_cf:
         body = body.get("result", body)
 
+    if usage_out is not None:
+        u = body.get("usage") or {}
+        if isinstance(u.get("prompt_tokens"), int) and isinstance(u.get("completion_tokens"), int):
+            usage_out["prompt_tokens"] = u["prompt_tokens"]
+            usage_out["completion_tokens"] = u["completion_tokens"]
+
     content = body["choices"][0]["message"].get("content", "") or ""
 
     # 过滤 <think>...</think> 标签（Dahl/MiniMax 等推理模型）
@@ -191,10 +201,13 @@ def _call_llm(provider: LLMProvider, messages: list[dict],
 
 async def _call_llm_async(provider: LLMProvider, messages: list[dict],
                           max_tokens: int = 4096, temperature: float = 0.3,
-                          timeout: int = None) -> str:
+                          timeout: int = None, usage_out: dict = None) -> str:
     """异步 LLM 调用 — 使用 aiohttp 真异步 HTTP，不阻塞事件循环。
 
     优先使用共享 aiohttp Session（连接池复用），无 aiohttp 时回退到 run_in_executor。
+
+    Args:
+        usage_out: 可选 dict，响应含 usage 字段时回填 prompt_tokens/completion_tokens
     """
     timeout = timeout or provider.timeout
     is_cf = provider.is_cloudflare or "/ai/run" in provider.api_url
@@ -233,6 +246,11 @@ async def _call_llm_async(provider: LLMProvider, messages: list[dict],
                 body = await resp.json()
             if is_cf:
                 body = body.get("result", body)
+            if usage_out is not None:
+                u = body.get("usage") or {}
+                if isinstance(u.get("prompt_tokens"), int) and isinstance(u.get("completion_tokens"), int):
+                    usage_out["prompt_tokens"] = u["prompt_tokens"]
+                    usage_out["completion_tokens"] = u["completion_tokens"]
             content = body["choices"][0]["message"].get("content", "") or ""
             content = re.sub(r'<\s*think\s*>.*?<\s*/\s*think\s*>', '', content, flags=re.DOTALL).strip()
             if not content:
@@ -248,8 +266,22 @@ async def _call_llm_async(provider: LLMProvider, messages: list[dict],
     except RuntimeError:
         loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
-        None, _call_llm, provider, messages, max_tokens, temperature, timeout,
+        None, _call_llm, provider, messages, max_tokens, temperature, timeout, usage_out,
     )
+
+
+def _enforce_budget() -> None:
+    """预算熔断：超预算抛 BudgetExceededError；未设置预算时放行
+
+    检查器自身故障（DB 损坏等）不影响主流程，仅告警。
+    """
+    from .cost_tracker import BudgetExceededError, get_cost_tracker
+    try:
+        get_cost_tracker().ensure_budget()
+    except BudgetExceededError:
+        raise
+    except Exception as e:
+        logger.warning(f"预算检查失败（不影响主流程）: {e}")
 
 
 class LLMRouter:
@@ -294,8 +326,9 @@ class LLMRouter:
         """调用 LLM（自动 fallback）
 
         返回: (content, provider_name)
-        异常: 所有供应商都失败时抛 RuntimeError
+        异常: 所有供应商都失败时抛 RuntimeError；预算耗尽抛 BudgetExceededError
         """
+        _enforce_budget()
         with self._lock:
             candidates = list(self._providers)
 
@@ -329,19 +362,31 @@ class LLMRouter:
 
         last_error = ""
         for provider in usable:
+            usage: dict = {}
             try:
-                content = _call_llm(provider, messages, max_tokens, temperature, timeout)
+                content = _call_llm(provider, messages, max_tokens, temperature, timeout,
+                                    usage_out=usage)
                 provider.mark_success()
                 logger.debug(f"LLM 调用成功: {provider.name}")
 
                 try:
                     from .cost_tracker import get_cost_tracker
-                    get_cost_tracker().record_call(
-                        provider=provider.name,
-                        messages=messages,
-                        response=content,
-                        model=provider.model,
-                    )
+                    pt = usage.get("prompt_tokens")
+                    ct = usage.get("completion_tokens")
+                    if isinstance(pt, int) and isinstance(ct, int):
+                        get_cost_tracker().record(
+                            provider=provider.name,
+                            prompt_tokens=pt,
+                            completion_tokens=ct,
+                            model=provider.model,
+                        )
+                    else:
+                        get_cost_tracker().record_call(
+                            provider=provider.name,
+                            messages=messages,
+                            response=content,
+                            model=provider.model,
+                        )
                 except Exception as e:
                     # 记录成本失败不应影响主流程，但需留痕便于排查（避免 silent pass 吞掉 DB 损坏等关键错误）
                     logger.warning(f"记录成本失败（不影响主流程）: {e}")
@@ -361,8 +406,9 @@ class LLMRouter:
         """异步调用 LLM（自动 fallback）— 不阻塞事件循环
 
         返回: (content, provider_name)
-        异常: 所有供应商都失败时抛 RuntimeError
+        异常: 所有供应商都失败时抛 RuntimeError；预算耗尽抛 BudgetExceededError
         """
+        _enforce_budget()
         with self._lock:
             candidates = list(self._providers)
 
@@ -393,10 +439,34 @@ class LLMRouter:
 
         last_error = ""
         for provider in usable:
+            usage: dict = {}
             try:
-                content = await _call_llm_async(provider, messages, max_tokens, temperature, timeout)
+                content = await _call_llm_async(provider, messages, max_tokens, temperature,
+                                                timeout, usage_out=usage)
                 provider.mark_success()
                 logger.debug(f"LLM 异步调用成功: {provider.name}")
+
+                try:
+                    from .cost_tracker import get_cost_tracker
+                    pt = usage.get("prompt_tokens")
+                    ct = usage.get("completion_tokens")
+                    if isinstance(pt, int) and isinstance(ct, int):
+                        get_cost_tracker().record(
+                            provider=provider.name,
+                            prompt_tokens=pt,
+                            completion_tokens=ct,
+                            model=provider.model,
+                        )
+                    else:
+                        get_cost_tracker().record_call(
+                            provider=provider.name,
+                            messages=messages,
+                            response=content,
+                            model=provider.model,
+                        )
+                except Exception as e:
+                    logger.warning(f"记录成本失败（不影响主流程）: {e}")
+
                 return content, provider.name
             except Exception as e:
                 provider.mark_failed(str(e))
