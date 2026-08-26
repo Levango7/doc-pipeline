@@ -413,6 +413,7 @@ class TestUnstartedSiblingCleanup:
         import threading
 
         release = threading.Event()
+        sib_started = threading.Event()
 
         class GateBus:
             def __init__(self):
@@ -421,8 +422,13 @@ class TestUnstartedSiblingCleanup:
             def request(self, **kwargs):
                 self.calls.append(kwargs.get("to_a"))
                 if kwargs.get("to_a") == "sib":
+                    sib_started.set()
                     release.wait(timeout=5)
                     return {"ok": True}
+                # bad 等 sib 确认已进入 running 后再失败：保证 fail_fast
+                # 清理执行时 sib 必为 running 态（消除 worker 调度竞态，
+                # 原 max_workers=1 下 sib 可能仍在队列 pending 被误判 unstarted）
+                sib_started.wait(timeout=5)
                 raise RuntimeError("boom")
 
         bus = GateBus()
@@ -431,7 +437,7 @@ class TestUnstartedSiblingCleanup:
         sib = _make_node(name="sib", agent_name="sib", max_retries=1)
         task = _make_task([bad, sib])
         try:
-            with create_executor(max_workers=1) as executor:
+            with create_executor(max_workers=2) as executor:
                 ret = ex.execute_level(task, [bad, sib], "in.md", _make_plan(), executor)
                 assert ret is False
                 assert task.status == TaskStatus.FAILED
