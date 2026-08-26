@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-08-26
+
 ### Security（深度审计修复 — 3路并行审计，~45项发现）
 
 - **P0 SSRF 全裸修复**：fetcher sync/async 出网请求接入新增 `pipeline_core/url_guard.py`
@@ -59,7 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
   new_task_id() 统一三入口任务号（uuid4 hex[:16]）
 
-### Added### Added
+### Added
 
 - **dashboard 新建任务卡片**：query/pipeline(下拉含 docreq)/output 表单提交 POST /api/tasks，
   running 任务展开 EventSource 实时章节进度——docreq/docgen-verified 获得 UI 触达
@@ -83,7 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
   new_task_id() 统一三入口任务号（uuid4 hex[:16]）
 
-### Added### Added（需求分析器）
+### Added（需求分析器）
 - **requirements_analyzer 需求分析 Agent**：流水线最前端的意图解析节点，把用户输入
   解析为结构化 `DocumentSpec`（doc_type / scope / audience / depth / constraints /
   sources / template / language），供下游 researcher 与 writer 消费：
@@ -121,7 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
   new_task_id() 统一三入口任务号（uuid4 hex[:16]）
 
-### Added### Added（内容生产能力提升）
+### Added（内容生产能力提升）
 - **fact_checker 事实核查 Agent（MVP）**：
   - 从最终文档提取数字类可验证声明（百分比/带单位数值/年份/版本号，上限可配），
     对照检索源做一致性核查：无 LLM 用归一化字符串匹配（零成本基线），有 LLM 用
@@ -218,7 +220,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
   new_task_id() 统一三入口任务号（uuid4 hex[:16]）
 
-### Added### Added（进程执行模式正式支持）
+### Added（进程执行模式正式支持）
 - **`executor_type: process` 从实验性限制变为可用特性**——子进程上下文自动重建：
   - `DAGExecutor` 新增 `child_context` 配置（agents_dir / agent_names / config，
     由 `PipelineOrchestrator.register_agents()` 写入），纯数据、可 pickle
@@ -344,7 +346,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
   new_task_id() 统一三入口任务号（uuid4 hex[:16]）
 
-### Added### Added
+### Added
 - 新增10个测试模块（test_llm_router, test_search_engines, test_quality_gate_scoring, test_run, test_benchmark, test_markdown_checker, test_safe_writer, test_layout_optimizer, test_convert_ascii, test_format_converter）
 - 525个测试全部通过
 
@@ -366,7 +368,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
   new_task_id() 统一三入口任务号（uuid4 hex[:16]）
 
-### Added### Added
+### Added
 - 成本追踪/告警/质量闭环/MCP Server/Agent沙箱/集成测试
 
 ## [3.1.0] - 2026-08-06
@@ -387,7 +389,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
   new_task_id() 统一三入口任务号（uuid4 hex[:16]）
 
-### Added### Added
+### Added
 - async I/O + orjson + SSE reconnect + fast_json module
 - PEV-ready API extensions + EventHook system
 - /stream endpoint with end-to-end async pipeline
