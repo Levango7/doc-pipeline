@@ -10,6 +10,7 @@ import asyncio
 import pickle
 import threading
 import time
+from contextlib import suppress
 from types import SimpleNamespace
 
 from pipeline_core.dag_executor import DAGExecutor
@@ -80,10 +81,8 @@ class _StopOnFirstCallBus:
 
     def request(self, **kwargs):
         self.calls += 1
-        try:
+        with suppress(Exception):
             self._trigger.set()
-        except Exception:
-            pass
         raise RuntimeError("boom")
 
 
