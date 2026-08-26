@@ -82,6 +82,29 @@ def load_profile(profile_name: str) -> dict:
         return {}
 
 
+def validate_style_rules(style_rules, profile_name: str) -> None:
+    """校验 style_rules 必填键（name/pattern），缺失抛 ValueError 并定位到具体条目"""
+    if style_rules is None:
+        return
+    if not isinstance(style_rules, list):
+        raise ValueError(
+            f"Quality Profile '{profile_name}': style_rules 必须为列表，实际为 "
+            f"{type(style_rules).__name__}"
+        )
+    for idx, rule_cfg in enumerate(style_rules):
+        if not isinstance(rule_cfg, dict):
+            raise ValueError(
+                f"Quality Profile '{profile_name}': style_rules[{idx}] 必须为映射，"
+                f"实际为 {type(rule_cfg).__name__}"
+            )
+        missing = [key for key in ("name", "pattern") if key not in rule_cfg]
+        if missing:
+            raise ValueError(
+                f"Quality Profile '{profile_name}': style_rules[{idx}] 缺少必填键: "
+                f"{', '.join(missing)}"
+            )
+
+
 class QualityGateAgent(BaseAgent):
     """质量门禁 Agent（Profile 驱动）"""
 
@@ -103,20 +126,27 @@ class QualityGateAgent(BaseAgent):
                               **config.get("citation", {})}
 
         # 编译风格规则（从 Profile 加载，不硬编码）
-        self._style_rules = []
-        for rule_cfg in self._profile.get("style_rules", []):
+        self._style_rules = self._compile_style_rules(self._profile, profile_name)
+
+        self.log_info(f"QualityGate v{AGENT_VERSION} (profile={self._profile_name}, "
+                      f"threshold={self._threshold})")
+
+    def _compile_style_rules(self, profile: dict, source: str) -> list[dict]:
+        """校验并编译 Profile 风格规则，缺 name/pattern 键时抛 ValueError"""
+        rules_cfg = profile.get("style_rules", [])
+        validate_style_rules(rules_cfg, source)
+        rules = []
+        for rule_cfg in rules_cfg:
             if rule_cfg.get("enabled", True):
-                self._style_rules.append({
+                rules.append({
                     "name": rule_cfg["name"],
                     "pattern": re.compile(rule_cfg["pattern"]),
                     "message": rule_cfg.get("message", ""),
                     "penalty": rule_cfg.get("penalty", 0),
                 })
+        return rules
 
-        self.log_info(f"QualityGate v{AGENT_VERSION} (profile={self._profile_name}, "
-                      f"threshold={self._threshold})")
-
-    def _rebuild_from_profile(self, run_config: dict):
+    def _rebuild_from_profile(self, run_config: dict, source: str | None = None):
         """从已加载的 profile 重建配置"""
         self._weights = {**self._profile.get("weights", {}), **run_config.get("weights", {})}
         self._threshold = run_config.get("threshold", self._profile.get("threshold", 70))
@@ -125,15 +155,7 @@ class QualityGateAgent(BaseAgent):
         self._max_penalty = run_config.get("max_penalty", self._profile.get("max_penalty", 40))
         self._citation_cfg = {**self._profile.get("citation", {}),
                               **run_config.get("citation", {})}
-        self._style_rules = []
-        for rule_cfg in self._profile.get("style_rules", []):
-            if rule_cfg.get("enabled", True):
-                self._style_rules.append({
-                    "name": rule_cfg["name"],
-                    "pattern": re.compile(rule_cfg["pattern"]),
-                    "message": rule_cfg.get("message", ""),
-                    "penalty": rule_cfg.get("penalty", 0),
-                })
+        self._style_rules = self._compile_style_rules(self._profile, source or self._profile_name)
 
     def handle(self, msg: Message) -> dict | None:
         """处理质量检查请求"""
@@ -152,7 +174,7 @@ class QualityGateAgent(BaseAgent):
         if profile_name != self._profile_name:
             self._profile = load_profile(profile_name)
             self._profile_name = self._profile.get("name", profile_name)
-            self._rebuild_from_profile(run_config)
+            self._rebuild_from_profile(run_config, source=profile_name)
 
         # 多维度评分（按 profile weights）
         queries = payload.get("queries", []) or []

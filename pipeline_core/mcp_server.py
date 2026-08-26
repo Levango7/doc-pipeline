@@ -33,12 +33,12 @@ import tempfile
 import threading
 import time
 import traceback
-import uuid
 from pathlib import Path
 from typing import Any
 
 from .fast_json import dumps as _fast_dumps
 from .fast_json import loads as _fast_loads
+from .ids import new_task_id
 
 try:
     from . import __version__ as SERVER_VERSION
@@ -192,8 +192,9 @@ class MCPServer:
 
         try:
             if method == "initialize":
+                requested = str(params.get("protocolVersion") or PROTOCOL_VERSION)
                 return self._ok(req_id, {
-                    "protocolVersion": PROTOCOL_VERSION,
+                    "protocolVersion": requested,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 })
@@ -246,7 +247,7 @@ class MCPServer:
         if not self.orch:
             return self._error(req_id, -32603, "Orchestrator not initialized")
 
-        task_id = str(uuid.uuid4())[:8]
+        task_id = new_task_id()
         input_file = Path(tempfile.gettempdir()) / f"mcp_{task_id}.md"
         input_file.write_text(f"# {title}\n\n## 查询\n\n{query}\n", encoding="utf-8")
 

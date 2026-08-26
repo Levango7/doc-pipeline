@@ -28,7 +28,7 @@
 <div id="token-prompt" class="error-overlay" style="display:none" role="dialog" aria-label="API Token 输入">
   <div class="err-icon">🔑</div>
   <h2>需要 API Token</h2>
-  <p>Admin API 已启用鉴权（ADMIN_API_KEY）。输入 Token 后将保存在本浏览器。</p>
+  <p>Admin API 已启用鉴权（ADMIN_API_KEY）。输入 Token 后仅保存在本浏览器会话（sessionStorage，关闭标签页即失效）。</p>
   <div style="display:flex;gap:8px;">
     <input id="token-input" type="password" placeholder="ADMIN_API_KEY"
            style="padding:8px 10px;border-radius:8px;border:1px solid var(--border,#444);background:var(--panel,#222);color:inherit;min-width:220px;" />

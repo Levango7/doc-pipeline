@@ -427,3 +427,7 @@ class PersistentStore:
             with contextlib.suppress(Exception):
                 conn.close()
             self._local.conn = None
+
+    def close_current_thread(self):
+        """关闭调用线程自己的 thread-local SQLite 连接（供工作线程退出时自清理）。"""
+        self.close()

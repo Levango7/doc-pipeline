@@ -13,8 +13,11 @@ DocumentEnhancer - 已有文档增强模块
   result = enhancer.enhance("input.md", output_dir="output/")
 """
 
+import contextlib
 import logging
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -148,7 +151,17 @@ class DocumentEnhancer:
         # 8. 写入输出
         stem = input_path.stem  # type: ignore[attr-defined]
         output_path = output_dir / f"{stem}_enhanced.md"  # type: ignore[operator]
-        output_path.write_text(enhanced_content, encoding="utf-8")
+        fd, tmp_path = tempfile.mkstemp(
+            suffix=".tmp", prefix=f".{stem}_enhanced_", dir=str(output_dir)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(enhanced_content)
+            os.replace(tmp_path, str(output_path))
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
         logger.info("增强文档已写入: %s", output_path)
 
         duration = time.time() - start
@@ -229,7 +242,9 @@ class DocumentEnhancer:
 
         logger.info("LLM 增强中 (%d 字符)...", len(body))
         enhanced = self._call_llm_enhance(body, search_results)
-        return self._clean_llm_output(enhanced)
+        if enhanced is body:
+            return enhanced
+        return self._guard_cleaned(enhanced, self._clean_llm_output(enhanced))
 
     def _enhance_long_section(self, title: str, body: str, search_results: str) -> str:
         """对超长章节按 ### 子标题分块增强"""
@@ -328,20 +343,49 @@ class DocumentEnhancer:
 
         注意：只移除 ## 标题（因为 ## 是章节边界，由 _reassemble 重新添加），
         不移除 ### 标题（因为 ### 是章节内容的一部分，需要保留）。
+        代码 fence（``` 围栏）内的任何行一律原样保留，避免误删代码注释等内容。
         """
         lines = content.splitlines()
         cleaned = []
+        in_fence = False
         for line in lines:
             stripped = line.strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+                cleaned.append(line)
+                continue
+            # fence 内一律保留
+            if in_fence:
+                cleaned.append(line)
+                continue
             # 跳过 LLM 生成的 ## 标题行（章节边界由外部处理）
             if stripped.startswith("## "):
                 continue
             # 跳过 LLM 元描述 artifacts
             if stripped in ("增强后的 Markdown 内容", "增强后的内容", "优化后的内容",
-                           "增强后内容", "以下是增强后的内容", "以下是优化后的内容"):
+                            "增强后内容", "以下是增强后的内容", "以下是优化后的内容"):
                 continue
             cleaned.append(line)
         return "\n".join(cleaned)
+
+    CLEAN_SHRINK_RATIO = 0.5
+
+    def _guard_cleaned(self, llm_output: str, cleaned: str) -> str:
+        """清洗结果异常时放弃清洗
+
+        清洗结果为空或相对 LLM 原始输出差异超过阈值时，
+        放弃清洗返回未清洗的 LLM 输出，避免误删正文。
+        """
+        if not cleaned.strip():
+            logger.warning("清洗结果为空，放弃清洗")
+            return llm_output
+        if len(llm_output) > 0 and len(cleaned) < len(llm_output) * self.CLEAN_SHRINK_RATIO:
+            logger.warning(
+                "清洗移除内容过多 (%d -> %d 字符)，放弃清洗",
+                len(llm_output), len(cleaned),
+            )
+            return llm_output
+        return cleaned
 
     def _clean_fake_headings(self, content: str, original_titles: set[str]) -> tuple[str, int]:
         """全局清理：移除增强后文档中不属于原始结构的 ## 标题

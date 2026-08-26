@@ -29,31 +29,29 @@ class SafeWriterAgent(BaseAgent):
         self.pending: dict = {}
         self._default_backup_dir = config.get("backup_dir", "backups")
         self._manifest_lock = threading.Lock()
-        # 修复 P0：_current_payload 未初始化，导致 _safe_write 中
-        # hasattr(self, '_current_payload') 永远 False，quality_score 永远 0.0。
-        self._current_payload: dict = {}
         self.log_info(f"SafeWriter v{AGENT_VERSION} 初始化完成")
 
     def handle(self, msg: Message) -> dict | None:
         self.report(AgentStatus.RUNNING, "准备写入...")
         payload = msg.payload
-        # 修复 P0：缓存当前 payload 供 _safe_write 读取 quality_score 等附加字段
-        self._current_payload = payload
         task_id = payload.get("task_id", "")
         content = payload.get("content", "")
         target = payload.get("target", payload.get("target_file", ""))
         backup_dir = payload.get("backup_dir", self._default_backup_dir)
         reason = payload.get("reason", "plugin")
+        quality_score = payload.get("quality_score", 0.0)
         if not target:
             return {"status": "error", "message": "未指定目标文件"}
         if not content:
             return {"status": "error", "message": "内容为空"}
-        result = self._safe_write(target, content, backup_dir, reason, task_id)
+        result = self._safe_write(target, content, backup_dir, reason, task_id,
+                                  quality_score=quality_score)
         self.publish("safe_writer.done" if result.get("status") == "ok" else "safe_writer.failed",
                      {"task_id": task_id, "target": target, "result": result})
         return result
 
-    def _safe_write(self, target: str, content: str, backup_dir: str, reason: str, task_id: str) -> dict:
+    def _safe_write(self, target: str, content: str, backup_dir: str, reason: str,
+                    task_id: str, quality_score: float = 0.0) -> dict:
         import os
         target = str(Path(target).resolve())
         backup_dir = str(Path(backup_dir).resolve())
@@ -114,16 +112,12 @@ class SafeWriterAgent(BaseAgent):
                     })
                     man["files"][rel]["latest"] = man["files"][rel]["backups"][-1]
                     self._save_manifest(manifest_path, man)
-                self._cleanup(backup_dir, manifest_path)
+                self._cleanup(backup_dir, manifest_path, target)
                 # ── 版本管理：写入成功后自动提交版本 ──
                 version_info = None
                 try:
                     from pipeline_core.version_manager import get_version_manager
                     vm = get_version_manager()
-                    # 修复 P0：原代码引用 payload（handle 的局部变量，_safe_write 作用域不可见），
-                    # 且 hasattr(self, '_current_payload') 因未初始化永远 False。
-                    # 现改为从 self._current_payload 读取（handle 中已缓存）。
-                    quality_score = self._current_payload.get("quality_score", 0.0) if self._current_payload else 0.0
                     version_info = vm.commit(
                         target, content,
                         task_id=task_id,
@@ -165,38 +159,65 @@ class SafeWriterAgent(BaseAgent):
     def _load_manifest(self, path):
         if not Path(path).exists():
             return {"files": {}, "version": "2.0"}
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+            bak = Path(str(path) + ".bak")
+            if bak.exists():
+                try:
+                    with open(bak, encoding="utf-8") as f:
+                        restored = json.load(f)
+                    self.log_warning(f"manifest 损坏，已从 {bak.name} 恢复: {e}")
+                    return restored
+                except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e2:
+                    self.log_warning(f"manifest 备份 {bak.name} 也无法恢复: {e2}")
+            self.log_warning(f"manifest 损坏且无可用备份，使用空 manifest 全新写入: {e}")
+            return {"files": {}, "version": "2.0"}
 
     def _save_manifest(self, path, data):
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        manifest = Path(path)
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        if manifest.exists():
+            with contextlib.suppress(OSError):
+                shutil.copy2(str(manifest), str(manifest) + ".bak")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    def _cleanup(self, backup_dir: str, manifest_path: Path):
-        import time
+    def _cleanup(self, backup_dir: str, manifest_path: Path, target: str):
         ttl_days = self.config.get("backup_ttl_days", 7)
         max_backups = self.config.get("max_backups", 20)
         cutoff = time.time() - ttl_days * 86400
-        try:
-            # 1. TTL 过期清理
-            for f in Path(backup_dir).iterdir():
-                if f.name == "manifest.json" or f.suffix == ".json":
-                    continue
-                if f.is_file() and f.stat().st_mtime < cutoff:
-                    os.remove(f)
-                    self.log_info(f"清理过期: {f.name}")
 
-            # 2. 数量超限清理（保留最新的 max_backups 个）
-            remaining = sorted(
-                [f for f in Path(backup_dir).iterdir()
-                 if f.is_file() and f.name != "manifest.json" and f.suffix != ".json"],
-                key=lambda f: f.stat().st_mtime, reverse=True
-            )
-            while len(remaining) > max_backups:
-                stale = remaining.pop()
-                os.remove(stale)
-                self.log_info(f"数量超限清理: {stale.name}")
+        def mtime_of(entry: dict) -> float:
+            with contextlib.suppress(OSError):
+                return Path(entry["path"]).stat().st_mtime
+            return 0.0
+
+        try:
+            with self._manifest_lock:
+                man = self._load_manifest(manifest_path)
+                info = man.get("files", {}).get(target)
+                if not info:
+                    return
+                backups = [b for b in info.get("backups", [])
+                           if isinstance(b, dict) and b.get("path")]
+                fresh = [b for b in backups
+                         if Path(b["path"]).exists() and mtime_of(b) >= cutoff]
+                drop_ids = {id(b) for b in backups} - {id(b) for b in fresh}
+                if len(fresh) > max_backups:
+                    excess = sorted(fresh, key=mtime_of)[: len(fresh) - max_backups]
+                    drop_ids.update(id(b) for b in excess)
+                kept = [b for b in backups if id(b) not in drop_ids]
+                if kept != backups:
+                    for b in backups:
+                        if id(b) in drop_ids:
+                            with contextlib.suppress(OSError):
+                                os.remove(b["path"])
+                                self.log_info(f"清理备份: {Path(b['path']).name}")
+                    info["backups"] = kept
+                    info["latest"] = kept[-1] if kept else None
+                    self._save_manifest(manifest_path, man)
         except Exception as e:
             self.log_error(f"清理失败: {e}")
 
@@ -227,11 +248,11 @@ class SafeWriterAgent(BaseAgent):
             self.pending.pop(task_id, None)
             return
 
-        # 缓存 payload 供 _safe_write 读取 quality_score 等附加字段
-        self._current_payload = payload
+        quality_score = payload.get("quality_score", 0.0)
         backup_dir = payload.get("backup_dir", self._default_backup_dir)
         reason = payload.get("reason", "writer_done")
-        result = self._safe_write(target, content, backup_dir, reason, task_id)
+        result = self._safe_write(target, content, backup_dir, reason, task_id,
+                                  quality_score=quality_score)
 
         # 消费 pending：写入完成后移除，避免无限增长
         self.pending.pop(task_id, None)

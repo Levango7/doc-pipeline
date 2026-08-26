@@ -43,7 +43,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - streaming pause 自旋空转（Event→Condition）；Registry get_or_create 支持配置热更新
 - dashboard：API_BASE 同源化、progress 百分比换算修正
 
-### Added
+- **P1 版本锁定机制接线**：parse/parse_file 自动校验同名 .lock（含 config_hash 配置漂移检测，
+  此前仅生成从不校验且零调用方）；run.py 新增 --write-lock；docgen.lock 重生成至当前真实状态
+- **P1 document_enhancer 三连**：输出原子写；_clean_llm_output 感知代码 fence（不再删除代码块内
+  ## 注释行）；主路径 LLM 失败回退原文不再被误清洗（对齐分块路径 identity 判定）
+- P2 收尾批：task_queue recover 支持 stale_seconds+owner_pid 跨进程判别与 close_all；
+  cache file 后端接入 TTL 淘汰（BaseAgent CACHE_TTL 默认 0→3600）；
+  message_bus publish 硬上限强制+shutdown 竞态消除+worker 连接自关；
+  registry respawn per-name 锁防双建泄漏；streaming 队满分级丢弃保边界事件完整；
+  writer 双流回调按 task_id 路由；safe_writer payload 并发隔离+manifest .bak 兜底+
+  备份清理限定本文档；quality_gate profile 缺键启动期报错定位；
+  base_agent 统计计数加锁
+- 接口面收尾：cache/clear、config set、versions/rollback、dlq replay 四类危险操作要求
+  X-Confirm: yes（428）并输出结构化审计日志；访问日志 token 打码；
+  MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
+  new_task_id() 统一三入口任务号（uuid4 hex[:16]）
+
+### Added### Added
 
 - **dashboard 新建任务卡片**：query/pipeline(下拉含 docreq)/output 表单提交 POST /api/tasks，
   running 任务展开 EventSource 实时章节进度——docreq/docgen-verified 获得 UI 触达
@@ -51,7 +67,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 新增测试 ~200 项（642→840 passed），ruff/mypy 零告警
 ## [3.7.0] - 2026-08-25
 
-### Added（需求分析器）
+- **P1 版本锁定机制接线**：parse/parse_file 自动校验同名 .lock（含 config_hash 配置漂移检测，
+  此前仅生成从不校验且零调用方）；run.py 新增 --write-lock；docgen.lock 重生成至当前真实状态
+- **P1 document_enhancer 三连**：输出原子写；_clean_llm_output 感知代码 fence（不再删除代码块内
+  ## 注释行）；主路径 LLM 失败回退原文不再被误清洗（对齐分块路径 identity 判定）
+- P2 收尾批：task_queue recover 支持 stale_seconds+owner_pid 跨进程判别与 close_all；
+  cache file 后端接入 TTL 淘汰（BaseAgent CACHE_TTL 默认 0→3600）；
+  message_bus publish 硬上限强制+shutdown 竞态消除+worker 连接自关；
+  registry respawn per-name 锁防双建泄漏；streaming 队满分级丢弃保边界事件完整；
+  writer 双流回调按 task_id 路由；safe_writer payload 并发隔离+manifest .bak 兜底+
+  备份清理限定本文档；quality_gate profile 缺键启动期报错定位；
+  base_agent 统计计数加锁
+- 接口面收尾：cache/clear、config set、versions/rollback、dlq replay 四类危险操作要求
+  X-Confirm: yes（428）并输出结构化审计日志；访问日志 token 打码；
+  MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
+  new_task_id() 统一三入口任务号（uuid4 hex[:16]）
+
+### Added### Added（需求分析器）
 - **requirements_analyzer 需求分析 Agent**：流水线最前端的意图解析节点，把用户输入
   解析为结构化 `DocumentSpec`（doc_type / scope / audience / depth / constraints /
   sources / template / language），供下游 researcher 与 writer 消费：
@@ -73,7 +105,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.6.0] - 2026-08-24
 
-### Added（内容生产能力提升）
+- **P1 版本锁定机制接线**：parse/parse_file 自动校验同名 .lock（含 config_hash 配置漂移检测，
+  此前仅生成从不校验且零调用方）；run.py 新增 --write-lock；docgen.lock 重生成至当前真实状态
+- **P1 document_enhancer 三连**：输出原子写；_clean_llm_output 感知代码 fence（不再删除代码块内
+  ## 注释行）；主路径 LLM 失败回退原文不再被误清洗（对齐分块路径 identity 判定）
+- P2 收尾批：task_queue recover 支持 stale_seconds+owner_pid 跨进程判别与 close_all；
+  cache file 后端接入 TTL 淘汰（BaseAgent CACHE_TTL 默认 0→3600）；
+  message_bus publish 硬上限强制+shutdown 竞态消除+worker 连接自关；
+  registry respawn per-name 锁防双建泄漏；streaming 队满分级丢弃保边界事件完整；
+  writer 双流回调按 task_id 路由；safe_writer payload 并发隔离+manifest .bak 兜底+
+  备份清理限定本文档；quality_gate profile 缺键启动期报错定位；
+  base_agent 统计计数加锁
+- 接口面收尾：cache/clear、config set、versions/rollback、dlq replay 四类危险操作要求
+  X-Confirm: yes（428）并输出结构化审计日志；访问日志 token 打码；
+  MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
+  new_task_id() 统一三入口任务号（uuid4 hex[:16]）
+
+### Added### Added（内容生产能力提升）
 - **fact_checker 事实核查 Agent（MVP）**：
   - 从最终文档提取数字类可验证声明（百分比/带单位数值/年份/版本号，上限可配），
     对照检索源做一致性核查：无 LLM 用归一化字符串匹配（零成本基线），有 LLM 用
@@ -154,7 +202,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.4.0] - 2026-08-22
 
-### Added（进程执行模式正式支持）
+- **P1 版本锁定机制接线**：parse/parse_file 自动校验同名 .lock（含 config_hash 配置漂移检测，
+  此前仅生成从不校验且零调用方）；run.py 新增 --write-lock；docgen.lock 重生成至当前真实状态
+- **P1 document_enhancer 三连**：输出原子写；_clean_llm_output 感知代码 fence（不再删除代码块内
+  ## 注释行）；主路径 LLM 失败回退原文不再被误清洗（对齐分块路径 identity 判定）
+- P2 收尾批：task_queue recover 支持 stale_seconds+owner_pid 跨进程判别与 close_all；
+  cache file 后端接入 TTL 淘汰（BaseAgent CACHE_TTL 默认 0→3600）；
+  message_bus publish 硬上限强制+shutdown 竞态消除+worker 连接自关；
+  registry respawn per-name 锁防双建泄漏；streaming 队满分级丢弃保边界事件完整；
+  writer 双流回调按 task_id 路由；safe_writer payload 并发隔离+manifest .bak 兜底+
+  备份清理限定本文档；quality_gate profile 缺键启动期报错定位；
+  base_agent 统计计数加锁
+- 接口面收尾：cache/clear、config set、versions/rollback、dlq replay 四类危险操作要求
+  X-Confirm: yes（428）并输出结构化审计日志；访问日志 token 打码；
+  MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
+  new_task_id() 统一三入口任务号（uuid4 hex[:16]）
+
+### Added### Added（进程执行模式正式支持）
 - **`executor_type: process` 从实验性限制变为可用特性**——子进程上下文自动重建：
   - `DAGExecutor` 新增 `child_context` 配置（agents_dir / agent_names / config，
     由 `PipelineOrchestrator.register_agents()` 写入），纯数据、可 pickle
@@ -264,18 +328,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - P1: scripts/convert_ascii.py ASCII_TREE_PATTERN乱码修复
 - P1: scripts/format_converter.py 列表项<ul>包裹、mermaid重名
 
-### Added
+- **P1 版本锁定机制接线**：parse/parse_file 自动校验同名 .lock（含 config_hash 配置漂移检测，
+  此前仅生成从不校验且零调用方）；run.py 新增 --write-lock；docgen.lock 重生成至当前真实状态
+- **P1 document_enhancer 三连**：输出原子写；_clean_llm_output 感知代码 fence（不再删除代码块内
+  ## 注释行）；主路径 LLM 失败回退原文不再被误清洗（对齐分块路径 identity 判定）
+- P2 收尾批：task_queue recover 支持 stale_seconds+owner_pid 跨进程判别与 close_all；
+  cache file 后端接入 TTL 淘汰（BaseAgent CACHE_TTL 默认 0→3600）；
+  message_bus publish 硬上限强制+shutdown 竞态消除+worker 连接自关；
+  registry respawn per-name 锁防双建泄漏；streaming 队满分级丢弃保边界事件完整；
+  writer 双流回调按 task_id 路由；safe_writer payload 并发隔离+manifest .bak 兜底+
+  备份清理限定本文档；quality_gate profile 缺键启动期报错定位；
+  base_agent 统计计数加锁
+- 接口面收尾：cache/clear、config set、versions/rollback、dlq replay 四类危险操作要求
+  X-Confirm: yes（428）并输出结构化审计日志；访问日志 token 打码；
+  MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
+  new_task_id() 统一三入口任务号（uuid4 hex[:16]）
+
+### Added### Added
 - 新增10个测试模块（test_llm_router, test_search_engines, test_quality_gate_scoring, test_run, test_benchmark, test_markdown_checker, test_safe_writer, test_layout_optimizer, test_convert_ascii, test_format_converter）
 - 525个测试全部通过
 
 ## [3.2.0] - 2026-08-08
 
-### Added
+- **P1 版本锁定机制接线**：parse/parse_file 自动校验同名 .lock（含 config_hash 配置漂移检测，
+  此前仅生成从不校验且零调用方）；run.py 新增 --write-lock；docgen.lock 重生成至当前真实状态
+- **P1 document_enhancer 三连**：输出原子写；_clean_llm_output 感知代码 fence（不再删除代码块内
+  ## 注释行）；主路径 LLM 失败回退原文不再被误清洗（对齐分块路径 identity 判定）
+- P2 收尾批：task_queue recover 支持 stale_seconds+owner_pid 跨进程判别与 close_all；
+  cache file 后端接入 TTL 淘汰（BaseAgent CACHE_TTL 默认 0→3600）；
+  message_bus publish 硬上限强制+shutdown 竞态消除+worker 连接自关；
+  registry respawn per-name 锁防双建泄漏；streaming 队满分级丢弃保边界事件完整；
+  writer 双流回调按 task_id 路由；safe_writer payload 并发隔离+manifest .bak 兜底+
+  备份清理限定本文档；quality_gate profile 缺键启动期报错定位；
+  base_agent 统计计数加锁
+- 接口面收尾：cache/clear、config set、versions/rollback、dlq replay 四类危险操作要求
+  X-Confirm: yes（428）并输出结构化审计日志；访问日志 token 打码；
+  MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
+  new_task_id() 统一三入口任务号（uuid4 hex[:16]）
+
+### Added### Added
 - 成本追踪/告警/质量闭环/MCP Server/Agent沙箱/集成测试
 
 ## [3.1.0] - 2026-08-06
 
-### Added
+- **P1 版本锁定机制接线**：parse/parse_file 自动校验同名 .lock（含 config_hash 配置漂移检测，
+  此前仅生成从不校验且零调用方）；run.py 新增 --write-lock；docgen.lock 重生成至当前真实状态
+- **P1 document_enhancer 三连**：输出原子写；_clean_llm_output 感知代码 fence（不再删除代码块内
+  ## 注释行）；主路径 LLM 失败回退原文不再被误清洗（对齐分块路径 identity 判定）
+- P2 收尾批：task_queue recover 支持 stale_seconds+owner_pid 跨进程判别与 close_all；
+  cache file 后端接入 TTL 淘汰（BaseAgent CACHE_TTL 默认 0→3600）；
+  message_bus publish 硬上限强制+shutdown 竞态消除+worker 连接自关；
+  registry respawn per-name 锁防双建泄漏；streaming 队满分级丢弃保边界事件完整；
+  writer 双流回调按 task_id 路由；safe_writer payload 并发隔离+manifest .bak 兜底+
+  备份清理限定本文档；quality_gate profile 缺键启动期报错定位；
+  base_agent 统计计数加锁
+- 接口面收尾：cache/clear、config set、versions/rollback、dlq replay 四类危险操作要求
+  X-Confirm: yes（428）并输出结构化审计日志；访问日志 token 打码；
+  MCP initialize 协议版本回显；dashboard token 改 sessionStorage；
+  new_task_id() 统一三入口任务号（uuid4 hex[:16]）
+
+### Added### Added
 - async I/O + orjson + SSE reconnect + fast_json module
 - PEV-ready API extensions + EventHook system
 - /stream endpoint with end-to-end async pipeline

@@ -140,7 +140,11 @@ class WriterAgent(BaseAgent):
             ttl=config.get("restructure_cache_ttl", 7200),
         )
         self.log_info(f"Prompt profile: {self._prompt_profile}")
-        self._active_stream_callback = None  # 流式回调（handle_streaming 设置）
+        # P2 修复：类级单槽 _active_stream_callback 在并发两条流时互踩。
+        # 改为实例级 dict[task_id]->callback 注册表，按 task_id 路由分发；
+        # 旧单槽语义经属性 property 映射到 "" 键保持兼容（task_id 缺省流）。
+        self._stream_callbacks: dict = {}
+        self._stream_callbacks_lock = threading.Lock()
         self._audience_level = "中级"  # 默认读者水平，可被 spec.audience 覆盖
 
         # 规则过渡句模板（0 成本兜底）
@@ -154,6 +158,40 @@ class WriterAgent(BaseAgent):
             ("实践与应用", "总结", "回顾以上的实践内容，可以得出以下结论。"),
             ("", "", "接下来，我们继续探讨相关内容。"),  # 通用回退
         ]
+
+    # ─── 流式回调注册表（P2：按 task_id 路由，旧单槽经 property 兼容） ──────
+
+    _LEGACY_STREAM_KEY = ""
+
+    @property
+    def _active_stream_callback(self):
+        """旧单槽兼容读取（等价 task_id 缺省 "" 键）"""
+        with self._stream_callbacks_lock:
+            return self._stream_callbacks.get(self._LEGACY_STREAM_KEY)
+
+    @_active_stream_callback.setter
+    def _active_stream_callback(self, callback):
+        with self._stream_callbacks_lock:
+            if callback is None:
+                self._stream_callbacks.pop(self._LEGACY_STREAM_KEY, None)
+            else:
+                self._stream_callbacks[self._LEGACY_STREAM_KEY] = callback
+
+    def _register_stream_callback(self, task_id: str, callback: StreamCallback) -> None:
+        with self._stream_callbacks_lock:
+            self._stream_callbacks[task_id or self._LEGACY_STREAM_KEY] = callback
+
+    def _unregister_stream_callback(self, task_id: str) -> None:
+        with self._stream_callbacks_lock:
+            self._stream_callbacks.pop(task_id or self._LEGACY_STREAM_KEY, None)
+
+    def _get_stream_callback(self, task_id: str) -> StreamCallback | None:
+        """按 task_id 取回调；未命中时回退旧单槽键（兼容缺省流）"""
+        with self._stream_callbacks_lock:
+            cb = self._stream_callbacks.get(task_id or self._LEGACY_STREAM_KEY)
+            if cb is None and task_id:
+                cb = self._stream_callbacks.get(self._LEGACY_STREAM_KEY)
+            return cb
 
     def _llm_chat(self, messages: list[dict], max_tokens: int = 4096,
                   temperature: float = 0.3, timeout: int = 120) -> str:
@@ -611,7 +649,7 @@ class WriterAgent(BaseAgent):
             # 无搜索结果也无文章：若 LLM 可用，仍尝试基于 query 生成文档
             if query and self._llm_api_key:
                 self.log_info(f"任务 {task_id}: 无文章无摘要，用 LLM 基于主题生成文档")
-                restructured = self._restructure_document("", [], query, title)
+                restructured = self._restructure_document("", [], query, title, task_id=task_id)
                 if restructured:
                     return {"status": "ok", "task_id": task_id, "content": restructured}
             return {
@@ -639,7 +677,7 @@ class WriterAgent(BaseAgent):
                     "url": r.get("url", ""),
                     "text": r.get("snippet", ""),
                 })
-            restructured = self._restructure_document(content, snippet_articles, query, title)
+            restructured = self._restructure_document(content, snippet_articles, query, title, task_id=task_id)
             if restructured:
                 content = restructured
 
@@ -763,7 +801,7 @@ class WriterAgent(BaseAgent):
 
         # LLM 重构：生成严谨技术文档结构（篇-章-节 + mermaid + 表格 + 代码块）
         if query and self._llm_api_key:
-            restructured = self._restructure_document(content, article_contents, query, title)
+            restructured = self._restructure_document(content, article_contents, query, title, task_id=task_id)
             if restructured:
                 content = restructured
 
@@ -984,13 +1022,14 @@ class WriterAgent(BaseAgent):
 
     def _restructure_document(self, content: str, articles: list[dict],
                                query: str, title: str,
-                               stream_callback: StreamCallback | None = None) -> str | None:
+                               stream_callback: StreamCallback | None = None,
+                               task_id: str = "") -> str | None:
         """多轮 LLM 生成：每轮一篇，逐步拼接成完整文档（prompt 从外部模板加载）"""
         if not self._llm_api_key:
             return None
-        # 自动拾取实例级回调
+        # P2 修复：按 task_id 从注册表拾取回调（并发流互不串扰），未命中回退旧单槽
         if stream_callback is None:
-            stream_callback = self._active_stream_callback
+            stream_callback = self._get_stream_callback(task_id)
 
         cache_key_short = hashlib.sha256((query + title[:50]).encode()).hexdigest()
         cached = self._restructure_cache.get(cache_key_short)
@@ -1336,8 +1375,8 @@ class WriterAgent(BaseAgent):
         sections = template.get("sections", [])
         callback.on_start(len(sections), title)
 
-        # 存储回调供 _restructure_document 自动拾取
-        self._active_stream_callback = callback
+        # P2：注册回调供 _restructure_document 按 task_id 拾取（并发流各自命中）
+        self._register_stream_callback(task_id, callback)
 
         try:
             # 调用 handle 执行正常流程（_restructure_document 内部会触发 callback）
@@ -1352,4 +1391,4 @@ class WriterAgent(BaseAgent):
             callback.on_error(str(e))
             return {"status": "error", "task_id": task_id, "error": str(e)}
         finally:
-            self._active_stream_callback = None
+            self._unregister_stream_callback(task_id)

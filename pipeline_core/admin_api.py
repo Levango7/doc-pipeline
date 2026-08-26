@@ -27,10 +27,17 @@ Admin API v1 - 轻量级 REST API（零外部依赖）
   - 通过环境变量 ADMIN_API_KEY 启用（非空时开启）
   - 客户端需在 Header 携带 `Authorization: Bearer <key>`
   - /health 和静态资源免鉴权
+
+危险操作二次确认：
+  - POST /api/config、/api/cache/clear、/api/versions/rollback、/dlq/<id>/replay
+    （GET 同）除鉴权外必须携带请求头 `X-Confirm: yes`，缺失返回
+    428 Precondition Required；执行时输出结构化审计日志
+    （时间/key 身份/操作/参数摘要）
 """
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -38,6 +45,7 @@ import logging
 import mimetypes
 import os
 import re
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -48,6 +56,7 @@ from urllib.parse import urlparse
 
 from .fast_json import dumps as _fast_dumps
 from .fast_json import loads as _fast_loads
+from .ids import new_task_id
 
 _logger = logging.getLogger(__name__)
 
@@ -57,6 +66,13 @@ _logger = logging.getLogger(__name__)
 
 # task_id 仅允许字母、数字、下划线、连字符（防止路径遍历 ../../）
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+# 访问日志脱敏：?token= 查询串凭证打码为 ***（SSE 场景才建议 query token）
+_QS_TOKEN_RE = re.compile(r"(token=)[^&\s]+")
+
+
+def mask_token_query(text: str) -> str:
+    return _QS_TOKEN_RE.sub(r"\1***", text)
 
 
 def _is_private_ip(host: str) -> bool:
@@ -404,6 +420,49 @@ class AdminHandler(BaseHTTPRequestHandler):
                     return hmac.compare_digest(kv[6:], self.api_key)
         return False
 
+    def log_message(self, fmt, *args):
+        """访问日志拼装点：requestline 中的 ?token= 凭证打码后再输出"""
+        masked = tuple(mask_token_query(a) if isinstance(a, str) else a for a in args)
+        sys.stderr.write(
+            f"{self.address_string()} - - "
+            f"[{self.log_date_time_string()}] {fmt % masked}\n")
+
+    def _require_confirm(self, action: str, params: dict | None = None) -> bool:
+        """危险操作二次确认门：X-Confirm: yes 放行并落审计日志，缺失返回 428"""
+        if (self.headers.get("X-Confirm") or "").strip().lower() != "yes":
+            self._json({"error": "missing X-Confirm header"}, 428)
+            return False
+        self._audit_dangerous_op(action, params or {})
+        return True
+
+    def _audit_dangerous_op(self, action: str, params: dict) -> None:
+        try:
+            from .observability import get_logger
+            get_logger().info(
+                f"[AdminAPI] 危险操作审计: {action}",
+                action=action,
+                key_id=self._key_identity(),
+                client=self.client_address[0],
+                params=_fast_dumps(params, default=str),
+            )
+        except Exception:
+            pass
+
+    def _key_identity(self) -> str:
+        """凭证指纹（sha256 前 12 位），避免审计日志落明文 key"""
+        candidates: list[str] = []
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            candidates.append(auth[len("Bearer "):].strip())
+        if "?" in getattr(self, "path", ""):
+            for kv in self.path.split("?", 1)[1].split("&"):
+                if kv.startswith("token="):
+                    candidates.append(kv[len("token="):])
+        for tok in candidates:
+            if tok:
+                return "sha256:" + hashlib.sha256(tok.encode()).hexdigest()[:12]
+        return "trust" if not self.api_key else "anonymous"
+
     def do_GET(self):
         try:
             # 静态资源免鉴权
@@ -463,6 +522,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                     dlq_id = int(raw_id)
                 except ValueError:
                     return self._json({"error": f"invalid dlq id: {raw_id!r}"}, 400)
+                if not self._require_confirm("dlq_replay", {"dlq_id": dlq_id}):
+                    return
                 self._handle_replay_dlq(dlq_id)
             elif self.path.split("?", 1)[0] == "/api/versions/stats":
                 self._handle_versions_stats()
@@ -550,6 +611,9 @@ class AdminHandler(BaseHTTPRequestHandler):
                 if not file_path or not isinstance(version, int):
                     return self._json(
                         {"error": '需要 JSON 体 {"file": <path>, "version": <int>}'}, 400)
+                if not self._require_confirm(
+                        "versions_rollback", {"file": file_path, "version": version}):
+                    return
                 self._handle_versions_rollback(file_path, version)
                 return
             elif self.path.startswith("/dlq/") and self.path.endswith("/replay"):
@@ -558,15 +622,26 @@ class AdminHandler(BaseHTTPRequestHandler):
                     dlq_id = int(raw_id)
                 except ValueError:
                     return self._json({"error": f"invalid dlq id: {raw_id!r}"}, 400)
+                if not self._require_confirm("dlq_replay", {"dlq_id": dlq_id}):
+                    return
                 self._handle_replay_dlq(dlq_id)
                 return
             elif self.path == "/api/config":
+                summary: dict = {}
+                with contextlib.suppress(Exception):
+                    data = _fast_loads(body) if body else {}
+                    if isinstance(data, dict):
+                        summary = {"key": data.get("key")}
+                if not self._require_confirm("config_set", summary):
+                    return
                 self._handle_config_set(body)
                 return
             elif self.path == "/api/config/reload":
                 self._handle_config_reload()
                 return
             elif self.path == "/api/cache/clear":
+                if not self._require_confirm("cache_clear"):
+                    return
                 self._handle_cache_clear()
                 return
             elif self.path == "/api/cost/budget":
@@ -779,8 +854,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return self._json({"error": f"output 路径校验失败: {reason}"}, 400)
 
         import tempfile
-        import uuid
-        task_id = str(uuid.uuid4())[:8]
+        task_id = new_task_id()
 
         try:
             from .scheduler import Scheduler

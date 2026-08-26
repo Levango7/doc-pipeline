@@ -13,7 +13,6 @@ import json
 import os
 import signal
 import sys
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +51,7 @@ def _load_dotenv():
 _load_dotenv()
 
 from pipeline_core import PipelineOrchestrator, TaskStatus, __version__  # noqa: E402
+from pipeline_core.ids import new_task_id  # noqa: E402
 
 
 def print_banner():
@@ -143,7 +143,7 @@ def _available_pipeline_names() -> list[str]:
 def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestrator,
                            config: dict) -> tuple[Any, bool]:
     """尝试从 YAML 文件解析 pipeline plan；失败时返回 (None, False) 表示应走 legacy 路径"""
-    from pipeline_core.scheduler import Scheduler
+    from pipeline_core.scheduler import LockfileMismatchError, Scheduler
     sched = Scheduler()
     base_dir = Path(__file__).parent
     pipeline_files = []
@@ -158,14 +158,27 @@ def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestr
                   f"（pipelines/ 下可用: {available or '无'}）", file=sys.stderr)
             sys.exit(2)
 
+    write_lock = bool(getattr(args_args, "write_lock", False))
     for pf in pipeline_files:
         if pf.exists():
             try:
-                plan = sched.parse_file(str(pf))
-                print(f"[run] 加载流水线配置: {pf.name}")
-                return (plan, True)
+                plan = sched.parse_file(str(pf), verify_lock=not write_lock)
+            except LockfileMismatchError as e:
+                print(f"[run] ERROR: {pf.name} 与版本锁定不一致，已阻止执行:\n{e}", file=sys.stderr)
+                print("[run] 提示: 若配置变更是有意的，使用 --write-lock 重新生成 lockfile 后再运行",
+                      file=sys.stderr)
+                sys.exit(1)
             except Exception as e:
                 print(f"[run] 加载 {pf.name} 失败: {e}")
+                continue
+            print(f"[run] 加载流水线配置: {pf.name}")
+            if write_lock:
+                lock_path = sched.generate_lockfile(plan)
+                agent_count = len({n.agent_name.split("_pool_")[0]
+                                   for level in plan.levels for n in level})
+                print(f"[run] 已写入版本锁定: {lock_path}"
+                      f"（pipeline={plan.pipeline_name}, agents={agent_count}, nodes={plan.node_count}）")
+            return (plan, True)
     return (None, False)
 
 
@@ -306,7 +319,7 @@ def _render_task_result(args_args: argparse.Namespace, task, task_id: str) -> No
 def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
                      config: dict):
     """执行单任务：构建 plan/task、等待结果、输出报告。返回终态 task（预览/中断返回 None）"""
-    task_id = args_args.task_id or str(uuid.uuid4())[:8]
+    task_id = args_args.task_id or new_task_id()
 
     use_legacy = args_args.legacy
     plan = None
@@ -426,6 +439,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", "-c", help="配置文件路径")
     parser.add_argument("--json-output", action="store_true", help="输出 JSON 结果到 stdout（供 wrapper 解析）")
     parser.add_argument("--legacy", action="store_true", help="使用旧模式（直接注册 Agent，不经过 Scheduler）")
+    parser.add_argument("--write-lock", action="store_true",
+                        help="加载流水线后重新生成 pipelines/<name>.lock（覆盖），然后继续执行")
     parser.add_argument("--admin", action="store_true", help="启动管理 API 服务")
     parser.add_argument("--dashboard", action="store_true", help="启动管理 API + 仪表盘（隐含 --admin）")
     parser.add_argument("--daemon", action="store_true", help="守护进程模式：流水线执行完后保持 Admin API 常驻")

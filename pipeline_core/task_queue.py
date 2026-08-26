@@ -23,6 +23,7 @@ import os
 import sqlite3
 import threading
 import time
+import weakref
 from pathlib import Path
 
 from .fast_json import dumps as _fast_dumps
@@ -31,6 +32,47 @@ from .fast_json import loads as _fast_loads
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DB = os.path.join(Path(__file__).parent.parent.absolute(), "bus_data", "tasks.db")
+
+
+class _TrackableConnection(sqlite3.Connection):
+    """支持弱引用的连接（sqlite3.Connection 原生不可弱引用，经 factory 子类补槽）"""
+
+    __slots__ = ("__weakref__",)
+
+
+def _pid_alive(pid: int) -> bool:
+    """跨平台进程存活探测（Windows 上禁用 os.kill(pid, 0)：它会 TerminateProcess）。"""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        kernel32.GetExitCodeProcess.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid & 0xFFFFFFFF)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong(0)
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return exit_code.value == STILL_ACTIVE
+            return False
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
 
 
 class TaskQueue:
@@ -44,21 +86,29 @@ class TaskQueue:
         # 导致 fd 泄漏（每次 submit/acquire/complete 都泄漏一个 fd）。
         # 改用 threading.local 缓存 per-thread 连接，复用同一 fd。
         self._local = threading.local()
+        # 修复 P2：thread-local 连接随线程死亡靠 GC 回收，close() 只能关当前线程。
+        # 创建连接时登记弱引用，close_all() 遍历关闭全部已登记连接。
+        self._conn_refs: set = set()
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
         """获取当前线程缓存的 SQLite 连接（复用，避免 fd 泄漏）。
 
-        修复 P0：原实现每次新建连接 + 设置 PRAGMA，永不关闭。
-        现改为 threading.local 缓存：每个线程首次调用时建连并设置 PRAGMA，
-        后续复用同一连接。连接随线程结束由 GC 回收，close() 显式关闭。
+        连接被 close()/close_all() 关闭后，下次调用自动重建（自愈）。
         """
         conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.execute("SELECT 1")
+            except sqlite3.Error:
+                conn = None
         if conn is None:
-            conn = sqlite3.connect(self._db_path, timeout=5, check_same_thread=False)
+            conn = sqlite3.connect(self._db_path, timeout=5, check_same_thread=False,
+                                   factory=_TrackableConnection)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=3000")
             self._local.conn = conn
+            self._conn_refs.add(weakref.ref(conn))
         return conn
 
     def _init_db(self):
@@ -80,6 +130,9 @@ class TaskQueue:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON task_queue(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_created ON task_queue(created_at)")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(task_queue)").fetchall()}
+            if "owner_pid" not in columns:
+                conn.execute("ALTER TABLE task_queue ADD COLUMN owner_pid INTEGER DEFAULT 0")
 
     def submit(self, task_id: str, pipeline_name: str, input_file: str,
                config: dict = None) -> bool:
@@ -117,9 +170,9 @@ class TaskQueue:
             task_id, pipeline_name, input_file, config_json = row
             now = time.time()
             cursor = conn.execute(
-                "UPDATE task_queue SET status = 'running', started_at = ?, worker_id = ? "
-                "WHERE task_id = ? AND status = 'pending'",
-                (now, worker_id, task_id),
+                "UPDATE task_queue SET status = 'running', started_at = ?, worker_id = ?, "
+                "owner_pid = ? WHERE task_id = ? AND status = 'pending'",
+                (now, worker_id, os.getpid(), task_id),
             )
             # 修复 P0 回归：原用 conn.total_changes == 0 判断 UPDATE 是否生效，
             # 但连接复用后 total_changes 累积历史变更，永远 > 0，
@@ -170,20 +223,40 @@ class TaskQueue:
                     (status, task_id),
                 )
 
-    def recover(self) -> list[dict]:
+    def recover(self, stale_seconds: float | None = None) -> list[dict]:
         """重启恢复：把 running 状态的任务改回 pending。
+
+        Args:
+            stale_seconds: 陈旧阈值（秒）。
+
+        - None（默认）：旧行为，回收全部 running 任务（单进程场景兼容）。
+        - 传入数值：多进程共享 tasks.db 安全模式，仅回收同时满足以下条件的任务：
+            1. started_at 早于 now - stale_seconds（新鲜的 running 视为仍在执行）；
+            2. owner_pid 为空 / 本进程 pid / 已死亡的外部进程
+              （存活外部进程正在执行的任务跳过，避免翻回 pending 导致双执行）。
 
         返回被恢复的任务列表，供调用方决定是否重新执行。
         """
         with self._lock, self._get_conn() as conn:
             rows = conn.execute(
-                "SELECT task_id, pipeline_name, input_file, config_json "
-                "FROM task_queue WHERE status = 'running'"
+                "SELECT task_id, pipeline_name, input_file, config_json, "
+                "started_at, owner_pid FROM task_queue WHERE status = 'running'"
             ).fetchall()
             if not rows:
                 return []
+            my_pid = os.getpid()
+            now = time.time()
             recovered = []
-            for task_id, pipeline_name, input_file, config_json in rows:
+            skipped = 0
+            for task_id, pipeline_name, input_file, config_json, started_at, owner_pid in rows:
+                if stale_seconds is not None:
+                    owner_pid = int(owner_pid) if owner_pid else 0
+                    if owner_pid and owner_pid != my_pid and _pid_alive(owner_pid):
+                        skipped += 1
+                        continue
+                    if started_at and now - started_at <= stale_seconds:
+                        skipped += 1
+                        continue
                 conn.execute(
                     "UPDATE task_queue SET status = 'pending', worker_id = '' WHERE task_id = ?",
                     (task_id,),
@@ -194,6 +267,8 @@ class TaskQueue:
                     "input_file": input_file,
                     "config": _fast_loads(config_json) if config_json else {},
                 })
+            if skipped:
+                logger.info(f"recover 跳过 {skipped} 个活跃/新鲜 running 任务")
             logger.info(f"恢复 {len(recovered)} 个中断任务")
             return recovered
 
@@ -274,3 +349,17 @@ class TaskQueue:
             with contextlib.suppress(Exception):
                 conn.close()
             self._local.conn = None
+
+    def close_all(self):
+        """关闭本实例登记的全部 thread-local 连接（长驻进程优雅关停用）。
+
+        其他线程残留的已关连接在其下次 _get_conn() 时探测失效并自动重建（自愈）。
+        """
+        refs = list(self._conn_refs)
+        self._conn_refs.clear()
+        for ref in refs:
+            conn = ref()
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+        self._local.conn = None

@@ -12,6 +12,7 @@ BaseAgent v3.1 - 增强型 Agent 基类
 import json
 import logging
 import os
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -149,7 +150,7 @@ class BaseAgent(ABC):
     INPUT_TOPICS = []  # type: ignore[var-annotated]
     OUTPUT_TOPICS = []  # type: ignore[var-annotated]
     DEPENDENCIES = []  # type: ignore[var-annotated]
-    CACHE_TTL = 0
+    CACHE_TTL = 3600
     RESPAWN = False
     RESPAWN_MAX = 3
     HEALTH_CHECK_INTERVAL = 30
@@ -176,6 +177,7 @@ class BaseAgent(ABC):
         self._logger = AgentLogger(name, config.get("log_dir", "logs"), quiet=config.get("quiet", False))
 
         # 性能统计
+        self._stats_lock = threading.Lock()
         self._processing_times: list[float] = []
         self._error_count = 0
         self._success_count = 0
@@ -212,7 +214,8 @@ class BaseAgent(ABC):
             result = self.handle(msg)
 
             # 记录成功
-            self._success_count += 1
+            with self._stats_lock:
+                self._success_count += 1
             processing_time = (time.time() - start_time) * 1000
             self._record_processing_time(processing_time)
 
@@ -226,7 +229,8 @@ class BaseAgent(ABC):
             return result
 
         except Exception as e:
-            self._error_count += 1
+            with self._stats_lock:
+                self._error_count += 1
             self._logger.exception(f"处理消息时出错: {e}")
             self.report(AgentStatus.ERROR, str(e))
             raise
@@ -256,18 +260,22 @@ class BaseAgent(ABC):
         """创建检查点时调用（可覆盖）。返回 agent 状态快照，用于断点续传。
         返回的 dict 会被序列化保存到 checkpoint 中。"""
         self._logger.debug("Agent 快照")
+        with self._stats_lock:
+            success_count = self._success_count
+            error_count = self._error_count
         return {
             "name": self.name,
             "status": self.status.value if hasattr(self.status, 'value') else str(self.status),
-            "success_count": self._success_count,
-            "error_count": self._error_count,
+            "success_count": success_count,
+            "error_count": error_count,
         }
 
     def on_restore(self, state: dict):
         """从检查点恢复时调用（可覆盖）。恢复 agent 到快照时的状态。"""
         self._logger.info("Agent 状态恢复")
-        self._success_count = state.get("success_count", 0)
-        self._error_count = state.get("error_count", 0)
+        with self._stats_lock:
+            self._success_count = state.get("success_count", 0)
+            self._error_count = state.get("error_count", 0)
 
     # ─── 临时文件清理契约 ─────────────────────────────
     # orchestrator 在任务结束的 finally（_cleanup_task_temp）和 shutdown
@@ -285,10 +293,11 @@ class BaseAgent(ABC):
     def is_healthy(self) -> bool:
         """健康检查（可覆盖）"""
         # 默认健康检查：错误率不超过 50%
-        total = self._success_count + self._error_count
+        with self._stats_lock:
+            total = self._success_count + self._error_count
+            error_count = self._error_count
         if total > 10:
-            error_rate = self._error_count / total
-            return error_rate < 0.5
+            return error_count / total < 0.5
         return True
 
     # ─── 配置热重载 ───────────────────────────────────
@@ -364,16 +373,21 @@ class BaseAgent(ABC):
 
     def _record_processing_time(self, ms: float):
         """记录处理时间"""
-        self._processing_times.append(ms)
-        if len(self._processing_times) > 100:
-            self._processing_times = self._processing_times[-100:]
+        with self._stats_lock:
+            self._processing_times.append(ms)
+            if len(self._processing_times) > 100:
+                self._processing_times = self._processing_times[-100:]
 
     def get_stats(self) -> dict:
         """获取统计信息"""
-        avg_time = sum(self._processing_times) / len(self._processing_times) if self._processing_times else 0
+        with self._stats_lock:
+            success_count = self._success_count
+            error_count = self._error_count
+            processing_times = list(self._processing_times)
+        avg_time = sum(processing_times) / len(processing_times) if processing_times else 0
         return {
-            "success_count": self._success_count,
-            "error_count": self._error_count,
+            "success_count": success_count,
+            "error_count": error_count,
             "avg_processing_time_ms": round(avg_time, 2),
             "status": self.status.value,
         }
@@ -396,4 +410,7 @@ class BaseAgent(ABC):
         self._logger.exception(msg)
 
     def __repr__(self):
-        return f"<Agent:{self.name} [{self.status.value}] success={self._success_count} errors={self._error_count}>"
+        with self._stats_lock:
+            success = self._success_count
+            errors = self._error_count
+        return f"<Agent:{self.name} [{self.status.value}] success={success} errors={errors}>"

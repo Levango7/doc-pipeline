@@ -7,10 +7,33 @@
 ## 鉴权
 
 - 设置环境变量 `ADMIN_API_KEY` 后启用；请求携带 `Authorization: Bearer <key>` 或 `?token=<key>`
+  （仅 SSE 场景才建议 query token——`EventSource` 无法自定义请求头；常规请求请使用 `Authorization` 头，
+  避免凭证落入访问日志）
 - **未配置 `ADMIN_API_KEY` 时进入本机信任模式**：绑定回环地址（`127.0.0.1` 等）时免鉴权访问；
   绑定非回环地址（如 `0.0.0.0`）则**拒绝启动**（安全门，防止无凭证暴露公网）
 - `/health` 与静态资源（Dashboard）始终免鉴权
-- Dashboard 前端在收到 401 时会弹出 Token 输入框，保存于浏览器 localStorage 后自动重试
+- Dashboard 前端在收到 401 时会弹出 Token 输入框，保存于浏览器 sessionStorage（会话级，关闭标签页即失效）后自动重试
+
+## 危险操作二次确认（X-Confirm）
+
+以下四类危险操作除鉴权外还必须携带请求头 `X-Confirm: yes`，缺失返回
+**428 Precondition Required**（body：`{"error": "missing X-Confirm header"}`）；
+确认放行时会输出结构化审计日志（时间/key 身份/操作/参数摘要）：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/config` | 更新运行时配置 |
+| POST | `/api/cache/clear` | 清空所有缓存 |
+| POST | `/api/versions/rollback` | 回滚文件到指定版本 |
+| POST | `/dlq/{dlq_id}/replay` | 重放死信消息（GET 形式同样要求） |
+
+示例：
+
+```bash
+curl -X POST http://127.0.0.1:8910/api/cache/clear \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "X-Confirm: yes"
+```
 
 ## 端点总览
 
@@ -57,10 +80,10 @@
 | GET | `/agents` | 已注册 Agent 列表 |
 | GET | `/api/agents/{name}` | Agent 详情 |
 | GET | `/api/config` | 配置快照 |
-| POST | `/api/config` | 更新单项配置（`{"key": ..., "value": ...}`） |
+| POST | `/api/config` | 更新单项配置（`{"key": ..., "value": ...}`），需 `X-Confirm: yes` |
 | POST | `/api/config/reload` | 热重载并通知所有 Agent 的 `on_config_update` |
 | GET | `/api/cache` | 缓存统计 |
-| POST | `/api/cache/clear` | 清空缓存 |
+| POST | `/api/cache/clear` | 清空缓存，需 `X-Confirm: yes` |
 
 ### 成本 / 告警 / 质量 / 日志
 
@@ -87,14 +110,14 @@
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/dlq` | 死信列表 |
-| POST | `/dlq/{dlq_id}/replay` | 重放死信消息 |
+| POST | `/dlq/{dlq_id}/replay` | 重放死信消息，需 `X-Confirm: yes`（GET 形式同样要求） |
 | GET | `/stream/metrics` | 流式推送指标快照（连接数/事件数等） |
 | GET | `/stream` | SSE 流式生成，query 参数：`query`（必填）、`title`、`task_id`；
 支持 `Last-Event-ID` 断线重连。返回 `text/event-stream`（需鉴权） |
 | GET | `/api/versions?file=<path>` | 文件版本历史 |
 | GET | `/api/versions/diff?file=<path>&v1=N&v2=M` | 对比两个版本 |
 | GET | `/api/versions/stats` | 版本管理统计 |
-| POST | `/api/versions/rollback` | 回滚到指定版本，JSON 体：`{"file": <path>, "version": <int>}` |
+| POST | `/api/versions/rollback` | 回滚到指定版本，JSON 体：`{"file": <path>, "version": <int>}`，需 `X-Confirm: yes` |
 
 注：`cancel/pause/resume/rerun` 类操作对不存在的任务返回 **404**；任务存在但状态不符时
 仍为 200 + `<action>: false`。

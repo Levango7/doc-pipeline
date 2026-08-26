@@ -56,6 +56,7 @@ class MessageBus:
         self.backpressure_watermark = backpressure_watermark
         self._peak_depth = 0
         self._high_watermark_hits = 0
+        self._publish_dropped = 0
 
         # 背压通知条件变量（替代 sleep 轮询）
         self._backpressure_cv = threading.Condition(self._lock)
@@ -64,6 +65,11 @@ class MessageBus:
         self._worker_thread = threading.Thread(target=self._process_loop, daemon=True)
         self._worker_running = True
         self._worker_thread.start()
+
+    def _get_store(self):
+        """锁内快照读取 store，避免与 shutdown 置 None 竞争出 NoneType。"""
+        with self._lock:
+            return self._store
 
     # ─── 订阅 ─────────────────────────────────
 
@@ -137,9 +143,23 @@ class MessageBus:
         if payload is None:
             payload = {}
 
-        # 修复：幂等检查只读不烧键；标记延迟到确认有订阅者接手之后，
+        # 硬上限策略（REQUEST）：队列打满时不投递，直接回覆错误响应
+        with self._lock:
+            depth = self.queue_depth()
+            self._track_peak(depth)
+            over_limit = depth >= self.max_queue_depth
+        if over_limit:
+            self._publish_dropped += 1
+            return {
+                "status": "error",
+                "error": f"queue full: depth={depth} >= max_queue_depth={self.max_queue_depth}",
+                "topic": topic,
+            }
+
+        # 幂等检查只读不烧键；标记延迟到确认有订阅者接手之后，
         # 无订阅者/投递失败的路径不残留标记，同 key 重试可正常送达
-        if idempotency_key and self._store and self._store.is_idempotent(idempotency_key):
+        store = self._get_store()
+        if idempotency_key and store and store.is_idempotent(idempotency_key):
             return None  # 已存在，重复请求
 
         msg = Message(
@@ -165,8 +185,9 @@ class MessageBus:
         self._metrics.record_sent()
         handled, delivered_ok = self._deliver(msg)
 
-        if idempotency_key and self._store and handled and delivered_ok:
-            self._store.save_idempotent(idempotency_key)
+        store = self._get_store()
+        if idempotency_key and store and handled and delivered_ok:
+            store.save_idempotent(idempotency_key)
 
         if not (handled and delivered_ok):
             # 无订阅者或投递失败（订阅者异常时 _deliver 已回覆含 error 的响应）
@@ -198,25 +219,32 @@ class MessageBus:
         """
         发布 EVENT 消息（带背压支持）
 
-        当队列中未投递的 EVENT 消息数量 >= backpressure_watermark 时，
-        消息会被跳过（_backpressure_skipped=True），返回 busy 状态。
-        否则正常发送。
+        水位检查与入队在锁内原子完成（check-and-enforce）：
+          - depth >= max_queue_depth：硬上限，记 drop 计数并拒绝入队
+          - depth >= backpressure_watermark：背压触发，返回 busy
 
         Returns:
             {"status": "sent", "msg_id": str}   — 成功
             {"status": "busy", "queue_depth": int} — 背压触发，消息未发送
+            {"status": "rejected", "queue_depth": int} — 超过硬上限，消息被丢弃
         """
-        depth = self.queue_depth()
-        self._track_peak(depth)
-
-        if depth >= self.backpressure_watermark:
-            self._metrics.high_watermark_hits += 1
-            msg = Message(topic=topic, payload=payload, msg_type=MessageType.EVENT, from_agent=from_a)
-            msg._backpressure_skipped = True  # type: ignore[attr-defined]
-            return {"status": "busy", "queue_depth": depth}
-
         msg = Message(topic=topic, payload=payload, msg_type=MessageType.EVENT, from_agent=from_a)
-        self.send(msg)
+        with self._lock:
+            # send() 使用可重入 RLock；深度检查与实际入队同锁串行，
+            # 保证 max_queue_depth 是硬约束（并发 publish 不会越限）
+            depth = self.queue_depth()
+            self._track_peak(depth)
+
+            if depth >= self.max_queue_depth:
+                self._publish_dropped += 1
+                return {"status": "rejected", "reason": "max_queue_depth", "queue_depth": depth}
+
+            if depth >= self.backpressure_watermark:
+                self._metrics.high_watermark_hits += 1
+                msg._backpressure_skipped = True  # type: ignore[attr-defined]
+                return {"status": "busy", "queue_depth": depth}
+
+            self.send(msg)
         return {"status": "sent", "msg_id": msg.msg_id}
 
     def publish_blocking(self, topic: str, from_a: str, payload: dict,
@@ -256,9 +284,11 @@ class MessageBus:
 
     def queue_depth(self) -> int:
         """返回当前未投递的 EVENT 消息数量（背压检测用）"""
-        if not self._store:
+        store = self._get_store()
+        if not store:
             return 0
-        return self._store.count_undelivered_events()
+        count: int = store.count_undelivered_events()
+        return count
 
     def _track_peak(self, depth: int):
         """更新历史峰值队列深度"""
@@ -275,6 +305,7 @@ class MessageBus:
             handled: 是否有订阅者/callback 接手该消息
             delivered_ok: 接手的订阅者是否全部执行成功
         """
+        store = self._get_store()
         if msg.msg_type == MessageType.RESPONSE and msg.correlation_id:
             with self._lock:
                 cb = self._callbacks.pop(msg.correlation_id, None)
@@ -282,13 +313,13 @@ class MessageBus:
                 try:
                     cb(msg)
                     self._metrics.record_received()
-                    if self._store and msg.msg_id:
-                        self._store.mark_delivered(msg.msg_id)
+                    if store and msg.msg_id:
+                        store.mark_delivered(msg.msg_id)
                     return True, True
                 except Exception as e:
                     self._metrics.record_failed()
-                    if self._store:
-                        self._store.move_to_dlq(msg, str(e))
+                    if store:
+                        store.move_to_dlq(msg, str(e))
                         self._metrics.record_dlq()
                     return True, False
             else:
@@ -296,9 +327,9 @@ class MessageBus:
                 # 原代码直接 return 导致响应数据静默丢失。
                 # 将孤儿响应转入 DLQ，供后续 replay_dlq 自愈。
                 self._metrics.record_failed()
-                if self._store:
+                if store:
                     try:
-                        self._store.move_to_dlq(
+                        store.move_to_dlq(
                             msg, "orphan response: request timed out or no callback"
                         )
                         self._metrics.record_dlq()
@@ -310,8 +341,8 @@ class MessageBus:
             callbacks = list(self._subscribers.get(msg.topic, []))
 
         if not callbacks:
-            if self._store and msg.msg_id:
-                self._store.mark_delivered(msg.msg_id)
+            if store and msg.msg_id:
+                store.mark_delivered(msg.msg_id)
             return False, False
 
         delivered_ok = True
@@ -330,8 +361,8 @@ class MessageBus:
                 delivered_ok = False
                 errors.append(str(e) or e.__class__.__name__)
                 self._metrics.record_failed()
-                if self._store:
-                    self._store.move_to_dlq(msg, str(e))
+                if store:
+                    store.move_to_dlq(msg, str(e))
                     self._metrics.record_dlq()
 
         # 修复：REQUEST 订阅者抛异常时立即回覆错误响应，避免等待方空等满 timeout
@@ -345,9 +376,9 @@ class MessageBus:
                     "topic": msg.topic,
                 })
 
-        if delivered_ok and self._store and msg.msg_id and msg.msg_type != MessageType.EVENT:
+        if delivered_ok and store and msg.msg_id and msg.msg_type != MessageType.EVENT:
             # EVENT 消息由 _process_loop 批量标记，此处仅处理非 EVENT（如 RESPONSE）
-            self._store.mark_delivered(msg.msg_id)
+            store.mark_delivered(msg.msg_id)
             with self._backpressure_cv:
                 self._backpressure_cv.notify_all()
 
@@ -356,57 +387,73 @@ class MessageBus:
     def _process_loop(self):
         """异步事件处理循环（批量 drain 优化：一次取多条，减少锁竞争和 SQLite 写入）"""
         BATCH_SIZE = 50  # 单批最大处理条数
-        while self._worker_running and not self._shutdown_event.is_set():
-            try:
-                # 阻塞等待第一条消息
-                msg = self._async_queue.get(timeout=1)
-                batch = [msg]
-                # 非阻塞 drain：尽可能多取（最多 BATCH_SIZE 条）
-                while len(batch) < BATCH_SIZE:
-                    try:
-                        batch.append(self._async_queue.get_nowait())
-                    except Empty:
-                        break
-                # 逐条投递，收集已投递的 msg_id
-                delivered_ids = []
-                for m in batch:
-                    self._deliver(m)
-                    if m.msg_id and m.msg_type == MessageType.EVENT:
-                        delivered_ids.append(m.msg_id)
-                # 批量标记已投递（一次 UPDATE 替代 N 次）
-                if delivered_ids and self._store:
-                    with contextlib.suppress(Exception):
-                        self._store.mark_delivered_batch(delivered_ids)  # 标记失败不影响投递
-                # 通知背压等待者
-                if delivered_ids:
-                    with self._backpressure_cv:
-                        self._backpressure_cv.notify_all()
-            except Empty:
-                continue
-            except Exception as e:
-                _logger.error(f"[MessageBus] _process_loop error: {e}", exc_info=True)
+        last_store = None
+        try:
+            while self._worker_running and not self._shutdown_event.is_set():
+                # 持本地引用投递，避免与 shutdown 置 None 竞争出 NoneType
+                store = self._get_store()
+                if store is not None:
+                    last_store = store
+                try:
+                    # 阻塞等待第一条消息
+                    msg = self._async_queue.get(timeout=1)
+                    batch = [msg]
+                    # 非阻塞 drain：尽可能多取（最多 BATCH_SIZE 条）
+                    while len(batch) < BATCH_SIZE:
+                        try:
+                            batch.append(self._async_queue.get_nowait())
+                        except Empty:
+                            break
+                    # 逐条投递，收集已投递的 msg_id
+                    delivered_ids = []
+                    for m in batch:
+                        self._deliver(m)
+                        if m.msg_id and m.msg_type == MessageType.EVENT:
+                            delivered_ids.append(m.msg_id)
+                    # 批量标记已投递（一次 UPDATE 替代 N 次）
+                    if delivered_ids and store:
+                        with contextlib.suppress(Exception):
+                            store.mark_delivered_batch(delivered_ids)  # 标记失败不影响投递
+                    # 通知背压等待者
+                    if delivered_ids:
+                        with self._backpressure_cv:
+                            self._backpressure_cv.notify_all()
+                except Empty:
+                    continue
+                except Exception as e:
+                    _logger.error(f"[MessageBus] _process_loop error: {e}", exc_info=True)
+        finally:
+            # worker 线程退出时关闭自己 thread-local 的 SQLite 连接
+            if last_store is not None:
+                with contextlib.suppress(Exception):
+                    last_store.close_current_thread()
 
     # ─── 查询 ─────────────────────────────────
 
     def health(self) -> dict:
         result = {"status": "ok", "subscribers": len(self._subscribers)}
-        if self._store:
-            result["store"] = self._store.health()
+        store = self._get_store()
+        if store:
+            result["store"] = store.health()
         result["metrics"] = self._metrics.to_dict()
         result["queue_depth"] = self.queue_depth()
         result["high_watermark_hits"] = self._metrics.high_watermark_hits
         result["peak_depth"] = self._metrics.peak_depth
         result["backpressure_watermark"] = self.backpressure_watermark
+        result["max_queue_depth"] = self.max_queue_depth
+        result["publish_dropped"] = self._publish_dropped
         return result
 
     def list_dlq(self, limit: int = 50) -> list[dict]:
-        return self._store.list_dlq(limit) if self._store else []
+        store = self._get_store()
+        return store.list_dlq(limit) if store else []
 
     def replay_dlq(self, dlq_id: int) -> dict | None:
         """重放一条死信：取出数据并真实重新投递到原 topic"""
-        if not self._store:
+        store = self._get_store()
+        if not store:
             return None
-        data = self._store.replay_dlq(dlq_id)
+        data = store.replay_dlq(dlq_id)
         if not data:
             return None
         # 真实重投：把原始 payload 重新 publish 到原 topic
@@ -414,14 +461,20 @@ class MessageBus:
         original_payload = payload.get("payload", payload)
         from_agent = payload.get("from_agent", "dlq_replay")
         self.publish(data["topic"], from_agent, original_payload)
-        return data
+        replayed: dict = data
+        return replayed
 
     # ─── 关闭 ─────────────────────────────────
 
     def shutdown(self):
         self._worker_running = False
         self._shutdown_event.set()
-        self._worker_thread.join(timeout=3)
-        if self._store is not None:
-            self._store.close()
-            self._store = None  # 断开引用，防止工作线程 GC 时残留连接
+        with contextlib.suppress(RuntimeError):
+            self._worker_thread.join(timeout=3)
+        # 锁内置 None，与 _get_store() 快照读取互斥；
+        # worker 自身的 thread-local 连接由其在退出时经 close_current_thread 关闭
+        with self._lock:
+            store = self._store
+            self._store = None
+        if store is not None:
+            store.close()

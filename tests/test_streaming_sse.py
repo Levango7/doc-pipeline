@@ -166,12 +166,34 @@ class TestStreamCallback:
         assert len(cb._history) <= 5
         cb.close()
 
-    def test_queue_full_drops_oldest(self):
+    def test_queue_full_sheds_droppable_keeps_boundary(self):
+        """P2 分级丢弃：队列满时丢 chunk/progress，边界事件不丢"""
+        cb = StreamCallback(max_queue_size=3)
+        cb.on_chunk("a")
+        cb.on_chunk("b")
+        cb.on_chunk("c")  # 队列满（全是 chunk）
+        assert cb.metrics.events_dropped == 0
+        cb.on_start(1, "Doc")  # 边界事件入队：淘汰队首单个 chunk 腾位
+        snap = cb.metrics.snapshot()
+        assert snap["events_dropped"] == 1
+        assert snap["drops_by_type"].get("chunk") == 1
+        events = cb.get_events()
+        assert [e.event_type for e in events] == ["chunk", "chunk", "start"]
+        # 被拒的 chunk 仍保留在重连历史中（历史与实时队列解耦）
+        assert len(cb._history) == 4
+        cb.close()
+
+    def test_queue_full_progress_incoming_dropped_without_touching_queue(self):
+        """P2 分级丢弃：可丢类型新事件在队满时被拒，不破坏既有队列内容"""
         cb = StreamCallback(max_queue_size=2)
         cb.on_start(1, "Doc")
         cb.on_section(0, "S1", "c1")
-        cb.on_section(1, "S2", "c2")  # queue full, should drop oldest
-        assert cb.metrics.events_dropped >= 1
+        for _ in range(5):
+            cb.on_chunk("x")  # 全部被拒，start/section 保持完整
+        snap = cb.metrics.snapshot()
+        assert snap["drops_by_type"].get("chunk") == 5
+        events = cb.get_events()
+        assert [e.event_type for e in events] == ["start", "section"]
         cb.close()
 
 

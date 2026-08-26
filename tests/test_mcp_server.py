@@ -1,6 +1,8 @@
 """MCPServer — JSON-RPC 协议测试"""
 import json
-from unittest.mock import MagicMock
+import re
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -23,6 +25,33 @@ class TestMCPServer:
         assert resp["id"] == 1
         assert resp["result"]["protocolVersion"] == PROTOCOL_VERSION
         assert resp["result"]["serverInfo"]["name"] == SERVER_NAME
+
+    def test_initialize_echoes_client_protocol_version(self, server):
+        """MCP 规范：result.protocolVersion 回显客户端请求的版本"""
+        resp = server._handle_request({
+            "jsonrpc": "2.0", "id": 10, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        })
+        assert resp["result"]["protocolVersion"] == "2025-06-18"
+
+    def test_generate_document_uses_new_task_id(self):
+        """task_id 统一由 pipeline_core.ids.new_task_id 生成（16 位 hex）"""
+        from types import SimpleNamespace
+
+        from pipeline_core.ids import new_task_id
+        task = SimpleNamespace(id="tid", status=SimpleNamespace(value="running"),
+                               pipeline_name="docgen", result={}, error=None)
+        orch = MagicMock()
+        orch.run_plan.return_value = task
+        s = MCPServer(orch=orch)
+        with patch("pipeline_core.mcp_server.new_task_id",
+                   side_effect=new_task_id) as mock_gen:
+            s._tool_generate_document(11, {"query": "t"})
+            mock_gen.assert_called_once()
+        input_arg = orch.run_plan.call_args.kwargs["input_file"]
+        stem = Path(input_arg).stem
+        tid = stem.removeprefix("mcp_")
+        assert re.fullmatch(r"[0-9a-f]{16}", tid)
 
     def test_tools_list(self, server):
         resp = server._handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})

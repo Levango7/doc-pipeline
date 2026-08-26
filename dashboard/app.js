@@ -140,7 +140,7 @@
   // ----------------------------------------------------------
   const TOKEN_KEY = 'docpipe_token';
 
-  function getToken () { return localStorage.getItem(TOKEN_KEY) || ''; }
+  function getToken () { return sessionStorage.getItem(TOKEN_KEY) || ''; }
 
   async function fetchJson (url) {
     const token = getToken();
@@ -660,7 +660,7 @@
       const saveToken = () => {
         const v = (els.tokenInput.value || '').trim();
         if (!v) return;
-        localStorage.setItem(TOKEN_KEY, v);
+        sessionStorage.setItem(TOKEN_KEY, v);
         els.tokenPrompt.style.display = 'none';
         handleRetry();
       };

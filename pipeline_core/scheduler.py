@@ -8,10 +8,24 @@ Scheduler - 读取 pipeline.yaml 并生成可执行计划
 from __future__ import annotations
 
 import hashlib
+import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+
+class LockfileMismatchError(Exception):
+    """当前 plan 与 lockfile 不一致（版本锁定校验失败）"""
+
+    def __init__(self, pipeline_name: str, issues: list[str]):
+        self.pipeline_name = pipeline_name
+        self.issues = list(issues)
+        detail = "\n".join(f"  - {issue}" for issue in self.issues)
+        super().__init__(
+            f"[{pipeline_name}] lockfile 校验失败（{len(self.issues)} 项不一致）:\n{detail}"
+        )
 
 
 @dataclass
@@ -144,18 +158,38 @@ class Scheduler:
             raise ValueError(f"pipeline 为空: {path}")
         return raw
 
-    def parse(self, pipeline_name: str) -> ExecutionPlan:
+    def parse(self, pipeline_name: str, verify_lock: bool = True) -> ExecutionPlan:
         raw = self.load(pipeline_name)
-        return self._build_plan(raw, pipeline_name)
+        plan = self._build_plan(raw, pipeline_name)
+        if verify_lock:
+            self._verify_lock_after_parse(plan)
+        return plan
 
-    def parse_file(self, filepath: str) -> ExecutionPlan:
+    def parse_file(self, filepath: str, verify_lock: bool = True) -> ExecutionPlan:
         path = Path(filepath)
         if not path.exists():
             raise FileNotFoundError(f"pipeline 文件未找到: {filepath}")
         with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         pipeline_name = path.stem
-        return self._build_plan(raw, pipeline_name)
+        plan = self._build_plan(raw, pipeline_name)
+        if verify_lock:
+            self._verify_lock_after_parse(plan)
+        return plan
+
+    def _verify_lock_after_parse(self, plan: ExecutionPlan):
+        import logging
+        logger = logging.getLogger(__name__)
+        lock_path = self.pipeline_dir / f"{plan.pipeline_name}.lock"
+        if not lock_path.exists():
+            logger.debug(
+                "[%s] 无 lockfile（%s），跳过版本锁定校验；可用 --write-lock 生成",
+                plan.pipeline_name, lock_path,
+            )
+            return
+        issues = self.verify_lockfile(plan, str(lock_path))
+        if issues:
+            raise LockfileMismatchError(plan.pipeline_name, issues)
 
     def _deep_merge(self, base: dict, override: dict) -> dict:
         result = base.copy()
@@ -306,8 +340,6 @@ class Scheduler:
 
     def generate_lockfile(self, plan: ExecutionPlan, output_dir: str = "pipelines") -> str:
         """生成 pipeline lockfile（版本锁定）"""
-        import json
-        import time
         lock = {
             "pipeline": plan.pipeline_name,
             "plan_id": plan.plan_id,
@@ -357,6 +389,14 @@ class Scheduler:
                     continue
                 if locked.get("version") != node.agent_config.version:
                     issues.append(f"[{aname}] 版本不匹配: lock={locked.get('version')}, yaml={node.agent_config.version}")
+                current_hash = hashlib.sha256(
+                    json.dumps(node.agent_config.config, sort_keys=True).encode()
+                ).hexdigest()[:12]
+                if locked.get("config_hash") != current_hash:
+                    issues.append(
+                        f"[{aname}] 配置漂移: config_hash 不匹配 "
+                        f"lock={locked.get('config_hash')}, 当前={current_hash}（配置已改动，请重新 --write-lock）"
+                    )
 
         return issues
 

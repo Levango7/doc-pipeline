@@ -126,6 +126,7 @@ class Registry:
         self._stats: dict[str, AgentStats] = {}
         self._registry_file = registry_file
         self._lock = threading.RLock()
+        self._respawn_locks: dict[str, threading.Lock] = {}
         self._health_check_enabled = enable_health_check
         self._health_check_thread: threading.Thread | None = None
         self._running = True
@@ -291,14 +292,29 @@ class Registry:
 
     # ─── Respawn ─────────────────────────────────
 
+    def _get_respawn_lock(self, name: str) -> threading.Lock:
+        """获取 agent 专属 respawn 锁（per-name，消除两阶段竞态）"""
+        with self._lock:
+            lock = self._respawn_locks.get(name)
+            if lock is None:
+                lock = threading.Lock()
+                self._respawn_locks[name] = lock
+            return lock
+
     def _check_respawn(self, name: str):
         """检查并执行 respawn。
 
-        P1 修复: 将外部调用（on_stop、构造新实例）移出锁外执行，避免持锁调用
-        外部代码导致死锁或长时间持锁。原实现在外层锁内直接调用 on_stop/构造，
-        若回调中获取其他锁或阻塞 I/O 会严重影响 registry 并发度。
+        P2 修复：两个并发 ERROR 都通过 phase-1 后各自构建实例，后提交者
+        覆盖先提交者、且先构建的实例 on_stop 泄漏。
+        现 phase-1 捕获 respawn 目标版本，停旧/构建纳入 per-name 锁串行，
+        提交前在锁内比对版本：注册表实例已非捕获版本时本次构建为败者——
+        对自己构建的新实例调用 on_stop 后丢弃。保证任一时刻每个 agent
+        只有一个存活实例，且被弃实例资源均经 on_stop 释放。
+
+        阶段划分（P1 修复保留）：外部调用（on_stop、构造）不持全局锁，
+        避免持全局锁调用外部代码导致死锁或长时间持锁。
         """
-        # 阶段 1: 锁内决策，收集 respawn 所需信息
+        # 阶段 1: 全局锁内决策 + 捕获目标实例版本
         with self._lock:
             meta = self._agent_metas.get(name)
             if not meta or not meta.respawn:
@@ -312,36 +328,44 @@ class Registry:
             stats.record_respawn()
             old_instance = self._instances.get(name)
 
-        # 阶段 2: 锁外执行外部调用（on_stop、构造），避免持锁阻塞
-        if old_instance and hasattr(old_instance, 'on_stop'):
-            try:
-                old_instance.on_stop()
-            except Exception as e:
-                _logger.warning(f"[Registry] 停止旧实例失败: {e}")
+        # 阶段 2/3: per-name 锁内串行执行（外部调用不持全局锁）
+        with self._get_respawn_lock(name):
+            if old_instance and hasattr(old_instance, 'on_stop'):
+                try:
+                    old_instance.on_stop()
+                except Exception as e:
+                    _logger.warning(f"[Registry] 停止旧实例失败: {e}")
 
-        new_instance = None
-        construct_error = None
-        if old_instance and hasattr(old_instance, '__class__'):
-            try:
-                new_instance = old_instance.__class__(
-                    name=name,
-                    meta=meta,
-                    config=meta.config,
-                    message_bus=getattr(old_instance, 'bus', None),
-                    registry=self,
-                )
-            except Exception as e:
-                construct_error = e
+            new_instance = None
+            construct_error = None
+            if old_instance and hasattr(old_instance, '__class__'):
+                try:
+                    new_instance = old_instance.__class__(
+                        name=name,
+                        meta=meta,
+                        config=meta.config,
+                        message_bus=getattr(old_instance, 'bus', None),
+                        registry=self,
+                    )
+                except Exception as e:
+                    construct_error = e
 
-        # 阶段 3: 锁内更新实例和状态
-        with self._lock:
-            if new_instance is not None:
-                self._instances[name] = new_instance
-                self._status[name] = AgentStatus.LOADED
-                _logger.info(f"[Registry] {name} 重启成功")
-            elif construct_error is not None:
-                _logger.error(f"[Registry] {name} 重启失败: {construct_error}")
-                self._status[name] = AgentStatus.ERROR
+            with self._lock:
+                if self._instances.get(name) is not old_instance:
+                    if new_instance is not None and hasattr(new_instance, 'on_stop'):
+                        try:
+                            new_instance.on_stop()
+                        except Exception as e:
+                            _logger.warning(f"[Registry] 丢弃败者实例失败: {e}")
+                    _logger.info(f"[Registry] {name} respawn 竞态败者：自建实例已 on_stop 丢弃")
+                    return
+                if new_instance is not None:
+                    self._instances[name] = new_instance
+                    self._status[name] = AgentStatus.LOADED
+                    _logger.info(f"[Registry] {name} 重启成功")
+                elif construct_error is not None:
+                    _logger.error(f"[Registry] {name} 重启失败: {construct_error}")
+                    self._status[name] = AgentStatus.ERROR
 
     # ─── 健康检查 ─────────────────────────────────
 

@@ -76,6 +76,7 @@ class StreamMetrics:
         self.events_dropped = 0
         self.chunks_emitted = 0
         self.sections_emitted = 0
+        self.drops_by_type: dict[str, int] = {}
         self._start_time = time.time()
         self._first_event_time: float | None = None
         self._last_event_time: float | None = None
@@ -92,9 +93,10 @@ class StreamMetrics:
             elif event_type == "section":
                 self.sections_emitted += 1
 
-    def record_drop(self):
+    def record_drop(self, event_type: str = "unknown"):
         with self._lock:
             self.events_dropped += 1
+            self.drops_by_type[event_type] = self.drops_by_type.get(event_type, 0) + 1
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -105,6 +107,7 @@ class StreamMetrics:
             return {
                 "events_emitted": self.events_emitted,
                 "events_dropped": self.events_dropped,
+                "drops_by_type": dict(self.drops_by_type),
                 "chunks_emitted": self.chunks_emitted,
                 "sections_emitted": self.sections_emitted,
                 "elapsed": elapsed,
@@ -127,7 +130,12 @@ class StreamCallback:
         - 背压控制: pause()/resume() 让消费者控制生产速率
         - 流式指标: metrics 属性实时反映 events/sec、延迟等
         - SSE 重连: get_events_since(event_id) 返回指定 ID 之后的事件
+        - 分级丢弃: 队列满时优先丢 progress/chunk，start/section/complete/error
+          等边界事件不丢（队首为边界事件时阻塞等待消费直到有空间或 closed）
     """
+
+    BOUNDARY_EVENT_TYPES = frozenset({"start", "section", "complete", "error"})
+    DROPPABLE_EVENT_TYPES = frozenset({"progress", "chunk"})
 
     def __init__(self, max_queue_size: int = 100):
         self._queue: queue.Queue = queue.Queue(maxsize=max_queue_size)
@@ -140,6 +148,8 @@ class StreamCallback:
         # 背压控制（Condition 使 pause 真正阻塞生产者，避免忙等自旋）
         self._pause_condition = threading.Condition()
         self._paused = False
+        # 分级丢弃的入队串行锁（多生产者并发做队列手术时保持一致）
+        self._emit_lock = threading.Lock()
         # 事件历史（用于 SSE 重连，保留最近 N 个事件）
         self._history: list[StreamEvent] = []
         self._history_max = 500
@@ -204,21 +214,51 @@ class StreamCallback:
 
         event = StreamEvent(event_type, data, section_index, total_sections)
         self.metrics.record_event(event_type)
-        try:
-            self._queue.put_nowait(event)
-        except queue.Full:
-            # 队列满时丢弃最旧的事件
-            self.metrics.record_drop()
-            try:
-                self._queue.get_nowait()
-                self._queue.put_nowait(event)
-            except queue.Empty:
-                pass
-        # 记录历史（用于 SSE 重连）
+        # 先记历史再入队：即使实时队列按分级策略拒发，SSE 重连仍可从历史补齐
         with self._lock:
             self._history.append(event)
             if len(self._history) > self._history_max:
                 self._history = self._history[-self._history_max:]
+        self._enqueue_tiered(event)
+
+    def _try_put(self, event: StreamEvent) -> bool:
+        try:
+            self._queue.put_nowait(event)
+            return True
+        except queue.Full:
+            return False
+
+    def _enqueue_tiered(self, event: StreamEvent) -> bool:
+        """分级丢弃入队。
+
+        队列未满直接入队。队列满时：
+          - progress/chunk 类事件直接丢弃（记分类 drop 计数）；
+          - start/section/complete/error 边界事件不可丢：优先从队首淘汰
+            progress/chunk 腾位；队首即边界事件时原样放回并阻塞等待消费，
+            直到腾出空间或 close()。
+        """
+        if self._try_put(event):
+            return True
+        if event.event_type not in self.BOUNDARY_EVENT_TYPES:
+            self.metrics.record_drop(event.event_type)
+            return False
+        while True:
+            if self._try_put(event):
+                return True
+            head = None
+            with contextlib.suppress(queue.Empty):
+                head = self._queue.get_nowait()
+            if head is not None:
+                if head.event_type in self.DROPPABLE_EVENT_TYPES:
+                    self.metrics.record_drop(head.event_type)
+                    continue
+                # 边界队首不可丢：放回（消费竞争导致放回失败时该事件已被完整消费）
+                with contextlib.suppress(queue.Full):
+                    self._queue.put_nowait(head)
+            if self._closed.is_set():
+                self.metrics.record_drop(event.event_type)
+                return False
+            time.sleep(0.002)
 
     # ── 背压控制 ──────────────────────────────
 

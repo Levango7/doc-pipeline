@@ -20,7 +20,7 @@
 | **可观测** | 结构化日志（轮转）、Prometheus Metrics、Admin REST API、Dashboard、日志查询 |
 | **成本** | LLM 调用成本追踪（12 供应商定价）、预算熔断、`GET /api/cost` |
 | **安全** | Agent 沙箱（AST 安全检查 + 白名单）、.env 明文密钥检测 |
-| **运维** | 版本锁定、Schema 校验、基础鉴权、Docker 化、配置热更新、MCP Server |
+| **运维** | 版本锁定（`--write-lock` 生成/刷新 pipelines/*.lock；运行时自动比对 version + config_hash，配置漂移即拒绝执行）、Schema 校验、基础鉴权、Docker 化、配置热更新、MCP Server |
 
 ---
 
@@ -278,7 +278,8 @@ export ADMIN_API_KEY="your-secret-key"
 python run.py input.md --admin
 ```
 
-客户端请求携带 `Authorization: Bearer <key>` 或 `?token=<key>`。
+客户端请求携带 `Authorization: Bearer <key>` 或 `?token=<key>`（仅 SSE 场景才建议 query token，
+常规请用 Authorization 头，避免凭证落入访问日志）。
 未配置时禁用鉴权（仅本机访问）。`/health` 与静态资源始终免鉴权。
 
 ### MCP Server

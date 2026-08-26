@@ -1,51 +1,51 @@
 agents:
   checker:
-    config_hash: 4bfe725f1beb
+    config_hash: e8cfc5dfe3f9
     dependencies:
     - quality_gate
     pool_size: 1
     version: '1.1'
   fetcher:
-    config_hash: 25a5957a508f
+    config_hash: 608ae47a27f3
     dependencies:
     - researcher
     pool_size: 1
     version: '1.0'
   layout:
-    config_hash: ca84f44debbf
+    config_hash: fd4abfa751e5
     dependencies:
     - checker
     pool_size: 1
     version: '2.0'
   quality_gate:
-    config_hash: 3e054d72ac00
+    config_hash: eb687d6b1b46
     dependencies:
     - writer
     pool_size: 1
     version: '2.0'
   researcher_pool_0:
-    config_hash: 74c471e5fa10
+    config_hash: dacb28d53838
     dependencies: &id001 []
     pool_size: 2
     version: '2.0'
   researcher_pool_1:
-    config_hash: 74c471e5fa10
+    config_hash: dacb28d53838
     dependencies: *id001
     pool_size: 2
     version: '2.0'
-  safewriter:
-    config_hash: 4f0866da9ba5
+  safe_writer:
+    config_hash: a5047e77162a
     dependencies:
     - layout
     pool_size: 1
     version: '2.0'
   writer:
-    config_hash: 4a0a5f42ffc6
+    config_hash: fab8f299574f
     dependencies:
     - fetcher
     pool_size: 1
     version: '2.0'
-created_at: '2026-07-08T03:31:43'
+created_at: '2026-08-26T12:45:19'
 node_count: 8
 pipeline: docgen
-plan_id: bd145a9e
+plan_id: 06c9c140
