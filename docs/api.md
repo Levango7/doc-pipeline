@@ -79,6 +79,7 @@ curl -X POST http://127.0.0.1:8910/api/cache/clear \
 |------|------|------|
 | GET | `/agents` | 已注册 Agent 列表 |
 | GET | `/api/agents/{name}` | Agent 详情 |
+| GET | `/api/pipeline` | 流水线信息（已注册 Agent、pipelines/ 下可用的 YAML 清单、版本号） |
 | GET | `/api/config` | 配置快照 |
 | POST | `/api/config` | 更新单项配置（`{"key": ..., "value": ...}`），需 `X-Confirm: yes` |
 | POST | `/api/config/reload` | 热重载并通知所有 Agent 的 `on_config_update` |

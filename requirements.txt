@@ -2,7 +2,6 @@
 # 核心依赖
 PyYAML>=6.0
 requests>=2.28.0
-numpy>=1.24.0
 
 # 搜索引擎（可选，未安装时 researcher 自动降级为 bing/sogou/360）
 duckduckgo-search>=4.0.0
@@ -10,12 +9,8 @@ duckduckgo-search>=4.0.0
 # 异步 I/O（可选，未安装时 fetcher 降级为同步）
 aiohttp>=3.8.0
 
-# 网页正文提取（three_pass_pipeline 优先使用）
-trafilatura>=2.0.0
-
-# HTML 解析（Fetcher 正文提取）
+# HTML 解析（Fetcher 正文提取优先使用，未安装时降级为正则启发式）
 selectolax>=0.3.0
-
 
 # 开发/CI 依赖（不在运行时 requirements 中安装，CI 单独 pip install）：
 # ruff>=0.4.0       # lint + format
@@ -23,3 +18,4 @@ selectolax>=0.3.0
 # bandit>=1.7.0     # 安全扫描
 # pip-audit>=2.7.0  # 依赖审计
 # pytest-cov>=5.0   # 覆盖率
+# numpy>=1.24.0     # 仅 benchmark.py 性能基准使用（产品运行时不依赖，CI perf job 单独安装）

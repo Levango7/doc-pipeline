@@ -18,7 +18,7 @@
 | **质量** | QualityGate v2（Profile 模板）、Style Enforcer、Citation Verifier、评分历史学习、**fact_checker 事实核查**（数字类声明 vs 检索源一致性，`--pipeline docgen-verified`） |
 | **弹性** | 熔断器、限流器、Agent Pool、背压、自动重生成、告警机制 |
 | **可观测** | 结构化日志（轮转）、Prometheus Metrics、Admin REST API、Dashboard、日志查询 |
-| **成本** | LLM 调用成本追踪（12 供应商定价）、预算熔断、`GET /api/cost` |
+| **成本** | LLM 调用成本追踪（16 供应商定价表）、预算熔断、`GET /api/cost` |
 | **安全** | Agent 沙箱（AST 安全检查 + 白名单）、.env 明文密钥检测 |
 | **运维** | 版本锁定（`--write-lock` 生成/刷新 pipelines/*.lock；运行时自动比对 version + config_hash，配置漂移即拒绝执行）、Schema 校验、基础鉴权、Docker 化、配置热更新、MCP Server |
 
@@ -138,18 +138,17 @@ python run.py test_input.md --dashboard
 | `pipeline_core/observability.py` | 结构化日志（异步批量写入）+ Prometheus Metrics |
 | `pipeline_core/admin_api.py` | REST API（多线程，健康/指标/任务/成本/告警/日志/配置管理） |
 | `pipeline_core/version_manager.py` | 文档版本管理（自动版本号/diff/回滚） |
-| `pipeline_core/batch_queue.py` | 批量文档生成队列 |
 | `pipeline_core/cache_manager.py` | 统一缓存（memory/file/multi 三级） |
-| `pipeline_core/llm_router.py` | 多供应商 LLM 路由器（10 供应商 fallback） |
-| `pipeline_core/search_engines.py` | 统一搜索引擎接口（10 引擎 + LRU+TTL 缓存） |
-| `pipeline_core/cost_tracker.py` | LLM 成本追踪（12 供应商定价表 + 预算熔断） |
+| `pipeline_core/llm_router.py` | 多供应商 LLM 路由器（16 供应商定义，按 .env 启用） |
+| `pipeline_core/search_engines.py` | 统一搜索引擎接口（11 引擎 + LRU+TTL 缓存） |
+| `pipeline_core/cost_tracker.py` | LLM 成本追踪（16 供应商定价表 + 预算熔断） |
 | `pipeline_core/alert_manager.py` | 告警机制（熔断/DLQ/限流/预算超限通知） |
 | `pipeline_core/quality_feedback.py` | 质量评分历史 + 弱项模式分析 + 写作建议 |
 | `pipeline_core/task_queue.py` | SQLite 持久化任务队列（中断恢复） |
 | `pipeline_core/mcp_server.py` | MCP Server（JSON-RPC 2.0 over stdio，5 tools） |
 | `pipeline_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
 | `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
-| `agents/` | 7 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/layout/safe_writer） |
+| `agents/` | 9 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/fact_checker/layout/safe_writer/requirements_analyzer） |
 
 ---
 
@@ -202,15 +201,18 @@ topology:
 # technical-doc.yaml
 name: technical-doc
 threshold: 70
+# 权重维度与 quality_gate._score_all 的产出一一对应（总和 = 1.0）
 weights:
-  completeness: 0.35
-  accuracy: 0.25
-  readability: 0.20
-  style: 0.10
-  citation: 0.10
+  completeness: 0.18
+  structure: 0.12
+  readability: 0.10
+  citation: 0.12
+  depth: 0.10
+  substance: 0.18
+  topic_relevance: 0.20
 style_rules:
-  - id: bad_link
-    pattern: '\]\((#[^)]*|javascript:|data:)'
+  - id: broken_links
+    pattern: '\[([^\]]*)\]\(\s*\)'
     penalty: 15
     message: 空链接/危险协议
 citation:
@@ -218,6 +220,9 @@ citation:
   penalty_per_issue: 5
   check_url_format: true
 ```
+
+权重只在 Quality Profile 一处定义;style 不作为评分维度——风格问题按
+`style_rules` 以扣分形式计入（与 citation 扣分共享 `max_penalty` 上限）。
 
 运行时通过 pipeline YAML 的 `quality_profile` 切换。
 
@@ -334,11 +339,20 @@ Webhook 使用独立事件循环异步发送（aiohttp 连接池），不阻塞�
 ## 🐳 Docker
 
 ```bash
+# 构建并启动常驻 Admin API 服务（生产配置，绑定 0.0.0.0:8910；
+# 非回环绑定强制要求 ADMIN_API_KEY，缺失时容器会拒绝启动并提示）
 docker build -t doc-pipeline .
-docker run -p 8910:8910 -v $(pwd)/checkpoints:/app/checkpoints doc-pipeline
+docker run -d -p 8910:8910 -e ADMIN_API_KEY=change-me \
+  -v $(pwd)/checkpoints:/app/checkpoints doc-pipeline
+
+# 提交任务：POST /api/tasks（鉴权头 Authorization: Bearer <ADMIN_API_KEY>）
+# 一次性生成文档（覆盖默认 CMD）：
+docker run --rm -v $(pwd)/output:/app/output doc-pipeline \
+  test_input.md -o output/doc.md
 ```
 
-非 root 用户运行，暴露 8910 端口，`/app/checkpoints` 与 `/app/logs` 为持久化卷。
+非 root 用户运行，暴露 8910 端口，`/app/checkpoints` 与 `/app/logs` 为持久化卷；
+HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 
 ---
 
@@ -348,7 +362,7 @@ docker run -p 8910:8910 -v $(pwd)/checkpoints:/app/checkpoints doc-pipeline
 python -m pytest tests/ -v
 ```
 
-**650+ 个测试全部通过**（另有若干 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
+**940+ 个测试全部通过**（另有若干 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
 
 ```bash
 # 运行真实端到端测试（需要网络 + LLM API Key）
@@ -370,13 +384,14 @@ python -m pytest tests/ -m e2e -v
 
 ### 维度
 
-| 维度 | 权重 (technical-doc) | 说明 |
-|------|---------------------|------|
-| 完整性 | 0.35 | 章节覆盖、引用数量 |
-| 准确性 | 0.25 | 事实一致性 |
-| 可读性 | 0.20 | 段落长度、术语密度 |
-| 风格 | 0.10 | 标题规范、空链接检测 |
-| 引用 | 0.10 | URL 格式、死链检测 |
+评分共 7 个维度（`technical-doc` 权重）：主题相关度 topic_relevance 0.20、
+完整性 completeness 0.18、内容实质度 substance 0.18（信息密度/重复率/实质信号）、
+结构 structure 0.12、引用 citation 0.12、可读性 readability 0.10、深度 depth 0.10。
+风格问题不计分，按 profile 的 `style_rules` 扣分（与引用扣分共享 `max_penalty=40` 上限）。
+
+> 诚实边界：以上维度均为规则/启发式度量（结构、字数、关键词命中、URL 格式等），
+> 不构成事实正确性验证——事实核查请使用 `--pipeline docgen-verified` 的 fact_checker
+> （其启发式边界见 `agents/fact_checker.py` 模块注释）。
 
 ---
 
@@ -384,8 +399,8 @@ python -m pytest tests/ -m e2e -v
 
 ```
 doc-pipeline/
-├── agents/              # 7 个 Agent 实现
-├── pipeline_core/       # 核心编排框架（35 个模块）
+├── agents/              # 9 个 Agent 实现
+├── pipeline_core/       # 核心编排框架（32 个模块）
 │   ├── pipeline.py      # Orchestrator（统一节点模型）
 │   ├── dag_executor.py  # DAG 构建 + 节点调度
 │   ├── scheduler.py     # YAML → ExecutionPlan + Schema + Lockfile
@@ -397,7 +412,6 @@ doc-pipeline/
 │   ├── observability.py # 结构化日志（异步）+ Metrics
 │   ├── admin_api.py     # REST API（多线程）
 │   ├── version_manager.py # 文档版本管理
-│   ├── batch_queue.py   # 批量文档队列
 │   ├── cache_manager.py # 统一缓存
 │   ├── llm_router.py    # LLM 多供应商路由
 │   ├── search_engines.py # 10 引擎统一接口 + 缓存
@@ -443,7 +457,7 @@ doc-pipeline/
 | LLM 额度消耗 | 0（质量门控跳过，规则兜底） | mock |
 | 消息总线吞吐 | 批量 drain 50 条/轮 | — |
 | 缓存命中 | 125 万 ops/s | — |
-| 测试覆盖 | 650+ tests (+ e2e) | — |
+| 测试覆盖 | 1200+ tests (+ e2e) | — |
 
 ### 生产模式预期耗时（config.production.json）
 

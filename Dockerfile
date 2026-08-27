@@ -50,15 +50,18 @@ VOLUME ["/app/checkpoints", "/app/logs", "/app/versions", "/app/backups"]
 # Admin API
 EXPOSE 8910
 
-# Health check: 先确认 admin API 进程存活再探 /health
-# （容器刚启动时 CMD 还是 --help，8910 未监听，直接 curl 会误报 unhealthy）
+# Health check: 纯 Python 探测 /health（slim 镜像无 procps/pgrep，勿依赖）。
+# /health 永远免鉴权，容器内直接探 127.0.0.1 即可
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD pgrep -f "python run.py" > /dev/null 2>&1 && \
-        python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8910/health', timeout=3)" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8910/health', timeout=3)"
 
 # Drop privileges
 USER app:app
 
-# Default: run pipeline with production config
+# Default: 常驻 Admin API 服务模式（生产配置绑定 0.0.0.0:8910）。
+# 生产配置的非回环绑定强制要求 ADMIN_API_KEY —— 运行时请传入：
+#   docker run -d -p 8910:8910 -e ADMIN_API_KEY=change-me doc-pipeline
+# 需要一次性生成文档时覆盖默认 CMD：
+#   docker run --rm -v $(pwd)/output:/app/output doc-pipeline test_input.md -o output/doc.md
 ENTRYPOINT ["python", "run.py"]
-CMD ["--help"]
+CMD ["-c", "config.production.json", "--admin", "--daemon"]

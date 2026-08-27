@@ -133,8 +133,8 @@ def _check_dependencies(report: StartupReport):
     required = {"yaml": "PyYAML"}
     optional = {
         "aiohttp": "aiohttp (异步 HTTP，缺失时 fetcher 降级为同步)",
-        "numpy": "numpy (TF-IDF 语义匹配，缺失时降级为关键词匹配)",
-        "requests": "requests (HTTP 请求，缺失时使用 urllib)",
+        "requests": "requests (HTTP 请求，fetcher 同步下载路径使用)",
+        "selectolax": "selectolax (HTML 正文提取，缺失时降级为正则启发式)",
     }
 
     for mod, name in required.items():
