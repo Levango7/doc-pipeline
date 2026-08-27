@@ -5,12 +5,11 @@ threshold: 75
 max_regenerations: 3
 
 weights:
-  completeness: 0.30
+  completeness: 0.35
   structure: 0.20
   readability: 0.25
   citation: 0.10
   depth: 0.10
-  style: 0.05
 
 style_rules:
   - name: heading_levels

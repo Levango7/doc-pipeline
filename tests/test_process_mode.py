@@ -108,7 +108,7 @@ class ProcProbeAgent(BaseAgent):
 
 @pytest.fixture
 def probe_env(tmp_path):
-    """生成探针 agent 目录 + 携带 child_context 的已剥离 executor"""
+    """生成探针 agent 目录 + 携带 child_context 的已剥离 executor + 真实输入文件"""
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
 
@@ -116,6 +116,11 @@ def probe_env(tmp_path):
     runtime_dir.mkdir()
 
     (agents_dir / "proc_probe.py").write_text(PROBE_AGENT, encoding="utf-8")
+
+    # 查询提取失败会使节点直接失败（不再静默回退默认主题），
+    # 子进程执行测试需要让提取阶段正常通过
+    input_file = tmp_path / "proc_input.md"
+    input_file.write_text("子进程执行探针主题\n", encoding="utf-8")
 
     executor = _make_executor()
     executor.child_context = {
@@ -129,14 +134,14 @@ def probe_env(tmp_path):
         },
     }
     stripped = pickle.loads(pickle.dumps(executor))
-    return agents_dir, stripped
+    return agents_dir, stripped, str(input_file)
 
 
 class TestRealSubprocessExecution:
 
     def test_build_child_context_loads_probe(self, probe_env):
         """上下文构建：registry 中能取到探针 agent 实例"""
-        agents_dir, _ = probe_env
+        agents_dir, _, _ = probe_env
         registry, bus = _build_child_context(
             {"agents_dir": str(agents_dir), "agent_names": ["proc_probe"], "config": {}}
         )
@@ -150,12 +155,12 @@ class TestRealSubprocessExecution:
 
         断言返回的 pid 与父进程不同 → 执行确实发生在子进程。
         """
-        _, stripped = probe_env
+        _, stripped, input_file = probe_env
 
         from pipeline_core.pipeline import PipelineTask, TaskNode
 
         task = PipelineTask(id="proc_test", pipeline_name="proc_test",
-                            input_file="", config={})
+                            input_file=input_file, config={})
         node = TaskNode(name="proc_probe", agent_name="proc_probe")
         # 生产流程在提交前会把节点注册进 task.dag_nodes（execute_node 内部按名取 attempts）
         node.attempts = 1
@@ -163,7 +168,7 @@ class TestRealSubprocessExecution:
         plan = SimpleNamespace(pipeline_name="proc_test", raw={})
 
         with ProcessPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_execute_node_worker, stripped, task, node, "", plan)
+            future = pool.submit(_execute_node_worker, stripped, task, node, input_file, plan)
             result = future.result(timeout=120)
 
         assert result["status"] == "ok"

@@ -280,11 +280,10 @@ class DAGExecutor:
             return {"error": f"Agent {base_agent} 被限流"}
 
         try:
-            # 查询词提取（所有节点共享完整 queries；researcher 按池分片）
-            try:
-                all_queries = self._extract_queries(input_file, node)
-            except Exception:
-                all_queries = [node.agent_config.config.get("default_query", "Python 异步编程")]
+            # 查询词提取（所有节点共享完整 queries；researcher 按池分片）。
+            # 提取失败（空输入且未配置 default_query）直接抛错使节点失败，
+            # 绝不静默回退到无关的内置默认主题。
+            all_queries = self._extract_queries(input_file, node)
             meta2 = self.registry.get_meta(base_agent)
             if getattr(meta2, "extracts_queries", False) and pool_size > 1 and len(all_queries) >= pool_size:
                 queries = all_queries[pool_idx::pool_size]
@@ -864,6 +863,11 @@ class DAGExecutor:
 
     def _extract_queries(self, input_file: str, node) -> list[str]:
         """从输入文件提取查询词（按行，过滤注释/空行/噪音行）。
+
+        噪音行（如"这是一个测试，用于验证流水线是否正常工作"）只在存在其他有效行时
+        才被过滤——若输入仅有这些行，它们本身就是用户给出的主题，必须原样作为查询词，
+        不得替换成无关的默认主题（修复：含"请生成/帮我写"的真实主题被静默丢弃，
+        导致 API/MCP 提交的任务跑偏到硬编码默认查询）。
         使用 per-file 缓存避免同一 level 内多个节点重复读取文件。"""
         cache_key = input_file
         cached = self._query_cache.get(cache_key)
@@ -873,18 +877,29 @@ class DAGExecutor:
             content = f.read()
         noise = [r"^这是一个测试", r"^用于验证", r"验证流水线", r"是否正常工作",
                  r"^test\b", r"^测试\b", r"请生成", r"帮我写"]
-        queries = []
+        candidates = []
         for line in content.split("\n"):
             q = line.strip()
             if not q or q.startswith("#"):
                 continue
             if len(q) < 4:
                 continue
-            if any(re.search(p, q, re.I) for p in noise):
-                continue
-            queries.append(q)
+            candidates.append(q)
+        queries = [q for q in candidates
+                   if not any(re.search(p, q, re.I) for p in noise)]
+        if not queries and candidates:
+            # 所有行都命中噪音模式：它们是仅有的输入，直接作为查询词
+            queries = candidates
         if not queries:
-            queries = [node.agent_config.config.get("default_query", "Python 异步编程")]
+            default_query = node.agent_config.config.get("default_query")
+            if default_query:
+                queries = [str(default_query)]
+            else:
+                raise ValueError(
+                    f"输入文件 {input_file!r} 未提取到任何有效检索词"
+                    "（空文件/全部为注释或过短行）。请在输入文件首行写明文档主题，"
+                    "或为节点配置 default_query。"
+                )
         self._query_cache.set(cache_key, queries)
         return queries
 

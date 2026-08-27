@@ -51,12 +51,8 @@ agents:
       quality_profile: technical-doc
       threshold: 70
       max_regenerations: 3
-      weights:
-        completeness: 0.25
-        structure: 0.20
-        readability: 0.15
-        citation: 0.20
-        depth: 0.20
+      # 权重统一由 pipelines/quality/technical-doc.yaml 提供，此处不再内嵌 weights
+      # （内嵌会按键覆盖 profile，稀释 substance/topic_relevance 并造成双源漂移）
 
   - name: checker
     version: "1.1"

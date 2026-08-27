@@ -4,7 +4,8 @@ description: "通用技术文档质量标准"
 threshold: 70
 max_regenerations: 3
 
-# 评分维度及其权重（总和 = 1.0）
+# 评分维度及其权重（总和 = 1.0；与 quality_gate._score_all 产出的维度一一对应。
+# style 不在权重内——风格问题经 style_rules 以扣分形式计入，不是评分维度）
 weights:
   completeness: 0.18
   structure: 0.12
@@ -13,7 +14,6 @@ weights:
   depth: 0.10
   substance: 0.18    # 内容实质度（信息密度/重复率/实质信号）
   topic_relevance: 0.20  # 主题相关度（文档是否真讲 query 主题）
-  style: 0.10      # 风格检查权重
 
 # 风格规则（可禁用）
 style_rules:

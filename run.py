@@ -302,6 +302,15 @@ def _render_task_result(args_args: argparse.Namespace, task, task_id: str) -> No
               f"{'、'.join(empty_sections)}；建议配置 LLM API Key 后重新生成",
               file=sys.stderr)
 
+    # 质量门控警告：重做耗尽仍不达标时任务仍为 DONE，必须在此显式呈现，
+    # 否则用户拿到低分文档却只看到"执行完成"（此前仅存在于日志）
+    qg_result = (task.result or {}).get("quality_gate") or {}
+    if isinstance(qg_result, dict) and qg_result.get("status") == "accepted_with_warnings":
+        print(f"\n⚠️ WARNING: 质量门控经 {qg_result.get('generation_count', '?')} 轮重做后仍未达标"
+              f"（得分 {qg_result.get('overall_score', '?')}，低于阈值），"
+              f"文档以带警告状态发布。各维度得分: {qg_result.get('scores', {})}",
+              file=sys.stderr)
+
     print(f"{'='*60}")
 
     if args_args.report:

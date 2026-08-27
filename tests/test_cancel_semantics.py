@@ -13,9 +13,20 @@ import time
 from contextlib import suppress
 from types import SimpleNamespace
 
+import pytest
+
 from pipeline_core.dag_executor import DAGExecutor
 from pipeline_core.executor_factory import create_executor
 from pipeline_core.pipeline import PipelineTask, TaskNode, TaskStatus
+
+
+@pytest.fixture
+def input_file(tmp_path):
+    """真实输入文件：查询提取失败会使节点直接失败（不再静默回退默认主题），
+    本文件的测试只关心重试/取消语义，需要让提取阶段正常通过。"""
+    p = tmp_path / "in.md"
+    p.write_text("Kafka 流式架构设计\n", encoding="utf-8")
+    return str(p)
 
 
 class _FakeLogger:
@@ -129,7 +140,7 @@ class TestPickleRoundtrip:
 
 
 class TestRetryCancellation:
-    def test_retry_loop_stops_on_global_shutdown(self):
+    def test_retry_loop_stops_on_global_shutdown(self, input_file):
         global_stop = threading.Event()
         bus = _StopOnFirstCallBus(global_stop)
         ex = _make_executor(global_stop=global_stop, bus=bus)
@@ -138,7 +149,7 @@ class TestRetryCancellation:
 
         start = time.monotonic()
         with create_executor(max_workers=2) as executor:
-            ret = ex.execute_level(task, [node], "in.md", _make_plan(), executor)
+            ret = ex.execute_level(task, [node], input_file, _make_plan(), executor)
         elapsed = time.monotonic() - start
 
         assert ret is False
@@ -147,7 +158,7 @@ class TestRetryCancellation:
         assert bus.calls == 1
         assert elapsed < 4.0
 
-    def test_retry_loop_wakes_immediately_on_task_cancel(self):
+    def test_retry_loop_wakes_immediately_on_task_cancel(self, input_file):
         node = _make_node()
         task = _make_task(node)
         bus = _StopOnFirstCallBus(task.stop_event)
@@ -155,7 +166,7 @@ class TestRetryCancellation:
 
         start = time.monotonic()
         with create_executor(max_workers=2) as executor:
-            ret = ex.execute_level(task, [node], "in.md", _make_plan(), executor)
+            ret = ex.execute_level(task, [node], input_file, _make_plan(), executor)
         elapsed = time.monotonic() - start
 
         assert ret is False
@@ -165,13 +176,13 @@ class TestRetryCancellation:
 
 
 class TestAsyncFailFastParity:
-    def test_async_fail_fast_sets_stop_event(self):
+    def test_async_fail_fast_sets_stop_event(self, input_file):
         bus = _BusinessFailBus()
         ex = _make_executor(bus=bus)
         node = _make_node(max_retries=1)
         task = _make_task(node)
 
-        ret = asyncio.run(ex.execute_level_async(task, [node], "in.md", _make_plan()))
+        ret = asyncio.run(ex.execute_level_async(task, [node], input_file, _make_plan()))
 
         assert ret is False
         assert task.status == TaskStatus.FAILED

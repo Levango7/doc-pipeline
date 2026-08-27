@@ -212,7 +212,7 @@ class TestResumeMergeAndSkip:
         fresh = _make_node(name="layout", agent_name="layout", dependencies=["writer"])
         task = _make_task([done, fresh])
         with create_executor(max_workers=2) as executor:
-            ret = ex.execute_level(task, [done, fresh], "in.md", _make_plan(), executor)
+            ret = ex.execute_level(task, [done, fresh], INPUT_FILE, _make_plan(), executor)
         assert ret is True
         assert [c["to_a"] for c in bus.calls] == ["layout"]
         assert task.result["writer"] == {"content": "# Resumed"}
@@ -227,7 +227,7 @@ class TestResumeMergeAndSkip:
         empty_ok.result = {}
         task = _make_task([empty_ok])
         with create_executor(max_workers=2) as executor:
-            ret = ex.execute_level(task, [empty_ok], "in.md", _make_plan(), executor)
+            ret = ex.execute_level(task, [empty_ok], INPUT_FILE, _make_plan(), executor)
         assert ret is True
         assert [c["to_a"] for c in bus.calls] == ["writer"]
 
@@ -240,7 +240,7 @@ class TestResumeMergeAndSkip:
         done.result = {"content": "# A"}
         fresh = _make_node(name="layout", agent_name="layout", dependencies=["writer"])
         task = _make_task([done, fresh])
-        ret = asyncio.run(ex.execute_level_async(task, [done, fresh], "in.md", _make_plan()))
+        ret = asyncio.run(ex.execute_level_async(task, [done, fresh], INPUT_FILE, _make_plan()))
         assert ret is True
         assert [c["to_a"] for c in bus.calls] == ["layout"]
 
@@ -251,11 +251,11 @@ class TestResumeMergeAndSkip:
         node.attempts = 0
         node._bypass_idempotency = True
         task = _make_task([node])
-        result = ex.execute_node_from_scheduler(task, node, "in.md", _make_plan())
+        result = ex.execute_node_from_scheduler(task, node, INPUT_FILE, _make_plan())
         assert result == {"ok": True}
         key1 = bus.calls[0]["idempotency_key"]
         assert key1.startswith("t1:a:0:r") and key1 != "t1:a:0"
-        ex.execute_node_from_scheduler(task, node, "in.md", _make_plan())
+        ex.execute_node_from_scheduler(task, node, INPUT_FILE, _make_plan())
         assert bus.calls[1]["idempotency_key"] != key1
 
     def test_normal_node_keeps_stable_idempotency_key(self):
@@ -264,7 +264,7 @@ class TestResumeMergeAndSkip:
         node = _make_node()
         node.attempts = 1
         task = _make_task([node])
-        ex.execute_node_from_scheduler(task, node, "in.md", _make_plan())
+        ex.execute_node_from_scheduler(task, node, INPUT_FILE, _make_plan())
         assert bus.calls[0]["idempotency_key"] == "t1:a:1"
 
 
@@ -345,7 +345,7 @@ class TestErrorDictBusinessFailure:
         node = _make_node(max_retries=2)
         task = _make_task([node])
         with create_executor(max_workers=2) as executor:
-            ret = ex.execute_level(task, [node], "in.md", _make_plan(), executor)
+            ret = ex.execute_level(task, [node], INPUT_FILE, _make_plan(), executor)
         assert ret is False
         assert task.status == TaskStatus.FAILED
         assert len(bus.calls) == 2
@@ -438,7 +438,7 @@ class TestUnstartedSiblingCleanup:
         task = _make_task([bad, sib])
         try:
             with create_executor(max_workers=2) as executor:
-                ret = ex.execute_level(task, [bad, sib], "in.md", _make_plan(), executor)
+                ret = ex.execute_level(task, [bad, sib], INPUT_FILE, _make_plan(), executor)
                 assert ret is False
                 assert task.status == TaskStatus.FAILED
                 assert task.dag_nodes["bad"].status == "failed"
@@ -456,7 +456,7 @@ class TestRegistryStatusNoLeak:
         node = _make_node(max_retries=1)
         task = _make_task([node])
         with create_executor(max_workers=1) as executor:
-            ex.execute_level(task, [node], "in.md", _make_plan(), executor)
+            ex.execute_level(task, [node], INPUT_FILE, _make_plan(), executor)
         assert reg.statuses["a"] == AgentStatus.ERROR
 
     def test_stopped_status_after_success(self):
@@ -465,6 +465,6 @@ class TestRegistryStatusNoLeak:
         node = _make_node()
         task = _make_task([node])
         with create_executor(max_workers=1) as executor:
-            ret = ex.execute_level(task, [node], "in.md", _make_plan(), executor)
+            ret = ex.execute_level(task, [node], INPUT_FILE, _make_plan(), executor)
         assert ret is True
         assert reg.statuses["a"] == AgentStatus.STOPPED

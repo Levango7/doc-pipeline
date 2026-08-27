@@ -18,7 +18,7 @@ agents:
     pool_size: 1
     version: '2.0'
   quality_gate:
-    config_hash: eb687d6b1b46
+    config_hash: 27a3851a7e03
     dependencies:
     - writer
     pool_size: 1

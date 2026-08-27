@@ -774,6 +774,14 @@ class PipelineOrchestrator:
         with self._lock:
             self._running_tasks[task.id] = task
 
+        # 入持久化任务队列（与 legacy run() 对齐）：主执行路径此前从不 submit，
+        # 导致 --recover 与队列查询对 run_plan 任务无效（finalize 里的
+        # update_status 更新的是不存在的行，空转）。
+        # run_plan_async 不同步此改动：其 finalize 刻意不更新队列，
+        # 只入队不更新会残留 running 状态被 recover 误重启
+        self.task_queue.submit(task.id, plan.pipeline_name, input_file,
+                               plan.raw.get("pipeline", {}))
+
         task.started_at = time.time()
         total_nodes = plan.node_count
 
