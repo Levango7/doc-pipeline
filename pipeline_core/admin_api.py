@@ -1459,6 +1459,11 @@ class AdminHandler(BaseHTTPRequestHandler):
             return
 
         task_id = params.get("task_id", ["stream"])[0]
+        # task_id 会拼进临时输入文件名（stream_{task_id}.md），必须做字符白名单校验，
+        # 防止 ../ 路径遍历把攻击者控制的内容写到任意路径（与 /tasks 路由同一防线）
+        if task_id != "stream" and not _validate_task_id(task_id):
+            self._json({"error": "invalid task id"}, 400)
+            return
         query = params.get("query", [""])[0]
         title = params.get("title", ["自动生成文档"])[0]
 

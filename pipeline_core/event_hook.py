@@ -36,6 +36,9 @@ import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
+from urllib.parse import urljoin
+
+from .url_guard import validate_public_http_url
 
 _logger = logging.getLogger(__name__)
 
@@ -54,6 +57,7 @@ _webhook_engine_ready = False  # True only when queue + worker fully initialized
 _WEBHOOK_QUEUE_MAXSIZE = 10000
 _WEBHOOK_TIMEOUT = 10  # seconds per HTTP POST
 _WEBHOOK_MAX_CONCURRENCY = 50  # max simultaneous in-flight webhook requests
+_WEBHOOK_MAX_REDIRECTS = 5  # 与 fetcher 对齐：重定向手动逐跳跟随，每跳重新过 SSRF 校验
 
 
 async def _async_webhook_worker():
@@ -104,17 +108,41 @@ async def _async_webhook_worker():
 
 
 async def _deliver_one(semaphore: asyncio.Semaphore, job: tuple):
-    """Deliver a single webhook with concurrency control."""
+    """Deliver a single webhook with concurrency control.
+
+    SSRF 出网层兜底（补齐 admin_api 注册期仅拦裸 IP 的缺口）：
+    aiohttp 关闭自动重定向，逐跳手动跟随，并对每一跳重新执行
+    validate_public_http_url（DNS 全记录解析 + 私网/环回/链路本地/元数据段拒绝），
+    封死"注册时公网域名 → 解析或 302 跳内网"的绕过路径。
+    """
     hook_id, url, headers, body = job
     async with semaphore:
+        current = url
         try:
-            async with _webhook_session.post(  # type: ignore[union-attr]
-                url, data=body, headers=headers
-            ) as resp:
-                if resp.status >= 400:
-                    _logger.warning(
-                        f"[EventHook] webhook {url} returned {resp.status}"
-                    )
+            for hop in range(_WEBHOOK_MAX_REDIRECTS + 1):
+                ok, reason = await asyncio.to_thread(validate_public_http_url, current)
+                if not ok:
+                    _logger.error(
+                        f"[EventHook] webhook {url} 第{hop + 1}跳 SSRF 拒绝({reason}): {current}")
+                    return
+                async with _webhook_session.post(  # type: ignore[union-attr]
+                    current, data=body, headers=headers, allow_redirects=False,
+                ) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        loc = resp.headers.get("Location", "")
+                        if not loc:
+                            _logger.error(
+                                f"[EventHook] webhook {current} 返回 {resp.status} 但缺少 Location，放弃")
+                            return
+                        current = urljoin(current, loc)
+                        continue
+                    if resp.status >= 400:
+                        _logger.warning(
+                            f"[EventHook] webhook {url} returned {resp.status}"
+                        )
+                    return
+            _logger.error(
+                f"[EventHook] webhook {url} 重定向超过 {_WEBHOOK_MAX_REDIRECTS} 跳上限，放弃")
         except Exception as e:
             _logger.error(f"[EventHook] webhook {url} failed: {e}")
 
