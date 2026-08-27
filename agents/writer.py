@@ -853,7 +853,7 @@ class WriterAgent(BaseAgent):
 
     def _enhance_system_prompt_with_feedback(self, system_prompt: str) -> str:
         """质量闭环：读取历史低分模式，附加改进提醒到 system prompt"""
-        try:
+        with contextlib.suppress(Exception):
             from pipeline_core.quality_feedback import get_quality_feedback
             recs = get_quality_feedback().get_recommendations()
             if recs:
@@ -862,8 +862,6 @@ class WriterAgent(BaseAgent):
                     enhancement += f"- {r}\n"
                 self.log_info(f"质量闭环：应用 {len(recs[:3])} 条改进建议")
                 return system_prompt + enhancement
-        except Exception:
-            pass
         return system_prompt
 
     @staticmethod

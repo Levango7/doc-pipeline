@@ -63,7 +63,7 @@ agents:
     config:
       style: markdown
 
-  - name: safewriter
+  - name: safe_writer
     version: "2.0"
     timeout: 30
     dependencies: ["layout"]
@@ -80,14 +80,14 @@ topology:
     - [quality_gate]
     - [checker]
     - [layout]
-    - [safewriter]
+    - [safe_writer]
   edges:
     - [researcher, fetcher]
     - [fetcher, writer]
     - [writer, quality_gate]
     - [quality_gate, checker]
     - [checker, layout]
-    - [layout, safewriter]
+    - [layout, safe_writer]
 
 pipeline:
   timeout: 60

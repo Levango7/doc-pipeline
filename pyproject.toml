@@ -49,6 +49,21 @@ markers = [
     "slow: 慢测试（超时 >60s，默认运行但可用 -m 'not slow' 跳过）",
 ]
 
+[tool.coverage.run]
+# 覆盖率只计产品源码：tests/scripts/benchmark 不入门禁
+# （--cov=. 会把 tests/ 自身的近 100% 计入，虚高到 ~79%，无门禁价值）
+relative_files = true
+include = ["pipeline_core/*", "agents/*", "run.py"]
+omit = ["tests/*", "scripts/*", "benchmark.py"]
+
+[tool.coverage.report]
+# 门禁 = 2026-08-28 实测基线 65%（源码口径、排除 e2e）- 2，防覆盖率无声滑坡
+fail_under = 63
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"

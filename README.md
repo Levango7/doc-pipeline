@@ -88,6 +88,10 @@ python run.py test_input.md --dashboard
 | `--recover` | 启动时恢复中断的任务队列 |
 | `--config, -c` | 自定义配置文件 |
 | `--json-output` | 输出 JSON 结果（供 wrapper 解析） |
+| `--legacy` | （已冻结，仅兜底）按 Agent 注册元数据执行，不经 Scheduler/YAML；生产请用默认 DAG 模式 |
+
+> **执行路径说明**：默认走声明式 DAG（`pipelines/*.yaml` + Scheduler，含 lockfile 校验与 per-node 配置）。
+> `--legacy` 是历史兜底路径，已冻结不再演进，两条路径的一致性由 `tests/test_dual_path_parity.py` 护栏。
 
 ---
 
@@ -457,7 +461,7 @@ doc-pipeline/
 | LLM 额度消耗 | 0（质量门控跳过，规则兜底） | mock |
 | 消息总线吞吐 | 批量 drain 50 条/轮 | — |
 | 缓存命中 | 125 万 ops/s | — |
-| 测试覆盖 | 1200+ tests (+ e2e) | — |
+| 测试覆盖 | 940+ tests (+ e2e) | — |
 
 ### 生产模式预期耗时（config.production.json）
 

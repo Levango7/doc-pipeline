@@ -422,7 +422,14 @@ class PipelineOrchestrator:
     def run(self, task_id: str | None = None, pipeline_name: str = "",
             input_file: str = "", config: dict | None = None,
             wait: bool = True, resume: bool = False) -> PipelineTask:
-        """执行流水线（支持 DAG 并行）"""
+        """执行流水线（支持 DAG 并行）
+
+        .. deprecated::
+            Legacy 路径：DAG 由 agent 注册元数据（registry.deps_order）构建，
+            按设计绕过 pipelines/ YAML 与 Scheduler（无 lockfile 校验、无 per-node
+            config）。仅保留为 --legacy 与 YAML 加载失败时的兜底；新能力只进
+            run_plan()。两条路径的漂移由 tests/test_dual_path_parity.py 护栏。
+        """
 
         task_id = task_id or str(uuid.uuid4())[:8]
 
@@ -628,43 +635,6 @@ class PipelineOrchestrator:
     def _cleanup_old_checkpoints(self, max_age_days: int = 7):
         self._checkpoint.cleanup_old(max_age_days)
 
-    # ─── 事务回滚 ─────────────────────────────
-
-    def _rollback_task(self, task: PipelineTask, snapshot: dict) -> bool:
-        """从快照回滚 task 状态（事务恢复）"""
-        try:
-            task.result = dict(snapshot.get("result", {}))
-            task.steps = list(snapshot.get("steps", []))
-            task.error = snapshot.get("error", "")
-            task.status = TaskStatus.RUNNING
-            task.progress = snapshot.get("progress", 0)
-            task.current_step = snapshot.get("current_step", 0)
-            self._logger.log("info", "已回滚", current_step=task.current_step, total_steps=len(task.steps))
-            return True
-        except Exception as e:
-            self._logger.log("error", "回滚失败", error=str(e))
-            return False
-
-    def _snapshot_state(self, task: PipelineTask) -> dict:
-        """获取当前任务状态快照（用于事务回滚）"""
-        return {
-            "result": dict(task.result),
-            "steps": [
-                {
-                    "step_name": s.step_name,
-                    "agent_name": s.agent_name,
-                    "status": s.status,
-                    "error": s.error,
-                    "started_at": s.started_at,
-                    "finished_at": s.finished_at,
-                }
-                for s in task.steps
-            ],
-            "error": task.error,
-            "progress": task.progress,
-            "current_step": task.current_step,
-        }
-
     # ─── 报告和回调 ─────────────────────────────
 
     def _merge_pooled_results(self, task: PipelineTask) -> None:
@@ -829,9 +799,6 @@ class PipelineOrchestrator:
                     if task.status == TaskStatus.CANCELLED:
                         return
 
-                    # ── 事务边界：快照当前状态 ──
-                    self._snapshot_state(task)
-
                     max_workers = max(
                         (node.agent_config.parallelism.get("max_workers", 1) for node in level),
                         default=1,
@@ -981,8 +948,6 @@ class PipelineOrchestrator:
                     await asyncio.sleep(0.5)
                 if task.status == TaskStatus.CANCELLED:
                     break
-
-                self._snapshot_state(task)
 
                 for node in level:
                     dag_node = TaskNode(

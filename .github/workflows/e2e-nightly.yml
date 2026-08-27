@@ -1,0 +1,68 @@
+name: E2E Nightly
+
+# 真实端到端回归：调用真实 LLM + 搜索引擎，跑 tests/ 下 -m e2e 用例。
+# 与默认 CI 的区别：CI 用 addopts="-m 'not e2e'" 跳过这些用例（无需密钥、可离线），
+# 本工作流在夜间用仓库 Secrets 注入 .env 后真实执行，兜住"mock 全绿但真实 API 断了"的盲区。
+#
+# 密钥约定（均为可选 Repository Secrets；缺哪个，对应用例自动 skip 而非红）：
+#   E2E_LLM_API_KEY / E2E_LLM_API_URL / E2E_LLM_MODEL  —— OpenAI 兼容 LLM（激活 LLM 用例）
+#   E2E_BOCHA_API_KEY / E2E_TAVILY_API_KEY             —— 搜索（激活搜索用例，至少其一）
+#   E2E_SERPER_API_KEY / E2E_FIRECRAWL_API_KEY         —— 备选搜索/抓取（可选）
+# 用例自带 skipif 护栏（tests/test_e2e_real.py::_has_env/_has_llm）：
+# .env 无真实 key 时跳过，因此未配置 Secrets 的 fork 上本工作流恒为绿。
+
+on:
+  schedule:
+    # UTC 18:00 ≈ 北京 02:00（夜间低峰，避开 API 限流高峰）
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pytest>=8.0" "pytest-asyncio>=0.23"
+
+      # 用 Secrets 生成 .env（e2e 用例读 .env 文件而非进程环境变量）。
+      # Secrets 经 env: 传入再以 if 判空写入，避免 ${{ }} 直接内联进 shell 的注入风险；
+      # 未配置的 Secret 为空 → 对应行不写入 → 用例 skipif 跳过。
+      - name: Generate .env from secrets
+        env:
+          LLM_API_KEY: ${{ secrets.E2E_LLM_API_KEY }}
+          LLM_API_URL: ${{ secrets.E2E_LLM_API_URL }}
+          LLM_MODEL: ${{ secrets.E2E_LLM_MODEL }}
+          BOCHA_API_KEY: ${{ secrets.E2E_BOCHA_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.E2E_TAVILY_API_KEY }}
+          SERPER_API_KEY: ${{ secrets.E2E_SERPER_API_KEY }}
+          FIRECRAWL_API_KEY: ${{ secrets.E2E_FIRECRAWL_API_KEY }}
+        run: |
+          : > .env
+          append() { if [ -n "$2" ]; then printf '%s=%s\n' "$1" "$2" >> .env; fi; }
+          append LLM_API_KEY "$LLM_API_KEY"
+          append LLM_API_URL "$LLM_API_URL"
+          append LLM_MODEL "$LLM_MODEL"
+          append BOCHA_API_KEY "$BOCHA_API_KEY"
+          append TAVILY_API_KEY "$TAVILY_API_KEY"
+          append SERPER_API_KEY "$SERPER_API_KEY"
+          append FIRECRAWL_API_KEY "$FIRECRAWL_API_KEY"
+          # Admin API 本机信任模式（e2e 仅回环访问，无需鉴权）
+          echo "ADMIN_API_KEY=" >> .env
+          echo ".env 已生成，非空配置行数: $(grep -c '=' .env || true)"
+
+      - name: Run e2e tests
+        run: |
+          # 显式 -m e2e 覆盖 pyproject addopts 里的 "-m 'not e2e'"
+          python -m pytest tests/ -m e2e -v --tb=short

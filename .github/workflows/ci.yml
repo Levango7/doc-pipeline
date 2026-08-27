@@ -46,7 +46,9 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          python -m pytest tests/ -v --tb=short --cov=. --cov-report=term-missing --cov-report=html
+          # bare --cov 采用 pyproject [tool.coverage.run] 的源码口径（pipeline_core/agents/run.py，
+          # 不含 tests/），并由 [tool.coverage.report] fail_under=63 门禁：覆盖率跌破阈值即红。
+          python -m pytest tests/ -v --tb=short --cov --cov-report=term-missing --cov-report=html
 
       - name: Security scan (bandit)
         run: |

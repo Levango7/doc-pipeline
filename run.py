@@ -228,11 +228,9 @@ def _poll_task_progress(orch: PipelineOrchestrator, args_args: argparse.Namespac
         print("[run] 任务已暂停，可使用 --resume 续传")
         if args_args.daemon:
             print("\n[run] 守护进程模式激活，按 Ctrl+C 再次退出")
-            try:
+            with contextlib.suppress(KeyboardInterrupt):
                 while True:
                     time_module.sleep(10)
-            except KeyboardInterrupt:
-                pass
         return False
     return True
 
@@ -279,11 +277,9 @@ def _render_task_result(args_args: argparse.Namespace, task, task_id: str) -> No
     print(f"\n{'='*60}")
     print(f"流水线执行完成 | 状态: {task.status.value}")
     if task.finished_at and task.started_at:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             duration = float(task.finished_at) - float(task.started_at)
             print(f"耗时: {duration:.1f}s")
-        except (TypeError, ValueError):
-            pass
 
     if task.steps:
         print("\n执行步骤:")
@@ -400,12 +396,10 @@ def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
 def _run_daemon(orch: PipelineOrchestrator) -> None:
     """守护进程模式：保持 Admin API 常驻直到收到 KeyboardInterrupt"""
     print("\n[run] 守护进程模式 — 按 Ctrl+C 退出")
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         import time
         while True:
             time.sleep(10)
-    except KeyboardInterrupt:
-        pass
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -424,7 +418,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
   # 从断点续传
   python run.py docs/README.md --task-id mytask --resume
 
-  # 旧模式（直接注册 Agent）
+  # 旧模式（已冻结，仅兜底：按 Agent 注册元数据执行，不经 Scheduler/YAML）
   python run.py docs/README.md --legacy
         """
     )
@@ -447,7 +441,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report", action="store_true", help="生成详细报告")
     parser.add_argument("--config", "-c", help="配置文件路径")
     parser.add_argument("--json-output", action="store_true", help="输出 JSON 结果到 stdout（供 wrapper 解析）")
-    parser.add_argument("--legacy", action="store_true", help="使用旧模式（直接注册 Agent，不经过 Scheduler）")
+    parser.add_argument("--legacy", action="store_true",
+                        help="（已冻结，仅兜底）旧模式：直接按 Agent 注册元数据执行，"
+                             "不经过 Scheduler/YAML。生产请使用默认 DAG 模式")
     parser.add_argument("--write-lock", action="store_true",
                         help="加载流水线后重新生成 pipelines/<name>.lock（覆盖），然后继续执行")
     parser.add_argument("--admin", action="store_true", help="启动管理 API 服务")

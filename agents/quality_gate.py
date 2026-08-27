@@ -14,7 +14,10 @@ QualityGate Agent v2 - 质量门禁（Profile 模板驱动）
   - 引用检查可配置启用/禁用
   - 扣分上限可配置
 """
+import contextlib
 import re
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -105,6 +108,22 @@ def validate_style_rules(style_rules, profile_name: str) -> None:
             )
 
 
+@dataclass(frozen=True)
+class _RunCfg:
+    """单次质量评估的运行配置（只读快照）。
+
+    handle() 是并发入口，配置按请求解析、不再写回实例属性，
+    避免共享单例在不同 profile 的请求间互相污染。
+    """
+    profile_name: str
+    weights: dict
+    threshold: float
+    max_regenerations: int
+    max_penalty: float
+    citation_cfg: dict
+    style_rules: list
+
+
 class QualityGateAgent(BaseAgent):
     """质量门禁 Agent（Profile 驱动）"""
 
@@ -115,6 +134,8 @@ class QualityGateAgent(BaseAgent):
         profile_name = config.get("quality_profile", "technical-doc")
         self._profile = load_profile(profile_name)
         self._profile_name = self._profile.get("name", profile_name)
+        # 请求键（文件名/路径，区别于 profile 内部 name 字段），用作运行期解析的缓存键
+        self._profile_key = profile_name
 
         # 从 Profile 加载配置（fallback 到 config → 默认值）
         self._weights = {**self._profile.get("weights", {}), **config.get("weights", {})}
@@ -127,6 +148,25 @@ class QualityGateAgent(BaseAgent):
 
         # 编译风格规则（从 Profile 加载，不硬编码）
         self._style_rules = self._compile_style_rules(self._profile, profile_name)
+
+        # 初始化时的默认运行配置（已合并 agent config 覆盖）；
+        # 实例属性保留作为默认值快照，供 _overall_score/_check_style 等直调兼容
+        self._default_run_cfg = _RunCfg(
+            profile_name=self._profile_name,
+            weights=self._weights,
+            threshold=self._threshold,
+            max_regenerations=self._max_regenerations,
+            max_penalty=self._max_penalty,
+            citation_cfg=self._citation_cfg,
+            style_rules=self._style_rules,
+        )
+
+        # Profile 缓存：请求键 → (profile dict, 编译后风格规则)。
+        # 并发 handle() 共享只读条目，加载/编译在锁外完成（失败不进缓存）
+        self._profile_cache: dict[str, tuple[dict, list[dict]]] = {
+            profile_name: (self._profile, self._style_rules),
+        }
+        self._profile_cache_lock = threading.Lock()
 
         self.log_info(f"QualityGate v{AGENT_VERSION} (profile={self._profile_name}, "
                       f"threshold={self._threshold})")
@@ -146,16 +186,47 @@ class QualityGateAgent(BaseAgent):
                 })
         return rules
 
-    def _rebuild_from_profile(self, run_config: dict, source: str | None = None):
-        """从已加载的 profile 重建配置"""
-        self._weights = {**self._profile.get("weights", {}), **run_config.get("weights", {})}
-        self._threshold = run_config.get("threshold", self._profile.get("threshold", 70))
-        self._max_regenerations = run_config.get("max_regenerations",
-                                                  self._profile.get("max_regenerations", 3))
-        self._max_penalty = run_config.get("max_penalty", self._profile.get("max_penalty", 40))
-        self._citation_cfg = {**self._profile.get("citation", {}),
-                              **run_config.get("citation", {})}
-        self._style_rules = self._compile_style_rules(self._profile, source or self._profile_name)
+    def _get_cached_profile(self, profile_key: str) -> tuple[dict, list[dict]]:
+        """按请求键加载并编译 profile（带线程安全缓存）；坏规则抛 ValueError 且不进缓存"""
+        with self._profile_cache_lock:
+            cached = self._profile_cache.get(profile_key)
+        if cached is not None:
+            return cached
+        profile = load_profile(profile_key)
+        style_rules = self._compile_style_rules(profile, profile_key)
+        with self._profile_cache_lock:
+            self._profile_cache.setdefault(profile_key, (profile, style_rules))
+        return profile, style_rules
+
+    def _resolve_run_cfg(self, run_config: dict) -> _RunCfg:
+        """解析本次请求的运行配置：profile（run_config 指定，否则沿用初始化 profile）+ 覆盖项。
+
+        返回只读快照，不修改实例状态，并发 handle() 互不污染。
+        """
+        profile_key = run_config.get("quality_profile") or self._profile_key
+        if profile_key == self._profile_key:
+            # 与初始化同 profile：在初始化配置（已含 agent config 覆盖）之上叠加本次覆盖
+            base = self._default_run_cfg
+            return _RunCfg(
+                profile_name=base.profile_name,
+                weights={**base.weights, **run_config.get("weights", {})},
+                threshold=run_config.get("threshold", base.threshold),
+                max_regenerations=run_config.get("max_regenerations", base.max_regenerations),
+                max_penalty=run_config.get("max_penalty", base.max_penalty),
+                citation_cfg={**base.citation_cfg, **run_config.get("citation", {})},
+                style_rules=base.style_rules,
+            )
+        profile, style_rules = self._get_cached_profile(profile_key)
+        return _RunCfg(
+            profile_name=profile.get("name", profile_key),
+            weights={**profile.get("weights", {}), **run_config.get("weights", {})},
+            threshold=run_config.get("threshold", profile.get("threshold", 70)),
+            max_regenerations=run_config.get("max_regenerations",
+                                             profile.get("max_regenerations", 3)),
+            max_penalty=run_config.get("max_penalty", profile.get("max_penalty", 40)),
+            citation_cfg={**profile.get("citation", {}), **run_config.get("citation", {})},
+            style_rules=style_rules,
+        )
 
     def handle(self, msg: Message) -> dict | None:
         """处理质量检查请求"""
@@ -168,43 +239,39 @@ class QualityGateAgent(BaseAgent):
         if not content:
             return {"status": "error", "message": "内容为空", "score": 0}
 
-        # 支持从流水线配置覆盖 Quality Profile
+        # 支持从流水线配置覆盖 Quality Profile（按请求解析，不修改共享实例状态）
         run_config = payload.get("config", {})
-        profile_name = run_config.get("quality_profile", "technical-doc")
-        if profile_name != self._profile_name:
-            self._profile = load_profile(profile_name)
-            self._profile_name = self._profile.get("name", profile_name)
-            self._rebuild_from_profile(run_config, source=profile_name)
+        cfg = self._resolve_run_cfg(run_config)
 
-        # 多维度评分（按 profile weights）
+        # 多维度评分（按 cfg weights）
         queries = payload.get("queries", []) or []
         scores = self._score_all(content, queries)
-        overall = self._overall_score(scores)
+        overall = self._overall_score(scores, cfg.weights)
 
-        # 风格检查（从 profile 规则）
-        style_issues = self._check_style(content)
+        # 风格检查（从 cfg 规则）
+        style_issues = self._check_style(content, cfg.style_rules)
         style_penalty = sum(i.get("penalty", 0) for i in style_issues)
 
         # 引用检查（可禁用）
         citation_penalty = 0
         citation_report = {"total_refs": 0, "issues": []}
-        if self._citation_cfg.get("enabled", True):
-            citation_report = self._check_citations(content)
-            citation_penalty = len(citation_report.get("issues", [])) * self._citation_cfg.get("penalty_per_issue", 5)  # type: ignore[arg-type]
+        if cfg.citation_cfg.get("enabled", True):
+            citation_report = self._check_citations(content, cfg.citation_cfg)
+            citation_penalty = len(citation_report.get("issues", [])) * cfg.citation_cfg.get("penalty_per_issue", 5)  # type: ignore[arg-type]
 
         # 总扣分
-        total_penalty = min(style_penalty + citation_penalty, self._max_penalty)
+        total_penalty = min(style_penalty + citation_penalty, cfg.max_penalty)
         overall = max(0, overall - total_penalty)
 
-        needs_regenerate = overall < self._threshold
-        can_regenerate = generation_count < self._max_regenerations
+        needs_regenerate = overall < cfg.threshold
+        can_regenerate = generation_count < cfg.max_regenerations
 
         result = {
             "status": "pass" if not needs_regenerate else "fail",
             "task_id": task_id,
             "overall_score": round(overall, 1),
             "scores": {k: round(v, 1) for k, v in scores.items()},
-            "profile": self._profile_name,
+            "profile": cfg.profile_name,
             "style_issues": style_issues,
             "citation_report": citation_report,
             "penalty": {"style": style_penalty, "citation": citation_penalty, "total": total_penalty},
@@ -216,32 +283,28 @@ class QualityGateAgent(BaseAgent):
         if needs_regenerate:
             info = f" (扣分: {total_penalty})" if total_penalty > 0 else ""
             self.log_warning(
-                f"质量分 {overall:.1f} < {self._threshold}{info}"
+                f"质量分 {overall:.1f} < {cfg.threshold}{info}"
                 f"({'可重做' if can_regenerate else '已达上限'}) "
                 f"问题: {self._score_breakdown(scores)}"
             )
         else:
-            self.log_info(f"质量分 {overall:.1f}/{self._threshold} 通过 (profile={self._profile_name})")
+            self.log_info(f"质量分 {overall:.1f}/{cfg.threshold} 通过 (profile={cfg.profile_name})")
 
         self.publish("quality_gate.done" if not needs_regenerate else "quality_gate.failed", result)
 
-        try:
+        with contextlib.suppress(Exception):
             from pipeline_core.quality_feedback import record_quality
             record_quality(task_id=task_id, scores={k: round(v, 1) for k, v in scores.items()},
-                           pipeline=getattr(self, "_profile_name", ""))
-        except Exception:
-            pass
+                           pipeline=cfg.profile_name)
 
         # ── 事件钩子 ──
-        try:
+        with contextlib.suppress(Exception):
             from pipeline_core.event_hook import emit_event
             emit_event("quality_gate.evaluated", {"task_id": task_id, "score": round(overall, 1),
-                       "threshold": self._threshold, "passed": not needs_regenerate, "profile": self._profile_name})
+                       "threshold": cfg.threshold, "passed": not needs_regenerate, "profile": cfg.profile_name})
             if needs_regenerate and can_regenerate:
                 emit_event("quality_gate.regenerate", {"task_id": task_id, "score": round(overall, 1),
                            "generation_count": generation_count, "target": "writer"})
-        except Exception:
-            pass
 
         return result
 
@@ -454,13 +517,15 @@ class QualityGateAgent(BaseAgent):
             score = min(score, 40)
         return score
 
-    def _overall_score(self, scores: dict[str, float]) -> float:
-        if not self._weights:
+    def _overall_score(self, scores: dict[str, float],
+                       weights: dict | None = None) -> float:
+        weights = self._weights if weights is None else weights
+        if not weights:
             return sum(scores.values()) / max(len(scores), 1)
-        total_weight = sum(self._weights.values())
+        total_weight = sum(weights.values())
         if total_weight <= 0:
             return sum(scores.values()) / max(len(scores), 1)
-        total = sum(scores.get(k, 0) * w for k, w in self._weights.items())
+        total = sum(scores.get(k, 0) * w for k, w in weights.items())
         return total / total_weight  # type: ignore[no-any-return]
 
     def _score_breakdown(self, scores: dict[str, float]) -> str:
@@ -469,9 +534,10 @@ class QualityGateAgent(BaseAgent):
 
     # ── 风格检查（从 Profile 规则） ─────
 
-    def _check_style(self, content: str) -> list[dict]:
+    def _check_style(self, content: str,
+                     rules: list[dict] | None = None) -> list[dict]:
         issues = []
-        for rule in self._style_rules:
+        for rule in (self._style_rules if rules is None else rules):
             matches = rule["pattern"].findall(content)
             if matches:
                 issues.append({
@@ -484,7 +550,9 @@ class QualityGateAgent(BaseAgent):
 
     # ── 引用验证（可禁用） ─────
 
-    def _check_citations(self, content: str) -> dict:
+    def _check_citations(self, content: str,
+                         citation_cfg: dict | None = None) -> dict:
+        cfg = self._citation_cfg if citation_cfg is None else citation_cfg
         refs = re.findall(r"\[([^\]]*)\]\(([^)]*)\)", content)
         seen_urls = {}  # type: ignore[var-annotated]
         issues = []
@@ -495,11 +563,11 @@ class QualityGateAgent(BaseAgent):
                 seen_urls[url] = {"title": title, "count": 1}
             if not url:
                 continue
-            if self._citation_cfg.get("check_url_format", True) and not url.startswith(
+            if cfg.get("check_url_format", True) and not url.startswith(
                 ("http://", "https://", "#", "/")
             ):
                 issues.append(f"非标准 URL: {url[:50]}")
-            if self._citation_cfg.get("check_empty_title", True) and not title.strip():
+            if cfg.get("check_empty_title", True) and not title.strip():
                 issues.append("存在无标题链接")
         return {
             "total_refs": len(refs),

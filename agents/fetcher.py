@@ -141,11 +141,9 @@ class FetcherAgent(BaseAgent):
             self._stats = {"attempted": 0, "success": 0, "failed": 0, "filtered": 0}
 
         use_async = USE_ASYNC
-        try:
+        with contextlib.suppress(RuntimeError):
             asyncio.get_running_loop()
             use_async = False
-        except RuntimeError:
-            pass
         if use_async:
             articles = asyncio.run(self._fetch_all_async(results, query, task_id, task_dir))
         else:
@@ -658,14 +656,12 @@ class FetcherAgent(BaseAgent):
             return 0
         for item in self._temp_dir.iterdir():
             if item.name == task_id or item.name.startswith(task_id + "_"):
-                try:
+                with contextlib.suppress(OSError):
                     if item.is_dir():
                         shutil.rmtree(item)
                     else:
                         item.unlink()
                     count += 1
-                except OSError:
-                    pass
         if count:
             self.log_info(f"清理任务 {task_id} 的临时文件: {count} 个")
         return count
@@ -679,15 +675,13 @@ class FetcherAgent(BaseAgent):
         if not self._temp_dir.exists():
             return 0
         for item in self._temp_dir.iterdir():
-            try:
+            with contextlib.suppress(OSError):
                 if item.stat().st_mtime < cutoff:
                     if item.is_dir():
                         shutil.rmtree(item)
                     else:
                         item.unlink()
                     count += 1
-            except OSError:
-                pass
         if count:
             self.log_info(f"清理过期临时文件: {count} 个（>{max_age_hours}h）")
         return count

@@ -145,14 +145,12 @@ class CacheManager:
                     removed += 1
         if self.backend in ("file", "multi") and self._cache_dir:
             for f in self._cache_dir.glob("*.json"):
-                try:
+                with contextlib.suppress(json.JSONDecodeError, OSError):
                     with open(f, encoding="utf-8") as fh:
                         entry = json.load(fh)
                     if now - entry.get("ts", 0) > self.ttl:
                         os.remove(f)
                         removed += 1
-                except (json.JSONDecodeError, OSError):
-                    pass
         return removed
 
     # ── 核心接口 ──────────────────────────────
@@ -224,11 +222,9 @@ class CacheManager:
         """删除单个缓存项。"""
         if self.backend in ("file", "multi"):
             fpath = self._file_path(key)
-            try:
+            with contextlib.suppress(OSError):
                 if fpath.exists():
                     os.remove(fpath)
-            except OSError:
-                pass
         if self.backend in ("memory", "multi"):
             with self._lock:
                 self._cache.pop(key, None)

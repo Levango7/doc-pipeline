@@ -9,6 +9,7 @@ Researcher Agent v2 - 增强型内容检索插件
   - 搜索历史记录
 """
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -73,10 +74,10 @@ class ResearcherAgent(BaseAgent):
 
     DEFAULT_LOW_QUALITY_DOMAINS = set()  # type: ignore[var-annotated]
 
-    DEFAULT_PROSEARCH_PATHS = [
-        r"F:\Program Files\QClaw\resources\openclaw\config\skills\online-search\scripts\prosearch.cjs",
-        r"F:\Program Files (x86)\qclaw\resources\openclaw\config\skills\online-search\scripts\prosearch.cjs",
-    ]
+    # prosearch.cjs 脚本路径不内置默认值（机器相关路径不属于仓库）：
+    # 通过环境变量 PROSEARCH_SCRIPT_PATH 或 agent config 的 prosearch_paths 提供；
+    # 未提供时 _prosearch 自动跳过该引擎（优雅降级）
+    DEFAULT_PROSEARCH_PATHS: list[str] = []
 
     def __init__(self, name, meta, config, message_bus, registry):
         super().__init__(name, meta, config, message_bus, registry)
@@ -778,12 +779,10 @@ class ResearcherAgent(BaseAgent):
         避免线程池开销；不支持时回退到同步 _search + run_in_executor。
         """
         # 尝试 aiohttp 真异步路径（仅对 HTTP 搜索引擎生效）
-        try:
+        with contextlib.suppress(Exception):
             results = await self._search_http_async(query, engines or self._search_engines)
             if results is not None:
                 return results
-        except Exception:
-            pass
 
         # 回退：同步搜索 + run_in_executor
         loop = asyncio.get_event_loop()

@@ -352,11 +352,9 @@ def shutdown_webhook(timeout_s: float = 10.0):
             with contextlib.suppress(asyncio.QueueFull):
                 _webhook_async_queue.put_nowait(None)
 
-    try:
+    with contextlib.suppress(Exception):
         fut = asyncio.run_coroutine_threadsafe(_signal_stop(), _webhook_loop)
         fut.result(timeout=5)
-    except Exception:
-        pass
 
     # Wait for worker to drain in-flight requests and close session
     if _webhook_worker_future is not None:
@@ -377,13 +375,11 @@ def shutdown_webhook(timeout_s: float = 10.0):
             # before reaching its finally block, so we close the session here
             # via run_coroutine_threadsafe to avoid "Unclosed client session" warning.
             if _webhook_session is not None and not _webhook_session.closed:
-                try:
+                with contextlib.suppress(Exception):
                     close_fut = asyncio.run_coroutine_threadsafe(
                         _webhook_session.close(), _webhook_loop
                     )
                     close_fut.result(timeout=3)
-                except Exception:
-                    pass
 
     # Now safe to stop the event loop and join thread
     _webhook_loop.call_soon_threadsafe(_webhook_loop.stop)

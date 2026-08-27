@@ -9,6 +9,7 @@ Requirements Analyzer Agent v1.0
   - 输出 requirements_analyzer.done，供 downstream researcher/writer 消费
 """
 
+import contextlib
 import json
 import re
 from dataclasses import asdict, dataclass, field
@@ -344,10 +345,8 @@ class RequirementsAnalyzerAgent(BaseAgent):
             return str(raw)
         input_file = payload.get("input_file", "")
         if input_file and Path(input_file).exists():
-            try:
+            with contextlib.suppress(OSError):
                 return Path(input_file).read_text(encoding="utf-8")[:2000]
-            except OSError:
-                pass
         queries = payload.get("queries") or []
         joined = " ".join(q for q in queries if isinstance(q, str) and q)
         return joined[:2000]
@@ -359,12 +358,10 @@ def analyze(input_text: str, config: dict | None = None) -> DocumentSpec:
     """便捷函数：直接分析文本并返回 DocumentSpec（不经过 Agent 总线）"""
     cfg = config or {}
     llm_enabled = cfg.get("requirements_analyzer", {}).get("llm_enabled", True)
-    try:
+    with contextlib.suppress(Exception):
         if llm_enabled:
             from pipeline_core.llm_router import get_router
             router = get_router()
             if router and router.get_active_providers():
                 return _llm_analysis(input_text, cfg)
-    except Exception:
-        pass
     return _rule_based_analysis(input_text, cfg)

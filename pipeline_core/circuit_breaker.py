@@ -5,6 +5,7 @@ CircuitBreaker v1 - 熔断器 + Backoff with Jitter
 """
 from __future__ import annotations
 
+import contextlib
 import random
 import threading
 import time
@@ -142,7 +143,7 @@ class CircuitBreaker:
         这些外部调用可能阻塞或获取其他锁，因此绝不能在 self._lock
         持锁状态下执行（P0 修复：原先在 _transition_to 持锁时触发，存在死锁风险）。
         """
-        try:
+        with contextlib.suppress(Exception):
             from .event_hook import emit_event
             if new_state == CircuitState.OPEN:
                 emit_event("circuit_breaker.open", {"agent": self.name, "failure_count": self.failure_count})
@@ -152,8 +153,6 @@ class CircuitBreaker:
                       {"agent": self.name, "failure_count": self.failure_count})
             elif new_state == CircuitState.CLOSED:
                 emit_event("circuit_breaker.close", {"agent": self.name, "from": old_state.value})
-        except Exception:
-            pass
 
     def reset(self):
         """完全重置熔断器（恢复 CLOSED）"""

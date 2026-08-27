@@ -436,7 +436,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         return True
 
     def _audit_dangerous_op(self, action: str, params: dict) -> None:
-        try:
+        with contextlib.suppress(Exception):
             from .observability import get_logger
             get_logger().info(
                 f"[AdminAPI] 危险操作审计: {action}",
@@ -445,8 +445,6 @@ class AdminHandler(BaseHTTPRequestHandler):
                 client=self.client_address[0],
                 params=_fast_dumps(params, default=str),
             )
-        except Exception:
-            pass
 
     def _key_identity(self) -> str:
         """凭证指纹（sha256 前 12 位），避免审计日志落明文 key"""
@@ -741,14 +739,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                 path = val
             if path and Path(path).exists():
                 output_path_found = str(path)
-                try:
+                with contextlib.suppress(Exception):
                     size = Path(path).stat().st_size
                     if size <= _MAX_OUTPUT:
                         output_content = Path(path).read_text(encoding="utf-8")
                     else:
                         output_content = f"[文件过大 {size} bytes，已省略，路径: {path}]"
-                except Exception:
-                    pass
                 break
         self._json({
             "id": task.id,
@@ -772,7 +768,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             if writer_agent is None:
                 return None
             callback = StreamCallback()
-            writer_agent._active_stream_callback = callback
+            # 按 task_id 注册到 writer 的回调注册表（并发任务互不串扰；
+            # 旧单槽 _active_stream_callback 在多任务并发时会互相覆盖）
+            writer_agent._register_stream_callback(task_id, callback)
             register_callback(task_id, callback)
             track_stream_callback(task_id, callback)
             return callback
@@ -789,8 +787,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         with contextlib.suppress(Exception):
             writer_agent = self._find_streaming_agent()
             if writer_agent is not None \
-                    and getattr(writer_agent, "_active_stream_callback", None) is callback:
-                writer_agent._active_stream_callback = None
+                    and writer_agent._get_stream_callback(task_id) is callback:
+                writer_agent._unregister_stream_callback(task_id)
         with contextlib.suppress(Exception):
             callback.close()
 
@@ -1205,11 +1203,9 @@ class AdminHandler(BaseHTTPRequestHandler):
                 name = agent_info.get("name", "")
                 instance = self.orch.registry.get_instance(name)
                 if instance and hasattr(instance, "on_config_update"):
-                    try:
+                    with contextlib.suppress(Exception):
                         instance.on_config_update(changed_keys=["*"])
                         notified += 1
-                    except Exception:
-                        pass
             self._json({"reloaded": True, "agents_notified": notified})
         except Exception as e:
             self._json({"error": str(e)}, 500)
@@ -1351,13 +1347,21 @@ class AdminHandler(BaseHTTPRequestHandler):
             with contextlib.suppress(Exception):
                 cancel(task_id)
 
-    def _pump_sse(self, callback, task_id: str) -> None:
-        """推送回调事件流：空闲 15s 发送心跳帧；连续 BrokenPipe 达阈值则取消任务并停止。"""
+    def _pump_sse(self, callback, task_id: str, start_cursor: int = 0) -> None:
+        """推送回调事件流（游标式只读，多客户端安全）。
+
+        每个客户端持独立 event_id 游标，从回调事件历史读取而非破坏性出队——
+        多个 SSE 客户端并发订阅同一任务时各自拿到完整事件流，互不瓜分
+        （修复：原 get_events() 出队语义下第二个客户端会抢走第一个的事件）。
+        空闲 15s 发送心跳帧；连续 BrokenPipe 达阈值则取消任务并停止。
+        """
         broken = 0
         last_frame = time.time()
+        cursor = start_cursor
         while True:
-            events = callback.get_events()
+            events = callback.get_events_since(cursor)
             for ev in events:
+                cursor = ev.event_id
                 if self._send_sse(ev):
                     broken = 0
                     last_frame = time.time()
@@ -1384,16 +1388,14 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def _stream_replay(self, task_id: str, query: str,
                        existing_callback, last_event_id: int) -> None:
-        """SSE 重连：replay 错过的事件后继续监听，直到 complete/error"""
+        """SSE 重连：从 Last-Event-ID 游标继续推送（历史只读，无需二次入队）"""
         from .streaming import StreamEvent
         self._send_sse(StreamEvent("connected", {"task_id": task_id, "query": query,
                                                  "resumed_from": last_event_id,
                                                  "reconnect": True}))
-        missed_events = existing_callback.get_events_since(last_event_id)
-        for event in missed_events:
-            self._send_sse(event)
-        self._send_sse(StreamEvent("resumed", {"replayed": len(missed_events)}))
-        self._pump_sse(existing_callback, task_id)
+        replayed = len(existing_callback.get_events_since(last_event_id))
+        self._send_sse(StreamEvent("resumed", {"replayed": replayed}))
+        self._pump_sse(existing_callback, task_id, start_cursor=last_event_id)
 
     def _find_streaming_agent(self):
         """查找具备 handle_streaming 能力的 writer agent 实例"""
@@ -1415,8 +1417,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             try:
                 sched = Scheduler()
                 plan = sched.parse("docgen")
-                # 设置回调，writer 的 _restructure_document 会自动拾取
-                writer_agent._active_stream_callback = callback
+                # 按 task_id 注册回调，writer 的 _restructure_document 会按 task_id 拾取
+                writer_agent._register_stream_callback(task_id, callback)
                 task = _aio.run(orch.run_plan_async(
                     plan, input_file=str(input_file), task_id=task_id
                 ))
@@ -1433,7 +1435,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 callback.on_error(str(e))
             finally:
-                writer_agent._active_stream_callback = None
+                writer_agent._unregister_stream_callback(task_id)
                 with contextlib.suppress(OSError):
                     input_file.unlink()
 

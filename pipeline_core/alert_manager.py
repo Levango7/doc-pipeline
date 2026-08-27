@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -54,7 +55,7 @@ def alert(level: str, category: str, message: str, extra: dict = None):
     else:
         logger.info(log_msg)
 
-    try:
+    with contextlib.suppress(Exception):
         from .event_hook import emit_event
         emit_event(f"alert.{level}", {
             "category": category,
@@ -62,8 +63,6 @@ def alert(level: str, category: str, message: str, extra: dict = None):
             "level": level,
             "extra": extra or {},
         })
-    except Exception:
-        pass
 
 
 def get_alerts(level: str = None, category: str = None,

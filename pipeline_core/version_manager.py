@@ -348,12 +348,10 @@ class VersionManager:
                     idx = d / "index.json"
                     if idx.exists():
                         total_files += 1
-                        try:
+                        with contextlib.suppress(Exception):
                             data = json.loads(idx.read_text(encoding="utf-8"))
                             total_versions += len(data)
                             total_size += sum(e.get("size", 0) for e in data)
-                        except Exception:
-                            pass
         return {
             "tracked_files": total_files,
             "total_versions": total_versions,

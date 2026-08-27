@@ -93,23 +93,17 @@ class ConfigCenter:
             return True
         if value.lower() in ("false", "no", "0"):
             return False
-        try:
+        with contextlib.suppress(ValueError):
             return int(value)
-        except ValueError:
-            pass
-        try:
+        with contextlib.suppress(ValueError):
             return float(value)
-        except ValueError:
-            pass
         # JSON 容器：支持环境变量传入数组/对象，如 DOCPIPE_RESEARCHER__SEARCH_ENGINES='["mock"]'
         if value and value[0] in ("[", "{"):
-            try:
+            with contextlib.suppress(ValueError):
                 import json as _json
                 parsed = _json.loads(value)
                 if isinstance(parsed, (list, dict)):
                     return parsed
-            except ValueError:
-                pass
         return value
 
     def _deep_merge(self, base: dict, override: dict):
