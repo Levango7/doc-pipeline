@@ -535,7 +535,14 @@ class ResearcherAgent(BaseAgent):
     def _normalize_results(self, data: dict, query: str) -> list[SearchResult]:
         """标准化搜索结果"""
         results = []
-        items = data.get("results", []) or data if isinstance(data, list) else []  # type: ignore[var-annotated]
+        # 修复：原写法 `a or b if cond else c` 优先级等价于 `(a or b) if cond else c`，
+        # 导致 dict 输入永远得到空列表；按意图显式分支
+        if isinstance(data, dict):
+            items = data.get("results", [])
+        elif isinstance(data, list):
+            items = data
+        else:
+            items = []
 
         for item in items[:20]:  # 最多20条
             if isinstance(item, dict):

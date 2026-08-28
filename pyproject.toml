@@ -57,8 +57,8 @@ include = ["pipeline_core/*", "agents/*", "run.py"]
 omit = ["tests/*", "scripts/*", "benchmark.py"]
 
 [tool.coverage.report]
-# 门禁 = 2026-08-28 实测基线 65%（源码口径、排除 e2e）- 2，防覆盖率无声滑坡
-fail_under = 63
+# 门禁 = 2026-08-28 实测基线 85.80%（源码口径、排除 e2e，补测后）- 2，防覆盖率无声滑坡
+fail_under = 83
 exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.:",
