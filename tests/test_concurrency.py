@@ -319,7 +319,7 @@ class TestSQLiteConcurrency:
         conn.close()
         os.remove("tests/.test_store.db")
 
-    def test_store_concurrent_publish(self):
+    def test_store_concurrent_publish(self, wait_until):
         """多线程通过 MessageBus 发布 → Store 并发写入"""
         bus = MessageBus(enable_persistence=False)
         received = []
@@ -340,8 +340,8 @@ class TestSQLiteConcurrency:
         for t in ts:
             t.join()
 
-        time.sleep(0.5)
-        assert len(received) >= 140, f"期望 ≥140，实际 {len(received)}"
+        assert wait_until(lambda: len(received) >= 140, timeout=5), \
+            f"期望 ≥140，实际 {len(received)}"
 
         # 验证无重复/损坏
         unique = set(received)

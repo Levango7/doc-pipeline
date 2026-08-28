@@ -16,7 +16,7 @@ from pipeline_core.message_bus_v3 import MessageBus
 # ── 1. DLQ 真实重放 ──────────────────────────────
 
 class TestDLQReplay:
-    def test_dlq_replay_redelivers(self):
+    def test_dlq_replay_redelivers(self, wait_until):
         """故障 subscriber 异常 → 进 DLQ → 修复 → replay → 消息重投"""
         import tempfile
         db = os.path.join(tempfile.mkdtemp(), "replay.db")
@@ -31,9 +31,9 @@ class TestDLQReplay:
         bus.subscribe("topic.x", faulty)
         # 第一条消息触发异常 → 进 DLQ
         bus.publish("topic.x", "test", {"v": 1})
-        time.sleep(0.3)
+        assert wait_until(lambda: len(bus.list_dlq()) == 1), \
+            f"期望 1 条死信，实际 {len(bus.list_dlq())}"
         dlq = bus.list_dlq()
-        assert len(dlq) == 1, f"期望 1 条死信，实际 {len(dlq)}"
         dlq_id = dlq[0]["id"]
 
         # 替换 subscriber 为修复版
@@ -44,9 +44,7 @@ class TestDLQReplay:
         replayed = bus.replay_dlq(dlq_id)
         assert replayed is not None, "replay 应返回消息 dict"
         assert replayed["replay_count"] >= 1
-        time.sleep(0.3)
-
-        assert len(received) == 1, "replay 后消息应被重新投递"
+        assert wait_until(lambda: len(received) == 1), "replay 后消息应被重新投递"
         assert received[0].payload.get("v") == 1
 
         # replay_count 应递增
@@ -55,7 +53,7 @@ class TestDLQReplay:
 
         bus.shutdown()
 
-    def test_dlq_does_not_crash_bus(self):
+    def test_dlq_does_not_crash_bus(self, wait_until):
         """subscriber 异常不应导致整条总线崩溃"""
         import tempfile
         db = os.path.join(tempfile.mkdtemp(), "crash.db")
@@ -72,9 +70,8 @@ class TestDLQReplay:
 
         bus.publish("t.a", "s", {})  # 异常
         bus.publish("t.b", "s", {"x": 1})  # 正常
-        time.sleep(0.3)
-
-        assert len(ok_received) == 1, "总线崩溃会导致正常 subscriber 收不到"
+        assert wait_until(lambda: len(ok_received) == 1 and len(bus.list_dlq()) >= 1), \
+            "总线崩溃会导致正常 subscriber 收不到"
         assert bus.list_dlq()[0]["error"] == "fail"
 
         bus.shutdown()

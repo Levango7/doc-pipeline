@@ -8,18 +8,17 @@ from pipeline_core.message_bus_v3 import Message, MessageBus, MessageType
 class TestMessageBusBasics:
     """核心 pub/sub 流程"""
 
-    def test_subscribe_and_publish(self, bus):
+    def test_subscribe_and_publish(self, bus, wait_until):
         msgs = []
         bus.subscribe("test.topic", lambda m: msgs.append(m))
         result = bus.publish("test.topic", "sender", {"key": "value"})
 
         assert result["status"] == "sent", f"publish failed: {result}"
-        time.sleep(0.15)
-        assert len(msgs) == 1, f"expected 1 msg, got {len(msgs)}"
+        assert wait_until(lambda: len(msgs) == 1), f"expected 1 msg, got {len(msgs)}"
         assert msgs[0].payload["key"] == "value"
         assert msgs[0].from_agent == "sender"
 
-    def test_subscribe_priority(self, bus):
+    def test_subscribe_priority(self, bus, wait_until):
         """高优先级（低值）先执行 — Unix nice 风格"""
         order = []
 
@@ -27,7 +26,7 @@ class TestMessageBusBasics:
         bus.subscribe("prio.topic", lambda m: order.append("low"), priority=100)
 
         bus.publish("prio.topic", "t", {"x": 1})
-        time.sleep(0.15)
+        assert wait_until(lambda: len(order) == 2), f"expected 2 callbacks, got {order}"
         assert order == ["high", "low"], f"priority order wrong: {order}"
 
     def test_unsubscribe(self, bus):
@@ -47,14 +46,13 @@ class TestMessageBusBasics:
         result = bus.publish("empty.topic", "t", {"x": 1})
         assert result["status"] == "sent"
 
-    def test_multiple_topics(self, bus):
+    def test_multiple_topics(self, bus, wait_until):
         msgs = []
         bus.subscribe("a.topic", lambda m: msgs.append(m))
         bus.subscribe("b.topic", lambda m: msgs.append(m))
         bus.publish("a.topic", "t", {"topic": "a"})
         bus.publish("b.topic", "t", {"topic": "b"})
-        time.sleep(0.15)
-        assert len(msgs) == 2, f"expected 2 msgs, got {len(msgs)}"
+        assert wait_until(lambda: len(msgs) == 2), f"expected 2 msgs, got {len(msgs)}"
 
 
 class TestMessageBusBackpressure:
@@ -111,7 +109,7 @@ class TestMessageBusDLQ:
         dq = bus.list_dlq()
         assert isinstance(dq, list)
 
-    def test_dlq_on_subscriber_error(self, bus):
+    def test_dlq_on_subscriber_error(self, bus, wait_until):
         """订阅者抛异常不应影响总线——其他订阅者仍收到"""
         ok = []
 
@@ -123,14 +121,13 @@ class TestMessageBusDLQ:
 
         result = bus.publish("fail.topic", "s", {"x": 1})
         assert result["status"] == "sent"
-        time.sleep(0.2)
-        assert len(ok) >= 1, "working callback should receive"
+        assert wait_until(lambda: len(ok) >= 1), "working callback should receive"
 
 
 class TestMessageBusLifecycle:
     """生命周期"""
 
-    def test_subscriber_error_doesnt_crash_bus(self, bus):
+    def test_subscriber_error_doesnt_crash_bus(self, bus, wait_until):
         """一个订阅者抛异常不应影响其他订阅者"""
         ok = []
 
@@ -144,8 +141,7 @@ class TestMessageBusLifecycle:
         bus.subscribe("resilient.topic", working)
 
         bus.publish("resilient.topic", "s", {"x": 1})
-        time.sleep(0.2)
-        assert len(ok) == 1, "working callback should still receive"
+        assert wait_until(lambda: len(ok) == 1), "working callback should still receive"
 
 
 class TestMessageBusRequestRobustness:

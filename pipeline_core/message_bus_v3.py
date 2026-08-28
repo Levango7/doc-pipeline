@@ -472,9 +472,10 @@ class MessageBus:
         with contextlib.suppress(RuntimeError):
             self._worker_thread.join(timeout=3)
         # 锁内置 None，与 _get_store() 快照读取互斥；
-        # worker 自身的 thread-local 连接由其在退出时经 close_current_thread 关闭
+        # worker 自身的 thread-local 连接由其在退出时经 close_current_thread 关闭，
+        # 其余线程缓存的连接经 close_all() 按弱引用登记统一关闭
         with self._lock:
             store = self._store
             self._store = None
         if store is not None:
-            store.close()
+            store.close_all()

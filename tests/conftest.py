@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,25 @@ def collector():
     return cb, msgs
 
 
+@pytest.fixture
+def wait_until():
+    """轮询等待条件成立，替代「固定 sleep 后断言」的时序敏感写法。
+
+    用法：wait_until(lambda: len(msgs) == 2)
+    条件在 timeout 内成立即返回 True；超时返回最后一次求值结果（多为 False）。
+    """
+
+    def _wait(cond, timeout: float = 3.0, interval: float = 0.01):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if cond():
+                return True
+            time.sleep(interval)
+        return cond()
+
+    return _wait
+
+
 # ── Registry fixtures ──
 
 @pytest.fixture
@@ -126,3 +146,6 @@ def orch():
     )
     o.register_agents()
     yield o
+    # 释放 bus/task_queue/registry 持有的线程与 SQLite 连接，避免测试间泄漏
+    with contextlib.suppress(Exception):
+        o.shutdown()

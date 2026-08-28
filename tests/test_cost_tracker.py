@@ -171,3 +171,37 @@ class TestConcurrentRecord:
             t.start()
         for t in threads:
             t.join()
+
+
+class TestConnectionLifecycle:
+    """回归：连接用完即关，不依赖 GC 回收。
+
+    此前 `_get_conn` 每次新建连接且 `with conn` 只提交事务不关闭，
+    全量测试累积数百条 ResourceWarning: unclosed database。
+    """
+
+    def test_all_connections_closed_after_ops(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        import pipeline_core.cost_tracker as ct_mod
+
+        created = []
+        real_connect = sqlite3.connect
+
+        def _spy(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            created.append(conn)
+            return conn
+
+        monkeypatch.setattr(ct_mod.sqlite3, "connect", _spy)
+        t = CostTracker(db_path=str(tmp_path / "lifecycle.db"))
+        t.record("openai", 100, 50, cost=0.001, task_id="t1")
+        t.total_cost()
+        t.stats()
+        t.stats_by_task("t1")
+        t.cleanup(max_age_days=9999)
+
+        assert created, "应创建过 SQLite 连接"
+        for conn in created:
+            with pytest.raises(sqlite3.ProgrammingError):
+                conn.execute("SELECT 1")  # 已关闭的连接不可再操作

@@ -17,11 +17,13 @@
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -85,15 +87,26 @@ class CostTracker:
         self._budget: float = 0  # 0 = 无限制
         self._init_db()
 
-    def _get_conn(self) -> sqlite3.Connection:
+    @contextlib.contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        """每操作独立连接：with 块内提交事务，退出时保证关闭。
+
+        注意 sqlite3 的 ``with conn`` 只提交事务、不关闭连接，此处用
+        contextmanager 包一层确保用完即关，避免连接泄漏
+        （ResourceWarning: unclosed database）。
+        """
         conn = sqlite3.connect(self._db_path, timeout=5, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=3000")
-        return conn
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=3000")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_db(self):
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS cost_log (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,7 +134,7 @@ class CostTracker:
         残余窗口：check_budget 的「读总额→比对」与并发 record 之间无在途预留，
         高并发下多个调用可同时通过检查，存在轻微超预算可能（check-then-act）。
         """
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._conn() as conn:
             row = conn.execute("SELECT COALESCE(SUM(cost), 0) FROM cost_log").fetchone()
             return row[0] if row else 0
 
@@ -147,7 +160,7 @@ class CostTracker:
         """记录一次 LLM 调用"""
         if cost is None:
             cost = calc_cost(provider, prompt_tokens, completion_tokens)
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._conn() as conn:
             conn.execute(
                 "INSERT INTO cost_log (timestamp, provider, prompt_tokens, completion_tokens, "
                 "cost, task_id, model) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -166,7 +179,7 @@ class CostTracker:
 
     def stats(self, since: float = 0) -> dict:
         """按供应商汇总统计"""
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT provider, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens), SUM(cost) "
                 "FROM cost_log WHERE timestamp >= ? GROUP BY provider",
@@ -185,7 +198,7 @@ class CostTracker:
 
     def stats_by_task(self, task_id: str) -> dict:
         """按任务汇总"""
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT provider, COUNT(*), SUM(cost) "
                 "FROM cost_log WHERE task_id = ? GROUP BY provider",
@@ -214,7 +227,7 @@ class CostTracker:
     def cleanup(self, max_age_days: int = 90):
         """清理过期记录"""
         cutoff = time.time() - max_age_days * 86400
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._conn() as conn:
             conn.execute("DELETE FROM cost_log WHERE timestamp < ?", (cutoff,))
 
 

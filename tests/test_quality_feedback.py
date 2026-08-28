@@ -55,3 +55,32 @@ class TestQualityFeedback:
         feedback.record("t1", {"completeness": 80}, ["概述", "实践"])
         s = feedback.stats()
         assert s["total_records"] == 1
+
+
+class TestConnectionLifecycle:
+    """回归：连接用完即关，不依赖 GC 回收（同 cost_tracker 的泄漏修复）"""
+
+    def test_all_connections_closed_after_ops(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        import pipeline_core.quality_feedback as qf_mod
+
+        created = []
+        real_connect = sqlite3.connect
+
+        def _spy(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            created.append(conn)
+            return conn
+
+        monkeypatch.setattr(qf_mod.sqlite3, "connect", _spy)
+        fb = QualityFeedback(db_path=str(tmp_path / "lifecycle.db"))
+        fb.record("t1", {"completeness": 80, "structure": 60})
+        fb.get_weak_patterns()
+        fb.get_recommendations()
+        fb.stats()
+
+        assert created, "应创建过 SQLite 连接"
+        for conn in created:
+            with pytest.raises(sqlite3.ProgrammingError):
+                conn.execute("SELECT 1")  # 已关闭的连接不可再操作

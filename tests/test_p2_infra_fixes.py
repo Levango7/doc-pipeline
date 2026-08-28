@@ -174,6 +174,50 @@ class TestTaskQueueCloseAll:
             q.close()
 
 
+class TestPersistentStoreCloseAll:
+    """PersistentStore 与 TaskQueue 同模式：弱引用登记 + close_all 跨线程关闭 + 自愈"""
+
+    def test_close_all_closes_cross_thread_connections_and_self_heals(self, tmp_path):
+        from pipeline_core.message_bus_v3 import PersistentStore
+
+        store = PersistentStore(db_path=str(tmp_path / "store.db"))
+        store._get_conn()  # 主线程登记一条连接
+        errors = []
+
+        def _worker():
+            try:
+                store._get_conn().execute("SELECT 1")
+            except Exception as e:  # pragma: no cover
+                errors.append(e)
+
+        t = threading.Thread(target=_worker)
+        t.start()
+        t.join(timeout=10)
+        assert not errors
+
+        registered = sum(1 for ref in list(store._conn_refs) if ref() is not None)
+        assert registered >= 2  # 主线程 + 工作线程各一条
+
+        store.close_all()
+        assert all(ref() is None for ref in store._conn_refs)
+
+        # close_all 后自愈：主线程与新线程均可继续使用
+        store._get_conn().execute("SELECT 1")
+        t2_errors = []
+
+        def _worker2():
+            try:
+                store._get_conn().execute("SELECT 1")
+            except Exception as e:  # pragma: no cover
+                t2_errors.append(e)
+
+        t2 = threading.Thread(target=_worker2)
+        t2.start()
+        t2.join(timeout=10)
+        assert not t2_errors
+        store.close_all()
+
+
 # ─── 2. MessageBus：硬上限 / REQUEST 策略 / shutdown 安全 ─────────────
 
 class TestMessageBusHardCap:

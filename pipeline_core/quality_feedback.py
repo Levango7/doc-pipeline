@@ -11,11 +11,13 @@
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -33,15 +35,26 @@ class QualityFeedback:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _get_conn(self) -> sqlite3.Connection:
+    @contextlib.contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        """每操作独立连接：with 块内提交事务，退出时保证关闭。
+
+        注意 sqlite3 的 ``with conn`` 只提交事务、不关闭连接，此处用
+        contextmanager 包一层确保用完即关，避免连接泄漏
+        （ResourceWarning: unclosed database）。
+        """
         conn = sqlite3.connect(self._db_path, timeout=5, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        # busy_timeout 防止并发写入时立即抛 SQLITE_BUSY，与 cost_tracker 保持一致
-        conn.execute("PRAGMA busy_timeout=3000")
-        return conn
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            # busy_timeout 防止并发写入时立即抛 SQLITE_BUSY，与 cost_tracker 保持一致
+            conn.execute("PRAGMA busy_timeout=3000")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_db(self):
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS quality_history (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,7 +75,7 @@ class QualityFeedback:
         """记录一次质量评分"""
         sections_str = ",".join(section_types or [])
         now = time.time()
-        with self._lock, self._get_conn() as conn:
+        with self._lock, self._conn() as conn:
             for dim, score in scores.items():
                 conn.execute(
                     "INSERT INTO quality_history "
@@ -78,7 +91,7 @@ class QualityFeedback:
         返回每个维度的统计：平均分、样本数、低分次数、低分率
         只返回 min_samples 以上样本的维度。
         """
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT dimension, COUNT(*), AVG(score), SUM(is_weak) "
                 "FROM quality_history GROUP BY dimension HAVING COUNT(*) >= ?",
@@ -111,7 +124,7 @@ class QualityFeedback:
 
     def stats(self) -> dict:
         """总览"""
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(*), COUNT(DISTINCT task_id), AVG(score), SUM(is_weak)"
                 " FROM quality_history"

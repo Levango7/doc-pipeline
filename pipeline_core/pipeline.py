@@ -1168,6 +1168,7 @@ class PipelineOrchestrator:
         self._stop_event.set()
         self._cleanup_all_stale_temp(max_age_hours=24)
         self.bus.shutdown()
+        self.task_queue.close_all()
         self.registry.shutdown()
         self.stop_admin_api()
         self._cleanup_old_checkpoints(max_age_days=7)

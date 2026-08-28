@@ -15,6 +15,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import weakref
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -135,6 +136,12 @@ class MessageMetrics:
 
 # ─── SQLite 持久化层 ───────────────────────
 
+class _TrackableConnection(sqlite3.Connection):
+    """支持弱引用的连接（sqlite3.Connection 原生不可弱引用，经 factory 子类补槽）"""
+
+    __slots__ = ("__weakref__",)
+
+
 class PersistentStore:
     """SQLite-backed 消息持久化"""
 
@@ -142,20 +149,32 @@ class PersistentStore:
         self.db_path = db_path or DEFAULT_DB_PATH
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
+        # thread-local 连接随线程死亡只能靠 GC 回收，close() 只能关当前线程的连接。
+        # 创建连接时登记弱引用，close_all() 遍历关闭全部已登记连接（与 task_queue 同模式）。
+        self._conn_refs: set = set()
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        """每个线程独立的连接"""
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(
+        """获取当前线程缓存的连接（被 close_all() 关闭后自动重建，自愈）"""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.execute("SELECT 1")
+            except sqlite3.Error:
+                conn = None
+        if conn is None:
+            conn = sqlite3.connect(
                 self.db_path,
                 timeout=10,
                 check_same_thread=False,
+                factory=_TrackableConnection,
             )
-            self._local.conn.execute("PRAGMA journal_mode=WAL")
-            self._local.conn.execute("PRAGMA synchronous=NORMAL")
-            self._local.conn.execute("PRAGMA busy_timeout=5000")
-        return self._local.conn  # type: ignore[no-any-return]
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            self._local.conn = conn
+            self._conn_refs.add(weakref.ref(conn))
+        return conn
 
     def _init_db(self):
         """建表"""
@@ -431,3 +450,19 @@ class PersistentStore:
     def close_current_thread(self):
         """关闭调用线程自己的 thread-local SQLite 连接（供工作线程退出时自清理）。"""
         self.close()
+
+    def close_all(self):
+        """关闭本实例登记的全部 thread-local 连接（长驻进程优雅关停用）。
+
+        close()/close_current_thread() 只能关调用线程自己的连接；其他线程
+        缓存的连接经弱引用登记后在此统一关闭。残留线程下次 _get_conn()
+        时探测失效并自动重建（自愈）。
+        """
+        refs = list(self._conn_refs)
+        self._conn_refs.clear()
+        for ref in refs:
+            conn = ref()
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+        self._local.conn = None
