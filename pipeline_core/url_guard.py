@@ -52,9 +52,11 @@ def _resolve_hostname(hostname: str) -> list[str]:
 
 
 def clear_dns_cache() -> None:
-    """清空 DNS 缓存（供测试与运行时刷新使用）"""
+    """清空 DNS 缓存及 IP 判定缓存（供测试与运行时刷新使用）"""
     with _dns_cache_lock:
         _dns_cache.clear()
+    _literal_ip_check.cache_clear()
+    _dns_ip_check.cache_clear()
 
 
 def _resolve_cached(hostname: str) -> tuple[bool, list[str]]:
@@ -94,6 +96,34 @@ def _is_blocked_ip(addr: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> boo
     )
 
 
+from functools import lru_cache  # noqa: E402
+
+
+@lru_cache(maxsize=2048)
+def _literal_ip_check(host: str) -> str | None:
+    """字面 IP 快路径判定，按 host 缓存（同 IP 重复校验 O(1)）。
+
+    返回 None=非字面 IP（走 DNS 路径）；"..."=拒绝原因；""=公网字面量放行。
+    """
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if _is_blocked_ip(addr):
+        return f"IP {host!r} 为私有/保留地址，已拒绝"
+    return ""
+
+
+@lru_cache(maxsize=4096)
+def _dns_ip_check(ip_str: str) -> tuple[bool, bool]:
+    """DNS 返回的单条 IP 判定，按 ip_str 缓存。返回 (valid, blocked)。"""
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False, False
+    return True, _is_blocked_ip(addr)
+
+
 def validate_public_http_url(url: object) -> tuple[bool, str]:
     """校验 URL 是否为可安全请求的公网 http(s) 地址。
 
@@ -114,20 +144,19 @@ def validate_public_http_url(url: object) -> tuple[bool, str]:
         return False, "url 缺少主机名"
     if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
         return False, f"主机 {host!r} 为本机/本地域名，已拒绝"
-    try:
-        literal = ipaddress.ip_address(host)
-    except ValueError:
-        ok, resolved = _resolve_cached(host)
-        if not ok:
-            return False, f"DNS 解析失败({host!r})"
-        for ip_str in resolved:
-            try:
-                addr = ipaddress.ip_address(ip_str)
-            except ValueError:
-                return False, f"DNS 返回非法地址 {ip_str!r}"
-            if _is_blocked_ip(addr):
-                return False, f"{host!r} 解析到私有/保留地址 {ip_str!r}，已拒绝"
+    literal_result = _literal_ip_check(host)
+    if literal_result is not None:
+        if literal_result:
+            return False, literal_result
         return True, ""
-    if _is_blocked_ip(literal):
-        return False, f"IP {host!r} 为私有/保留地址，已拒绝"
+    # 非字面 IP：走 DNS 解析（带 TTL/负缓存）
+    ok, resolved = _resolve_cached(host)
+    if not ok:
+        return False, f"DNS 解析失败({host!r})"
+    for ip_str in resolved:
+        valid, blocked = _dns_ip_check(ip_str)
+        if not valid:
+            return False, f"DNS 返回非法地址 {ip_str!r}"
+        if blocked:
+            return False, f"{host!r} 解析到私有/保留地址 {ip_str!r}，已拒绝"
     return True, ""
