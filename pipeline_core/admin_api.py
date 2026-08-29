@@ -1354,18 +1354,20 @@ class AdminHandler(BaseHTTPRequestHandler):
                 cancel(task_id)
 
     def _pump_sse(self, callback, task_id: str, start_cursor: int = 0) -> None:
-        """推送回调事件流（游标式只读，多客户端安全）。
+        """推送回调事件流（游标式只读，多客户端安全；事件驱动 + 心跳保活）。
 
         每个客户端持独立 event_id 游标，从回调事件历史读取而非破坏性出队——
         多个 SSE 客户端并发订阅同一任务时各自拿到完整事件流，互不瓜分
         （修复：原 get_events() 出队语义下第二个客户端会抢走第一个的事件）。
-        空闲 15s 发送心跳帧；连续 BrokenPipe 达阈值则取消任务并停止。
+        事件到达由 wait_for_events 的 Condition 立即唤醒推送（原 5Hz 轮询
+        200ms 才轮到一次且空闲时持续空转）；空闲 15s 发送心跳帧；
+        连续 BrokenPipe 达阈值则取消任务并停止。
         """
         broken = 0
         last_frame = time.time()
         cursor = start_cursor
         while True:
-            events = callback.get_events_since(cursor)
+            events = callback.wait_for_events(cursor, timeout=1.0)
             for ev in events:
                 cursor = ev.event_id
                 if self._send_sse(ev):
@@ -1389,8 +1391,6 @@ class AdminHandler(BaseHTTPRequestHandler):
                         self._cancel_for_broken_pipe(task_id)
                         return
                     last_frame = time.time()
-                continue
-            time.sleep(0.2)
 
     def _stream_replay(self, task_id: str, query: str,
                        existing_callback, last_event_id: int) -> None:

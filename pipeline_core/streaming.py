@@ -153,6 +153,8 @@ class StreamCallback:
         # 事件历史（用于 SSE 重连，保留最近 N 个事件）
         self._history: list[StreamEvent] = []
         self._history_max = 500
+        # SSE 推送唤醒（事件到达/关闭时 notify，替代消费端 5Hz 空转轮询）
+        self._event_condition = threading.Condition()
 
     def on_start(self, total_sections: int, title: str = ""):
         """文档生成开始"""
@@ -220,6 +222,9 @@ class StreamCallback:
             if len(self._history) > self._history_max:
                 self._history = self._history[-self._history_max:]
         self._enqueue_tiered(event)
+        # 唤醒 SSE 消费端（_pump_sse 的 wait_for_events）立即推送
+        with self._event_condition:
+            self._event_condition.notify_all()
 
     def _try_put(self, event: StreamEvent) -> bool:
         try:
@@ -284,10 +289,29 @@ class StreamCallback:
         with self._lock:
             return [e for e in self._history if e.event_id > last_event_id]
 
+    def wait_for_events(self, last_event_id: int, timeout: float) -> list[StreamEvent]:
+        """等待 cursor 之后的新事件（事件驱动，供 SSE 推送替代轮询）。
+
+        已有新事件立即返回；否则挂起等待 _emit/close 的 notify 或超时。
+        超时返回空列表——调用方据此走心跳分支，不视为错误。
+        """
+        with self._event_condition:
+            if self._closed.is_set():
+                return self.get_events_since(last_event_id)
+            with self._lock:
+                has_new = (self._history
+                           and self._history[-1].event_id > last_event_id)
+            if has_new:
+                return self.get_events_since(last_event_id)
+            self._event_condition.wait(timeout)
+        return self.get_events_since(last_event_id)
+
     def close(self):
         self._closed.set()
         with self._pause_condition:
             self._pause_condition.notify_all()
+        with self._event_condition:
+            self._event_condition.notify_all()
         with contextlib.suppress(queue.Full):
             self._queue.put_nowait(None)  # sentinel
 

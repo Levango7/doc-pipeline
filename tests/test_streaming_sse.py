@@ -352,3 +352,66 @@ class TestSSEReconnection:
         for t in threads:
             t.join(timeout=5)
         assert all(results)
+
+
+class TestWaitForEvents:
+    """wait_for_events 事件驱动唤醒（2026-08 性能优化：替代 SSE 5Hz 轮询）"""
+
+    def test_existing_events_return_immediately(self):
+        cb = StreamCallback()
+        cb.on_start(2, "Doc")
+        t0 = time.perf_counter()
+        events = cb.wait_for_events(0, timeout=5.0)
+        elapsed = time.perf_counter() - t0
+        assert len(events) == 1
+        assert elapsed < 0.5  # 已有事件不等待
+        cb.close()
+
+    def test_waits_then_wakes_on_new_event(self):
+        cb = StreamCallback()
+        got: list = []
+
+        def _consumer():
+            got.extend(cb.wait_for_events(0, timeout=10.0))
+
+        t = threading.Thread(target=_consumer, daemon=True)
+        t.start()
+        time.sleep(0.2)  # 让消费者先挂起
+        cb.on_section(0, "S1", "content")  # 事件到达 → notify 唤醒
+        t.join(timeout=5)
+        assert len(got) == 1 and got[0].data["section_name"] == "S1"
+        cb.close()
+
+    def test_timeout_returns_empty(self):
+        cb = StreamCallback()
+        t0 = time.perf_counter()
+        events = cb.wait_for_events(0, timeout=0.3)
+        elapsed = time.perf_counter() - t0
+        assert events == []
+        assert 0.25 <= elapsed < 2.0  # 真挂起而非忙等，且不超时过多
+        cb.close()
+
+    def test_close_wakes_blocked_consumer(self):
+        cb = StreamCallback()
+        got: list = []
+
+        def _consumer():
+            got.extend(cb.wait_for_events(0, timeout=10.0))
+
+        t = threading.Thread(target=_consumer, daemon=True)
+        t.start()
+        time.sleep(0.2)
+        cb.close()  # close → notify → 消费者立即返回（空）
+        t.join(timeout=5)
+        assert not t.is_alive() and got == []
+
+    def test_cursor_semantics_match_get_events_since(self):
+        """wait_for_events 与 get_events_since 的游标语义一致（> last_event_id）"""
+        cb = StreamCallback()
+        cb.on_start(2, "Doc")
+        cb.on_section(0, "S1", "c1")
+        first_id = cb.get_events_since(0)[0].event_id
+        via_wait = cb.wait_for_events(first_id, timeout=0.1)
+        via_get = cb.get_events_since(first_id)
+        assert [e.event_id for e in via_wait] == [e.event_id for e in via_get]
+        cb.close()
