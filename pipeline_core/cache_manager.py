@@ -109,6 +109,11 @@ class CacheManager:
         self._cache: OrderedDict[str, dict] = OrderedDict()
         self._lock = threading.Lock()
 
+        # file 后端 size() 缓存：文件版本号（每次增删 +1）+ TTL 短窗（防
+        # 进程内与后台清理竞争下的过期闪变），版本未变且未过期时免全目录 glob
+        self._file_version = 0
+        self._size_cache: tuple[int, float, int] | None = None  # (version, expire, value)
+
         # 后台定期清理
         self._cleanup_thread: threading.Thread | None = None
         self._cleanup_stop = threading.Event()
@@ -144,13 +149,17 @@ class CacheManager:
                     self._cache.pop(k, None)
                     removed += 1
         if self.backend in ("file", "multi") and self._cache_dir:
+            file_removed = False
             for f in self._cache_dir.glob("*.json"):
                 with contextlib.suppress(json.JSONDecodeError, OSError):
                     with open(f, encoding="utf-8") as fh:
                         entry = json.load(fh)
                     if now - entry.get("ts", 0) > self.ttl:
                         os.remove(f)
+                        file_removed = True
                         removed += 1
+            if file_removed:
+                self._file_version += 1
         return removed
 
     # ── 核心接口 ──────────────────────────────
@@ -225,6 +234,7 @@ class CacheManager:
             with contextlib.suppress(OSError):
                 if fpath.exists():
                     os.remove(fpath)
+                    self._file_version += 1
         if self.backend in ("memory", "multi"):
             with self._lock:
                 self._cache.pop(key, None)
@@ -232,24 +242,37 @@ class CacheManager:
     def clear(self):
         """清空全部缓存。"""
         if self.backend in ("file", "multi") and self._cache_dir:
+            removed_any = False
             for f in self._cache_dir.glob("*.json"):
                 with contextlib.suppress(OSError):
                     os.remove(f)
+                    removed_any = True
+            if removed_any:
+                self._file_version += 1
         if self.backend in ("memory", "multi"):
             with self._lock:
                 self._cache.clear()
 
     def size(self) -> int:
-        """当前缓存条目数。"""
+        """当前缓存条目数。file 后端带版本+TTL 缓存（版本未变且窗口内免 glob）。"""
         if self.backend == "multi":
             with self._lock:
                 return len(self._cache)
         if self.backend == "file":
-            if self._cache_dir:
-                return sum(1 for _ in self._cache_dir.glob("*.json"))
-            return 0
+            return self._file_size()
         with self._lock:
             return len(self._cache)
+
+    def _file_size(self) -> int:
+        if not self._cache_dir:
+            return 0
+        now = time.time()
+        cached = self._size_cache
+        if cached is not None and cached[0] == self._file_version and now < cached[1]:
+            return cached[2]
+        n = sum(1 for _ in self._cache_dir.glob("*.json"))
+        self._size_cache = (self._file_version, now + 1.0, n)
+        return n
 
     # ── 批量操作 ──────────────────────────────
 
@@ -327,8 +350,12 @@ class CacheManager:
                 entry = json.load(f)
             ts = entry.get("ts", 0.0)
             if self.ttl > 0 and time.time() - ts > self.ttl:
+                removed = False
                 with contextlib.suppress(OSError):
                     os.remove(fpath)
+                    removed = True
+                if removed:
+                    self._file_version += 1
                 self.stats.record_miss()
                 return None, 0.0
             self.stats.record_hit()
@@ -343,6 +370,7 @@ class CacheManager:
             with open(fpath, "w", encoding="utf-8") as f:
                 json.dump({"key": key, "ts": time.time(), "data": data},
                           f, ensure_ascii=False)
+            self._file_version += 1
             self.stats.record_set()
         except (OSError, TypeError) as e:
             logger.debug("缓存序列化失败 [%s]: %s", key, e)

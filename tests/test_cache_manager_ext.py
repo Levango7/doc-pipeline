@@ -175,6 +175,59 @@ class TestFileBackend:
         assert cm.get_stats()["misses"] == 1
 
 
+class TestFileSizeCache:
+    """file 后端 size() 版本+TTL 缓存（2026-08 性能优化 #8）"""
+
+    def _make(self, tmp_path):
+        return CacheManager("t_file_sizecache", backend="file",
+                            cache_dir=str(tmp_path))
+
+    def test_size_cached_no_repeated_glob(self, tmp_path, monkeypatch):
+        import pipeline_core.cache_manager as cm_mod
+        cm = self._make(tmp_path)
+        cm.set("a", 1)
+        glob_calls = []
+        real_glob = cm_mod.Path.glob
+
+        def counting_glob(self, pat):
+            if str(self) == str(cm._cache_dir):
+                glob_calls.append(pat)
+            return real_glob(self, pat)
+        monkeypatch.setattr(cm_mod.Path, "glob", counting_glob)
+        assert cm.size() == 1
+        assert cm.size() == 1  # 窗口内第二次调用不再 glob
+        assert len(glob_calls) == 1
+
+    def test_size_immediate_after_set_remove_clear(self, tmp_path):
+        """本地写/删立即递增版本 → size() 不读旧缓存"""
+        cm = self._make(tmp_path)
+        cm.set("a", 1)
+        cm.set("b", 2)
+        assert cm.size() == 2
+        cm.remove("a")
+        assert cm.size() == 1
+        cm.clear()
+        assert cm.size() == 0
+
+    def test_size_ttl_expiry_rescans(self, tmp_path):
+        cm = self._make(tmp_path)
+        cm.set("a", 1)
+        assert cm.size() == 1
+        # 把缓存窗口拨过期 → 下次 size() 重新 glob
+        version, expire, value = cm._size_cache
+        cm._size_cache = (version, expire - 10, value)
+        (cm._cache_dir / "extra.json").write_text("{}", encoding="utf-8")
+        assert cm.size() == 2  # 重扫捕捉到外部新增
+
+    def test_version_bump_skips_stale_cache_even_in_window(self, tmp_path):
+        cm = self._make(tmp_path)
+        cm.set("a", 1)
+        assert cm.size() == 1
+        # 窗口内直接 set：版本递增使缓存失效，不返回过期值
+        cm.set("b", 2)
+        assert cm.size() == 2
+
+
 # ─── multi 后端 ──────────────────────────────
 
 class TestMultiBackend:
