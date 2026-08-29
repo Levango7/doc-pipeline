@@ -6,7 +6,7 @@
 
 ---
 
-## ✨ 特性
+## 特性
 
 | 类别 | 能力 |
 |------|------|
@@ -24,7 +24,7 @@
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
 ### 前置条件
 
@@ -45,7 +45,7 @@ python run.py test_input.md -o output/my_doc.md
 type output\my_doc.md
 ```
 
-完成！输入文件是一行主题描述，输出是结构化 Markdown 文档。
+输入文件是一行主题描述，输出是结构化 Markdown 文档。
 
 ### 安装
 
@@ -95,7 +95,7 @@ python run.py test_input.md --dashboard
 
 ---
 
-## 🏗️ 架构
+## 架构
 
 ```
                     ┌─────────────┐
@@ -156,7 +156,7 @@ python run.py test_input.md --dashboard
 
 ---
 
-## ⚙️ 配置
+## 配置
 
 ### Pipeline 定义（`pipelines/docgen.yaml`）
 
@@ -249,7 +249,7 @@ python run.py input.md -c config.production.json -o output/doc.md
 
 ---
 
-## 🔌 管理 API
+## 管理 API
 
 启动：`python run.py <input> --admin` （默认 `http://127.0.0.1:8910`）
 
@@ -340,7 +340,7 @@ Webhook 使用独立事件循环异步发送（aiohttp 连接池），不阻塞�
 
 ---
 
-## 🐳 Docker
+## Docker
 
 ```bash
 # 构建并启动常驻 Admin API 服务（生产配置，绑定 0.0.0.0:8910；
@@ -360,13 +360,13 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 
 ---
 
-## 🧪 测试
+## 测试
 
 ```bash
 python -m pytest tests/ -v
 ```
 
-**950+ 个测试全部通过**（另有若干 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
+**1400+ 个测试全部通过**（另有若干 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
 
 ```bash
 # 运行真实端到端测试（需要网络 + LLM API Key）
@@ -375,7 +375,7 @@ python -m pytest tests/ -m e2e -v
 
 ---
 
-## 📊 质量门控机制
+## 质量门控机制
 
 `QualityGate v2` 按 Profile 权重评分：
 
@@ -399,7 +399,7 @@ python -m pytest tests/ -m e2e -v
 
 ---
 
-## 📁 目录结构
+## 目录结构
 
 ```
 doc-pipeline/
@@ -436,7 +436,7 @@ doc-pipeline/
 │       ├── technical-doc.yaml
 │       └── tutorial.yaml
 ├── dashboard/           # 前端仪表盘
-├── tests/               # 950+ 个测试（另有 e2e）
+├── tests/               # 1400+ 个测试（另有 e2e）
 ├── checkpoints/         # 断点 + 日志（自动轮转）
 ├── versions/            # 文档版本存储
 ├── run.py               # CLI 入口
@@ -447,7 +447,7 @@ doc-pipeline/
 
 ---
 
-## 📈 性能
+## 性能
 
 > **注意**：以下数据来自 `benchmark.py` 的 mock 基准（模拟引擎，无网络 I/O，质量门控跳过 LLM），
 > 反映框架本身的开销。默认 `config.json` 已启用 Bing/Sogou/360 免费 HTML 兜底引擎（无需 API Key，
@@ -461,7 +461,7 @@ doc-pipeline/
 | LLM 额度消耗 | 0（质量门控跳过，规则兜底） | mock |
 | 消息总线吞吐 | 批量 drain 50 条/轮 | — |
 | 缓存命中 | 125 万 ops/s | — |
-| 测试覆盖 | 950+ tests (+ e2e) | — |
+| 测试覆盖 | 1400+ tests (+ e2e) | — |
 
 ### 生产模式预期耗时（config.production.json）
 
@@ -475,7 +475,7 @@ doc-pipeline/
 
 ---
 
-## 📚 文档
+## 文档
 
 | 文档 | 内容 |
 |------|------|
@@ -486,6 +486,6 @@ doc-pipeline/
 
 ---
 
-## 📝 License
+## License
 
 MIT
