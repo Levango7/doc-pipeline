@@ -7,9 +7,13 @@
 - _download_html_sync 状态码分支（缺 Location / 4xx 中止 / 429 重试）
 - _extract_text（selectolax）与 _extract_text_regex（正则回退）
 - _is_content_usable / _content_relevance / cleanup_stale_temp / on_stop
+
+网络隔离：与本库 test_fetcher_security.py 的 _allow_dns 模式一致，
+fixture 级 mock url_guard 的 DNS 解析为确定性映射，测试不依赖外网 DNS。
 """
 import asyncio
 import os
+import socket
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -17,12 +21,30 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import agents.fetcher as fetcher_mod
+import pipeline_core.url_guard as url_guard
 from agents.fetcher import (
     FetcherAgent,
     _DownloadAbort,
     _DownloadRetry,
 )
 from pipeline_core.base_agent import AgentMeta, Message
+
+# 测试域名 → 公网 IP 的确定性映射（url_guard SSRF 校验用，不真实出网）
+_DNS_MAP = {
+    "good.com": ["93.184.216.34"],
+    "a.com": ["93.184.216.34"],
+}
+
+
+@pytest.fixture(autouse=True)
+def _stub_dns(monkeypatch):
+    """把 url_guard 的 DNS 解析替换为确定性映射，防止依赖外网（CI 网络受限时红）"""
+    def fake_getaddrinfo(host, *args, **kwargs):
+        if host not in _DNS_MAP:
+            raise socket.gaierror(-2, f"stub dns: {host}")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 80))
+                for ip in _DNS_MAP[host]]
+    monkeypatch.setattr(url_guard.socket, "getaddrinfo", fake_getaddrinfo)
 
 
 def _make_agent(tmp_path, **cfg) -> FetcherAgent:
