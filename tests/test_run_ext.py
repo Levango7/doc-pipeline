@@ -108,6 +108,65 @@ class TestSmallHelpers:
         args = _args(["x.md"])
         assert _run_module()._load_config(args, tmp_path) == {}
 
+    def test_pipeline_names_memoized(self, monkeypatch):
+        """性能优化回归：_available_pipeline_names 进程内缓存一次目录扫描，
+        返回副本防调用方污染"""
+        import pathlib
+        run = _run_module()
+        glob_calls = []
+
+        class _FakeDir:
+            def exists(self):
+                return True
+
+            def __truediv__(self, other):
+                return self
+
+            def glob(self, pat):
+                glob_calls.append(pat)
+                return [pathlib.Path("docgen.yaml")]
+
+        class _FakePath:
+            def __init__(self, *a, **k):
+                pass
+
+            @property
+            def parent(self):
+                return _FakeDir()
+
+        monkeypatch.setattr(run, "Path", _FakePath)
+        monkeypatch.setattr(run, "_PIPELINE_NAMES_CACHE", None)
+        assert run._available_pipeline_names() == ["docgen"]
+        assert run._available_pipeline_names() == ["docgen"]
+        assert glob_calls == ["*.yaml"]  # 目录只扫一次
+        # 返回副本：调用方修改不影响缓存
+        names = run._available_pipeline_names()
+        names.append("hacked")
+        assert run._available_pipeline_names() == ["docgen"]
+
+    def test_pipeline_names_missing_dir_cached_empty(self, monkeypatch):
+        run = _run_module()
+
+        class _FakeDir:
+            def exists(self):
+                return False
+
+            def __truediv__(self, other):
+                return self
+
+        class _FakePath:
+            def __init__(self, *a, **k):
+                pass
+
+            @property
+            def parent(self):
+                return _FakeDir()
+
+        monkeypatch.setattr(run, "Path", _FakePath)
+        monkeypatch.setattr(run, "_PIPELINE_NAMES_CACHE", None)
+        assert run._available_pipeline_names() == []
+        assert run._PIPELINE_NAMES_CACHE == []  # 空目录结果同样缓存
+
     def test_task_exit_code_mapping(self):
         run = _run_module()
         assert run._task_exit_code(SimpleNamespace(status=TaskStatus.FAILED)) == 1

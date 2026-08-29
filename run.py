@@ -132,12 +132,25 @@ def _load_config(args_args: argparse.Namespace, project_root: Path) -> dict:
     return {}
 
 
+# 进程内缓存：流水线 YAML 集合在运行期视为静态（变更需重启进程），
+# 避免每次参数解析/错误提示重复扫描 pipelines/ 目录
+_PIPELINE_NAMES_CACHE: list[str] | None = None
+
+
 def _available_pipeline_names() -> list[str]:
-    """列出 pipelines/ 目录下可用的流水线名（yaml 文件 stem）"""
+    """列出 pipelines/ 目录下可用的流水线名（yaml 文件 stem）。
+
+    结果进程内缓存一次，返回副本防止调用方修改污染缓存。
+    """
+    global _PIPELINE_NAMES_CACHE
+    if _PIPELINE_NAMES_CACHE is not None:
+        return list(_PIPELINE_NAMES_CACHE)
     pipelines_dir = Path(__file__).parent / "pipelines"
     if not pipelines_dir.exists():
+        _PIPELINE_NAMES_CACHE = []
         return []
-    return sorted(p.stem for p in pipelines_dir.glob("*.yaml"))
+    _PIPELINE_NAMES_CACHE = sorted(p.stem for p in pipelines_dir.glob("*.yaml"))
+    return list(_PIPELINE_NAMES_CACHE)
 
 
 def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestrator,
