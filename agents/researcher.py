@@ -35,6 +35,18 @@ RESPAWN = True
 EXTRACTS_QUERIES = True
 RESULTS_MERGE = "extend"
 
+# 预编译热路径正则（_clean_queries / _relevance_score 每查询必经；
+# _relevance_score 对每条搜索结果调用一次）
+_NOISE_PATTERNS_COMPILED = [
+    re.compile(p, re.IGNORECASE) for p in (
+        r"^这是一个测试", r"^用于验证", r"验证流水线", r"是否正常工作",
+        r"^test\b", r"^测试\b", r"^\s*$", r"请生成", r"帮我写",
+    )]
+_RE_MEANINGFUL = re.compile(r"[一-鿿]{2,}|[a-zA-Z]{2,}")
+_RE_CN_RUNS = re.compile(r"[一-鿿]{2,}")
+_RE_CN_CONNECTORS = re.compile(r"[与和及的等在对于以]")
+_RE_EN_WORDS = re.compile(r"[a-zA-Z]{2,}")
+
 
 @dataclass
 class SearchResult:
@@ -558,20 +570,15 @@ class ResearcherAgent(BaseAgent):
 
     def _clean_queries(self, queries: list[str]) -> list[str]:
         """清洗查询：过滤噪音/验证性/无实质意义的行"""
-        import re
         cleaned = []
-        noise_patterns = [
-            r"^这是一个测试", r"^用于验证", r"验证流水线", r"是否正常工作",
-            r"^test\b", r"^测试\b", r"^\s*$", r"请生成", r"帮我写",
-        ]
         for q in queries:
             q = q.strip()
             if len(q) < 4:
                 continue
-            if any(re.search(p, q, re.I) for p in noise_patterns):
+            if any(rx.search(q) for rx in _NOISE_PATTERNS_COMPILED):
                 continue
             # 过滤纯标点/纯停用词
-            meaningful = re.findall(r"[一-鿿]{2,}|[a-zA-Z]{2,}", q)
+            meaningful = _RE_MEANINGFUL.findall(q)
             if not meaningful:
                 continue
             cleaned.append(q)
@@ -690,7 +697,6 @@ class ResearcherAgent(BaseAgent):
         """
         if not query:
             return 0.5
-        import re
         # query 关键词：去标点、去停用词，取中文 2-gram 词和英文单词
         stop = {"的", "了", "是", "在", "我", "有", "和", "与", "及", "一个", "这份",
                 "介绍", "简单", "基本", "概念", "生成", "一份", "文档", "技术", "测试",
@@ -699,11 +705,10 @@ class ResearcherAgent(BaseAgent):
         tokens: list[str] = []
         # 中文：先按连接词/介词拆分，再取 2+ 字片段作为 token
         # "核心架构与生产实践" → "核心架构", "生产实践" → 各自作为 token
-        cn_runs = re.findall(r"[一-鿿]{2,}", query)
-        cn_connectors = re.compile(r"[与和及的等在对于以]")
+        cn_runs = _RE_CN_RUNS.findall(query)
         for run in cn_runs:
             # 按连接词拆分
-            segments = cn_connectors.split(run)
+            segments = _RE_CN_CONNECTORS.split(run)
             for seg in segments:
                 seg = seg.strip()
                 if len(seg) >= 2 and seg not in stop:
@@ -715,7 +720,7 @@ class ResearcherAgent(BaseAgent):
                         if gram not in stop:
                             tokens.append(gram)
         # 英文：单词
-        en = re.findall(r"[a-zA-Z]{2,}", query.lower())
+        en = _RE_EN_WORDS.findall(query.lower())
         for w in en:
             if w not in stop:
                 tokens.append(w)

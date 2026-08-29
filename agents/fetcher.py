@@ -51,6 +51,27 @@ BAD_PATTERNS = [
     r"too many requests|请求过于频繁",
     r"under maintenance|维护中",
 ]
+# 预编译：_extract_text / _extract_text_regex 每页面必经，段落循环内
+# 逐块调用密度/链接正则，内联 re.sub/findall 每次都过模块缓存查找
+_BAD_PATTERNS_COMPILED = [re.compile(p, re.IGNORECASE) for p in BAD_PATTERNS]
+_RE_STRIP_TAGS = re.compile(r"<[^>]+>")
+_RE_NAMED_ENTITY = re.compile(r"&[a-zA-Z]+;")
+_RE_NUM_ENTITY = re.compile(r"&#\d+;")
+_RE_HEX_ENTITY = re.compile(r"&#x[0-9a-fA-F]+;")
+_RE_NOISE_CHARS = re.compile(r"[¶§†‡•·]")
+_RE_WHITESPACE = re.compile(r"\s+")
+_RE_WHITESPACE_ALL = re.compile(r"\s")
+_RE_URL_SCHEME = re.compile(r"https?://")
+_RE_BLOCK_SPLIT = re.compile(
+    r"</?(?:p|div|section|li|td|article|blockquote)[^>]*>", re.IGNORECASE)
+_RE_REMOVE_AREAS = {tag: re.compile(
+    rf"<{tag}[^>]*>.*?</{tag}>", re.DOTALL | re.IGNORECASE)
+    for tag in ("script", "style", "noscript", "svg", "head")}
+_RE_MAIN_CONTAINER = re.compile(
+    r"<(article|main)[^>]*>(.*?)</\1>", re.DOTALL | re.IGNORECASE)
+# _is_content_usable / _content_relevance 的查询侧 token 提取
+_RE_EN_WORD = re.compile(r"[a-zA-Z]{3,}")
+_RE_QUERY_TOKEN = re.compile(r"[\w\u4e00-\u9fff]{2,}")
 
 # 最小可用内容长度
 MIN_CONTENT_LENGTH = 200
@@ -531,11 +552,11 @@ class FetcherAgent(BaseAgent):
                 if not blk or len(blk) < 30:
                     continue
                 # 文本密度：可见字符占比
-                text_ratio = len(re.sub(r'\s', '', blk)) / max(len(blk), 1)
+                text_ratio = len(_RE_WHITESPACE_ALL.sub("", blk)) / max(len(blk), 1)
                 if text_ratio < 0.4:
                     continue
                 # 惩罚纯链接行
-                link_density = len(re.findall(r'https?://', blk)) / max(len(blk) // 50, 1)
+                link_density = len(_RE_URL_SCHEME.findall(blk)) / max(len(blk) // 50, 1)
                 if link_density > 0.5:
                     continue
                 scored.append(blk)
@@ -546,8 +567,8 @@ class FetcherAgent(BaseAgent):
             if len(text) < MIN_CONTENT_LENGTH:
                 fallback = tree.text(separator=" ", strip=True)
                 # 清理 Unicode 噪声字符
-                fallback = re.sub(r'[¶§†‡•·]', ' ', fallback)
-                fallback = re.sub(r'\s+', ' ', fallback).strip()
+                fallback = _RE_NOISE_CHARS.sub(" ", fallback)
+                fallback = _RE_WHITESPACE.sub(" ", fallback).strip()
                 if len(fallback) > len(text):
                     text = fallback
 
@@ -562,34 +583,31 @@ class FetcherAgent(BaseAgent):
     def _extract_text_regex(self, html: str) -> str:
         """正则启发式 HTML 正文提取（selectolax 不可用时的 fallback）"""
         # 1. 移除明显无正文区域
-        html = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
-        html = re.sub(r'<style[^>]*>.*?</style>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
-        html = re.sub(r'<noscript[^>]*>.*?</noscript>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
-        html = re.sub(r'<svg[^>]*>.*?</svg>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
-        html = re.sub(r'<head[^>]*>.*?</head>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
+        for _rx in _RE_REMOVE_AREAS.values():
+            html = _rx.sub(" ", html)
 
         # 2. 优先尝试 <article> / <main> 容器
-        main_match = re.search(r'<(article|main)[^>]*>(.*?)</\1>', html, re.DOTALL | re.IGNORECASE)
+        main_match = _RE_MAIN_CONTAINER.search(html)
         region = main_match.group(2) if main_match else html
 
         # 3. 按块级标签切分为候选段落，用文本密度筛选
-        blocks = re.split(r'</?(?:p|div|section|li|td|article|blockquote)[^>]*>', region, flags=re.IGNORECASE)
+        blocks = _RE_BLOCK_SPLIT.split(region)
         scored = []
         for blk in blocks:
-            blk = re.sub(r'<[^>]+>', '', blk)          # 去标签
-            blk = re.sub(r'&[a-zA-Z]+;', ' ', blk)      # 去命名 HTML 实体（含大写）
-            blk = re.sub(r'&#\d+;', ' ', blk)            # 去数字实体
-            blk = re.sub(r'&#x[0-9a-fA-F]+;', ' ', blk) # 去十六进制实体
-            blk = re.sub(r'[¶§†‡•·]', ' ', blk)         # 去常见 Unicode 噪声字符
-            blk = re.sub(r'\s+', ' ', blk).strip()
+            blk = _RE_STRIP_TAGS.sub("", blk)        # 去标签
+            blk = _RE_NAMED_ENTITY.sub(" ", blk)     # 去命名 HTML 实体（含大写）
+            blk = _RE_NUM_ENTITY.sub(" ", blk)       # 去数字实体
+            blk = _RE_HEX_ENTITY.sub(" ", blk)       # 去十六进制实体
+            blk = _RE_NOISE_CHARS.sub(" ", blk)      # 去常见 Unicode 噪声字符
+            blk = _RE_WHITESPACE.sub(" ", blk).strip()
             if len(blk) < 30:
                 continue
             # 文本密度：可见字符占比
-            text_ratio = len(re.sub(r'\s', '', blk)) / max(len(blk), 1)
+            text_ratio = len(_RE_WHITESPACE_ALL.sub("", blk)) / max(len(blk), 1)
             if text_ratio < 0.4:   # 多半是标签/链接噪声
                 continue
             # 惩罚纯链接行（链接文字占比过高）
-            link_density = len(re.findall(r'https?://', blk)) / max(len(blk) // 50, 1)
+            link_density = len(_RE_URL_SCHEME.findall(blk)) / max(len(blk) // 50, 1)
             if link_density > 0.5:
                 continue
             scored.append(blk)
@@ -598,12 +616,12 @@ class FetcherAgent(BaseAgent):
 
         # 4. 兜底：若密度法提取过少，退回到全文档去标签
         if len(text) < MIN_CONTENT_LENGTH:
-            fallback = re.sub(r'<[^>]+>', ' ', html)
-            fallback = re.sub(r'&[a-zA-Z]+;', ' ', fallback)       # 命名实体（含大写）
-            fallback = re.sub(r'&#\d+;', ' ', fallback)             # 数字实体
-            fallback = re.sub(r'&#x[0-9a-fA-F]+;', ' ', fallback)  # 十六进制实体
-            fallback = re.sub(r'[¶§†‡•·]', ' ', fallback)          # Unicode 噪声字符
-            fallback = re.sub(r'\s+', ' ', fallback).strip()
+            fallback = _RE_STRIP_TAGS.sub(" ", html)
+            fallback = _RE_NAMED_ENTITY.sub(" ", fallback)     # 命名实体（含大写）
+            fallback = _RE_NUM_ENTITY.sub(" ", fallback)       # 数字实体
+            fallback = _RE_HEX_ENTITY.sub(" ", fallback)       # 十六进制实体
+            fallback = _RE_NOISE_CHARS.sub(" ", fallback)      # Unicode 噪声字符
+            fallback = _RE_WHITESPACE.sub(" ", fallback).strip()
             if len(fallback) > len(text):
                 text = fallback
 
@@ -616,14 +634,14 @@ class FetcherAgent(BaseAgent):
             return False
 
         # 2. 硬拒绝：明确的错误/拦截页
-        for pattern in BAD_PATTERNS:
-            if re.search(pattern, text, re.IGNORECASE):
+        for rx in _BAD_PATTERNS_COMPILED:
+            if rx.search(text):
                 return False
 
         # 3. 内容级主题相关性：query 中的英文专有名词必须在正文中出现
         #    例如 query="Apache Kafka 核心架构" → "kafka" 必须在正文中出现
         #    这能过滤掉搜索结果中"Apache"匹配但实际是 Apache HTTP Server 的无关页面
-        query_en_tokens = re.findall(r'[a-zA-Z]{3,}', query)
+        query_en_tokens = _RE_EN_WORD.findall(query)
         # 排除通用词
         generic_en = {"apache", "the", "and", "for", "with", "from", "that", "this", "are", "was"}
         specific_en = [t.lower() for t in query_en_tokens if t.lower() not in generic_en]
@@ -639,7 +657,7 @@ class FetcherAgent(BaseAgent):
         """计算正文与查询的相关度（0~1），供质量评估与排序使用"""
         if not query or not text:
             return 0.0
-        q_tokens = set(re.findall(r'[\w\u4e00-\u9fff]{2,}', query.lower()))
+        q_tokens = set(_RE_QUERY_TOKEN.findall(query.lower()))
         if not q_tokens:
             return 0.0
         t = text.lower()
