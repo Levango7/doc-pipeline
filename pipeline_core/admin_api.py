@@ -1245,25 +1245,31 @@ class AdminHandler(BaseHTTPRequestHandler):
 
         cutoff = time.time() - since_seconds
         results = []
+        # 性能：流式逐行读取（原 read_text 整文件载入，数百 MB 日志可瞬时打爆内存），
+        # 且 JSONL 按天滚动、内部时间戳递增 → mtime 早于 cutoff（留 60s 尾部余量）
+        # 的文件整文件早于时间窗，直接跳过（glob 已按文件名逆序 = 时间逆序）。
         for log_file in sorted(log_dir.glob("*.jsonl"), reverse=True):
             try:
-                for line in log_file.read_text(encoding="utf-8").splitlines():
-                    if not line.strip():
-                        continue
-                    try:
-                        entry = _fast_loads(line)
-                    except Exception:
-                        continue
-                    ts = entry.get("timestamp", 0)
-                    if ts < cutoff:
-                        continue
-                    if level_filter and entry.get("level", "").lower() != level_filter.lower():
-                        continue
-                    if agent_filter and entry.get("agent", "") != agent_filter:
-                        continue
-                    results.append(entry)
-                    if len(results) >= limit:
-                        break
+                if log_file.stat().st_mtime < cutoff - 60:
+                    break
+                with open(log_file, encoding="utf-8") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            entry = _fast_loads(line)
+                        except Exception:
+                            continue
+                        ts = entry.get("timestamp", 0)
+                        if ts < cutoff:
+                            continue
+                        if level_filter and entry.get("level", "").lower() != level_filter.lower():
+                            continue
+                        if agent_filter and entry.get("agent", "") != agent_filter:
+                            continue
+                        results.append(entry)
+                        if len(results) >= limit:
+                            break
             except Exception:
                 continue
             if len(results) >= limit:

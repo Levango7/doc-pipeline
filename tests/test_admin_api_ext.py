@@ -698,6 +698,39 @@ class TestAlertsAndLogs:
         handler._handle_logs()
         assert handler._json.call_args[0][1] == 400
 
+    def test_logs_stale_file_skipped_by_mtime(self, handler, tmp_path, monkeypatch):
+        """性能优化回归：mtime 早于时间窗的文件整文件跳过（不读内容），
+        glob 逆序（真实命名 app_YYYYMMDD[.N].jsonl 字母序=时间序）遇过期文件即停"""
+        monkeypatch.chdir(tmp_path)
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        now = time.time()
+        # 逆序遍历顺序：今日 → 昨日 → 前日
+        fresh = log_dir / "docpipeline_20260829.jsonl"
+        fresh.write_text(
+            json.dumps({"timestamp": now, "level": "info", "msg": "fresh"}) + "\n",
+            encoding="utf-8")
+        stale = log_dir / "docpipeline_20260828.jsonl"
+        stale.write_text(
+            json.dumps({"timestamp": now, "level": "info", "msg": "stale"}) + "\n",
+            encoding="utf-8")
+        older = log_dir / "docpipeline_20260827.jsonl"
+        older.write_text(
+            json.dumps({"timestamp": now, "level": "info", "msg": "older"}) + "\n",
+            encoding="utf-8")
+        # 把昨日/前日文件 mtime 回拨出窗（模拟按天滚动的旧日志；
+        # 内容时间戳故意留在窗内，验证跳过依据是 mtime 而非内容）
+        past = now - 7200
+        import os as _os
+        _os.utime(stale, (past, past))
+        _os.utime(older, (past, past))
+        handler.path = "/api/logs?since=3600"
+        handler._handle_logs()
+        data = handler._json.call_args[0][0]
+        msgs = [e["msg"] for e in data["logs"]]
+        # stale/older 内容在窗内但 mtime 过期 → 不出现；older 更不会被遍历到
+        assert msgs == ["fresh"]
+
 
 class TestVersionsHandlers:
     def test_versions_list(self, handler, tmp_path, monkeypatch):
