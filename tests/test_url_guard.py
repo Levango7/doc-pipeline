@@ -189,7 +189,6 @@ class TestDnsCache:
     def test_negative_cache_suppresses_retry_within_ttl(self, monkeypatch):
         import pipeline_core.url_guard as url_guard
         calls = []
-        orig = url_guard.socket.getaddrinfo
 
         def counting_getaddrinfo(host, *args, **kwargs):
             calls.append(host)
@@ -221,7 +220,7 @@ class TestDnsCache:
     def test_cache_thread_safety(self, monkeypatch):
         """多线程并发校验同一/不同 host，无异常且结果一致"""
         import threading
-        _install_dns(monkeypatch, {"t{}.com".format(i): ["93.184.216.34"]
+        _install_dns(monkeypatch, {f"t{i}.com": ["93.184.216.34"]
                                    for i in range(10)})
         results = []
         errors = []
