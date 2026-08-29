@@ -3,9 +3,15 @@ URL 安全防护模块
 ================
 对外部 URL 做 SSRF 校验：仅允许 http/https，拒绝私网/保留/链路本地 IP，
 域名先解析全部 A/AAAA 记录逐个校验（防 DNS rebinding 第一层）。
+
+性能：域名解析结果带 TTL 缓存（含负缓存）——fetcher 下载 20 页 × 逐跳重定向
+× 重试都会重复校验同一 host，无缓存时是数百次同步 getaddrinfo（每次 10~300ms）。
+缓存只缓存"解析结果"，每跳仍走完整校验流程，不改变 SSRF 防护语义。
 """
 import ipaddress
 import socket
+import threading
+import time
 from urllib.parse import urlparse
 
 _BLOCKED_V4_NETWORKS = [
@@ -23,19 +29,13 @@ _BLOCKED_V6_NETWORKS = [
     ipaddress.ip_network("fe80::/10"),
 ]
 
-
-def _is_blocked_ip(addr: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
-    networks = _BLOCKED_V4_NETWORKS if addr.version == 4 else _BLOCKED_V6_NETWORKS
-    if any(addr in net for net in networks):
-        return True
-    return (
-        addr.is_private
-        or addr.is_loopback
-        or addr.is_link_local
-        or addr.is_multicast
-        or addr.is_reserved
-        or addr.is_unspecified
-    )
+# ── DNS 解析结果缓存（线程安全）──────────────────────────────
+# 正结果 TTL 300s：覆盖单次任务的生命周期，避免每跳/每次重试重复解析；
+# 负结果（解析失败）TTL 60s：DNS 抖动时不反复阻塞下载线程。
+_DNS_CACHE_TTL_OK = 300.0
+_DNS_CACHE_TTL_FAIL = 60.0
+_dns_cache: dict[str, tuple[float, bool, list[str]]] = {}  # host -> (expire_ts, ok, ips)
+_dns_cache_lock = threading.Lock()
 
 
 def _resolve_hostname(hostname: str) -> list[str]:
@@ -49,6 +49,49 @@ def _resolve_hostname(hostname: str) -> list[str]:
         if ip_str not in ips:
             ips.append(ip_str)
     return ips
+
+
+def clear_dns_cache() -> None:
+    """清空 DNS 缓存（供测试与运行时刷新使用）"""
+    with _dns_cache_lock:
+        _dns_cache.clear()
+
+
+def _resolve_cached(hostname: str) -> tuple[bool, list[str]]:
+    """带 TTL + 负缓存的域名解析。返回 (ok, ips)；ok=False 表示解析失败（近期内不再重试）。
+
+    注意：ok=True 但某条 ip 属私网/保留段的拒绝判定不在此缓存——那属于
+    校验策略而非解析结果，仍由调用方逐条执行（策略变化时缓存不污染）。
+    """
+    now = time.monotonic()
+    with _dns_cache_lock:
+        entry = _dns_cache.get(hostname)
+        if entry is not None and now < entry[0]:
+            return entry[1], entry[2]
+    try:
+        ips = _resolve_hostname(hostname)
+        ok = len(ips) > 0
+    except (OSError, UnicodeError):
+        ips = []
+        ok = False
+    with _dns_cache_lock:
+        _dns_cache[hostname] = (
+            now + (_DNS_CACHE_TTL_OK if ok else _DNS_CACHE_TTL_FAIL), ok, ips)
+    return ok, ips
+
+
+def _is_blocked_ip(addr: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
+    networks = _BLOCKED_V4_NETWORKS if addr.version == 4 else _BLOCKED_V6_NETWORKS
+    if any(addr in net for net in networks):
+        return True
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
 
 
 def validate_public_http_url(url: object) -> tuple[bool, str]:
@@ -74,12 +117,9 @@ def validate_public_http_url(url: object) -> tuple[bool, str]:
     try:
         literal = ipaddress.ip_address(host)
     except ValueError:
-        try:
-            resolved = _resolve_hostname(host)
-        except (OSError, UnicodeError) as e:
-            return False, f"DNS 解析失败({host!r}): {e}"
-        if not resolved:
-            return False, f"DNS 未返回可用地址: {host!r}"
+        ok, resolved = _resolve_cached(host)
+        if not ok:
+            return False, f"DNS 解析失败({host!r})"
         for ip_str in resolved:
             try:
                 addr = ipaddress.ip_address(ip_str)

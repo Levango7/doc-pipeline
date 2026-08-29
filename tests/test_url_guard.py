@@ -150,3 +150,92 @@ class TestHostnameResolution:
         _install_dns(monkeypatch, {"example.com": ["93.184.216.34"]})
         ok, reason = validate_public_http_url("http://u:p@example.com:8080/x")
         assert ok, reason
+
+
+class TestDnsCache:
+    """DNS 解析结果缓存（TTL/负缓存/清空/线程安全）—— 2026-08 性能优化"""
+
+    @pytest.fixture(autouse=True)
+    def _clean_cache(self):
+        import pipeline_core.url_guard as url_guard
+        url_guard.clear_dns_cache()
+        yield
+        url_guard.clear_dns_cache()
+
+    def test_second_call_hits_cache_no_dns(self, monkeypatch):
+        import pipeline_core.url_guard as url_guard
+        _install_dns(monkeypatch, {"cached.com": ["93.184.216.34"]})
+        ok1, r1 = validate_public_http_url("http://cached.com/a")
+        assert ok1, r1
+        # 第二次调用把 DNS 换成必炸实现：命中缓存则不再解析
+        def _boom(*args, **kwargs):
+            raise AssertionError("应命中缓存，不再触发 DNS 解析")
+        monkeypatch.setattr(url_guard.socket, "getaddrinfo", _boom)
+        ok2, r2 = validate_public_http_url("http://cached.com/b")
+        assert ok2, r2
+
+    def test_ttl_expiry_re_resolves(self, monkeypatch):
+        import pipeline_core.url_guard as url_guard
+        _install_dns(monkeypatch, {"ttl.com": ["93.184.216.34"]})
+        assert validate_public_http_url("http://ttl.com/a")[0]
+        # 直接把缓存项过期
+        with url_guard._dns_cache_lock:
+            expire_ts, ok, ips = url_guard._dns_cache["ttl.com"]
+            url_guard._dns_cache["ttl.com"] = (0.0, ok, ips)
+        _install_dns(monkeypatch, {"ttl.com": ["10.0.0.9"]})  # 换成私网 → 拒绝
+        ok, reason = validate_public_http_url("http://ttl.com/a")
+        assert not ok and "10.0.0.9" in reason
+
+    def test_negative_cache_suppresses_retry_within_ttl(self, monkeypatch):
+        import pipeline_core.url_guard as url_guard
+        calls = []
+        orig = url_guard.socket.getaddrinfo
+
+        def counting_getaddrinfo(host, *args, **kwargs):
+            calls.append(host)
+            raise socket.gaierror(-2, "mock dns down")
+        monkeypatch.setattr(url_guard.socket, "getaddrinfo", counting_getaddrinfo)
+        assert not validate_public_http_url("http://down.example.com/")[0]
+        assert not validate_public_http_url("http://down.example.com/2")[0]
+        assert calls == ["down.example.com"]  # 负缓存期内只解析一次
+
+    def test_private_record_rejection_not_cached_as_ok(self, monkeypatch):
+        import pipeline_core.url_guard as url_guard
+        _install_dns(monkeypatch, {"rebind2.com": ["10.0.0.5"]})
+        assert not validate_public_http_url("http://rebind2.com/")[0]
+        # 拒绝原因属于校验策略而非解析结果：解析成功被缓存（ok=True + 私网 ip），
+        # 再次校验仍逐条过 _is_blocked_ip → 依旧拒绝
+        def _boom(*args, **kwargs):
+            raise AssertionError("解析结果应命中缓存")
+        monkeypatch.setattr(url_guard.socket, "getaddrinfo", _boom)
+        ok, reason = validate_public_http_url("http://rebind2.com/")
+        assert not ok and "10.0.0.5" in reason
+
+    def test_clear_dns_cache(self, monkeypatch):
+        import pipeline_core.url_guard as url_guard
+        _install_dns(monkeypatch, {"fresh.com": ["93.184.216.34"]})
+        assert validate_public_http_url("http://fresh.com/")[0]
+        url_guard.clear_dns_cache()
+        assert url_guard._dns_cache == {}
+
+    def test_cache_thread_safety(self, monkeypatch):
+        """多线程并发校验同一/不同 host，无异常且结果一致"""
+        import threading
+        _install_dns(monkeypatch, {"t{}.com".format(i): ["93.184.216.34"]
+                                   for i in range(10)})
+        results = []
+        errors = []
+
+        def _worker(i):
+            try:
+                ok, _ = validate_public_http_url(f"http://t{i % 10}.com/")
+                results.append(ok)
+            except Exception as e:
+                errors.append(e)
+        threads = [threading.Thread(target=_worker, args=(i,)) for i in range(40)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        assert all(results) and len(results) == 40
