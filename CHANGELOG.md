@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-08-30
+
+### Test（覆盖率大补 + 测试可靠性）
+
+- 覆盖率 65.59% → 85.97%（门禁 fail_under 63 → 83）：新增 9 个测试文件 +448 用例，
+  补齐 writer/researcher/search_engines/admin_api/fetcher/layout/checker/
+  event_hook/cache_manager/run 十个薄弱模块（writer 32→96%、checker 38→100% 等）
+- 修复 fetcher 测试依赖真实外网 DNS 的 CI 脆弱点（11 用例改确定性 DNS 映射）；
+  修复 duckduckgo"未安装分支"依赖环境假设；修复 2 个 Windows 路径样本在
+  Linux 的假通过/假失败；test_run_ext 消除 sys.modules 模块身份陷阱
+- 全量 1426 passed / 2 skipped，新增版本一致性护栏（pyproject ==
+  pipeline_core.__version__，防发版漂移）
+
+### Performance（实测闭环验证）
+
+- 冒烟实测端到端 researcher **122.6s → 35.6s（-71%）**：
+  - duckduckgo 不可达网络（DNS 污染）降序至 HTML 引擎后 + 60s 快速失败窗口
+    （原每次查询固定烧 30s 双栈超时）
+  - search_with_sites 双护栏：常规满额跳过站点批次；站点搜索只用首引擎
+    （9 站点 × 多引擎串行超时 → 单引擎）
+- url_guard DNS 解析 TTL 缓存 + 负缓存（20 页下载最坏 300 次同步 DNS → ≤20 次）
+  + 字面 IP/DNS 判定 lru_cache
+- SSE 推送事件驱动唤醒替代 5Hz 轮询（推送延迟 200ms → 亚毫秒，空闲唤醒 -80%）
+- /api/logs 流式读取 + mtime 早退（内存 O(文件) → O(1)）
+- fetcher/researcher 热路径正则模块级预编译（正文提取 1.54x，等价性逐字节验证）
+- cache_manager file 后端 size() 版本+TTL 缓存；run.py 流水线名进程内缓存
+
+### Fixed
+
+- **SQLite 跨线程 close 段错误（CI Linux 稳定复现，Windows 不可见）**：
+  message_store/task_queue 的 close_all 跨线程关闭连接与投递线程执行中
+  语句在 C 层竞争触发 SIGSEGV；改为失效标记 + 拥有线程自愈重建
+- researcher._normalize_results 运算符优先级 bug（dict 输入恒返回空列表）
+- 版本漂移：pipeline_core.__version__ 3.7.0 与 pyproject 3.8.0 不一致
+  （banner/API/MCP 对外全报错版本）
+- run.py 无 Agent 加载时不再漏 shutdown；事件钩子 webhook 逐跳 SSRF 复检
+
+### CI / 基建
+
+- 测试工具链钉版（pytest==8.3.4/pytest-cov==7.1.0/coverage==7.15.2/
+  pytest-asyncio==0.25.2）——浮动安装漂到 pytest 9 后 Linux 全矩阵红
+- 修 perf 基线三重污染：save 失败 run 不再污染基线缓存（always()→success()）；
+  清理 10 条污染缓存；新增 workflow_dispatch 基线刷新 job
+- e2e-nightly pytest 同步钉版
+
+### Removed
+
+- 清理 agent 工具残留目录（.zcode/、.inscode/ 项目快照副本）
+
 ## [3.8.0] - 2026-08-26
 
 ### Security（深度审计修复 — 3路并行审计，~45项发现）
