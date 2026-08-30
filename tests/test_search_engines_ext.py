@@ -473,6 +473,47 @@ class TestSearchEngineManagerExt:
         out = asyncio.run(_run())
         assert len(out) >= 1
 
+    def test_search_with_sites_skips_site_batch_when_full(self):
+        """性能护栏：常规搜索已满额时跳过站点批次（不发起多余 site: 查询）"""
+        calls = []
+
+        class _CountingMock(MockEngine):
+            def search(self, query, max_results=10):
+                calls.append(query)
+                return super().search(query, max_results)
+
+        mgr = SearchEngineManager({"mock": _CountingMock()})
+        # mock 每次返回 1 条；max_results=1 → 常规搜索后立即满额
+        out = mgr.search_with_sites("主题", max_results=1,
+                                    sites=[("example.com", "示例")])
+        assert len(out) == 1
+        assert calls == ["主题"]  # 只有常规查询，没有 site: 查询
+
+    def test_search_with_sites_uses_only_first_engine_for_sites(self):
+        """性能护栏：站点搜索只用首个引擎（防 9 站点 × 多引擎串行超时）"""
+        calls = []
+
+        class _RecMock(MockEngine):
+            def search(self, query, max_results=10):
+                calls.append((self.name, query))
+                return super().search(query, max_results)
+
+        # 两引擎：站点查询若走多引擎会被调用多次
+        mgr = SearchEngineManager({"e1": _RecMock(), "e2": MockEngine()})
+        out = mgr.search_with_sites("主题", max_results=5,
+                                    sites=[("example.com", "示例")])
+        assert len(out) >= 1
+        site_calls = [c for _, c in calls if c.startswith("site:")]
+        assert len(site_calls) == 1  # 站点查询只发起一次（首引擎）
+        # 显式传多引擎时站点也只用首个（换查询词避开 manager 缓存）
+        calls.clear()
+        out2 = mgr.search_with_sites("主题乙", max_results=5,
+                                     sites=[("example.com", "示例")],
+                                     engines=["e1", "e2"])
+        assert len(out2) >= 1
+        site_calls2 = [c for _, c in calls if c.startswith("site:")]
+        assert len(site_calls2) == 1
+
     def test_status_reports_fail_counts(self):
         mgr = SearchEngineManager({"e": _FakeEngine("e", fail=True)})
         mgr.search("q")

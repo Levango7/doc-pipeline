@@ -1002,7 +1002,11 @@ class SearchEngineManager:
     async def search_with_sites_async(self, query: str, max_results: int = 10,
                                       sites: list[str] = None,
                                       engines: list[str] = None) -> list[SearchItem]:
-        """异步版 search_with_sites — 常规搜索 + 站点搜索全部并行"""
+        """异步版 search_with_sites — 常规搜索 + 站点搜索全部并行
+
+        性能护栏与同步版一致（见 search_with_sites docstring）：
+        常规满额跳过站点批次；站点搜索只用首个可用引擎。
+        """
         all_results = []
         seen_urls = set()
 
@@ -1012,13 +1016,20 @@ class SearchEngineManager:
                 seen_urls.add(item.url)
                 all_results.append(item)
 
+        # 常规搜索已满额 → 站点定向补充无增益，跳过整批
+        if len(all_results) >= max_results:
+            return all_results[:max_results]
+
         # 站点搜索并行
         if sites is None:
             sites = self.SITE_TARGETS  # type: ignore[assignment]
         site_queries = [(f"site:{domain} {query}", name) for domain, name in sites]  # type: ignore[str-unpack,union-attr]
 
+        # 与同步版一致：站点搜索只用首个可用引擎
+        site_engines = engines[:1] if engines else (list(self._engines.keys())[:1] or None)
+
         tasks = [
-            self.search_async(sq, max_results=3, engines=engines)
+            self.search_async(sq, max_results=3, engines=site_engines)
             for sq, _ in site_queries
         ]
         for coro in asyncio.as_completed(tasks):
@@ -1065,6 +1076,13 @@ class SearchEngineManager:
 
         先进行常规搜索，再对每个站点进行 site: 搜索。
         结果合并去重，优先常规搜索的结果。
+
+        性能护栏（2026-08）：
+        - 常规搜索已凑满 max_results 时跳过站点批次（重复来源无增益）；
+        - 站点搜索只用首个可用引擎：site: 定向查询是"锦上添花"，
+          单引擎拿不到即放弃该站点，不再串行烧完全部引擎
+          （bing 对 site: 语法支持不稳，曾致 9 站点 × 3 引擎 × 15s
+          串行超时把单查询拖到 128s+）。
         """
         all_results = []
         seen_urls = set()
@@ -1075,7 +1093,11 @@ class SearchEngineManager:
                 seen_urls.add(item.url)
                 all_results.append(item)
 
-        # 站点搜索（每个站点至少拿 2 条）
+        # 常规搜索已满额 → 站点定向补充无增益，跳过整批
+        if len(all_results) >= max_results:
+            return all_results[:max_results]
+
+        # 站点搜索（每个站点至少拿 2 条；只用首个引擎，见 docstring）
         if sites is None:
             sites = self.SITE_TARGETS  # type: ignore[assignment]
         site_queries = []
@@ -1083,11 +1105,15 @@ class SearchEngineManager:
             site_query = f"site:{site_domain} {query}"
             site_queries.append((site_query, site_name))
 
+        # from_env 按优先级注册引擎（API 引擎在前），首个即最优选择；
+        # 未显式传 engines 时用已注册的首个
+        site_engines = engines[:1] if engines else (list(self._engines.keys())[:1] or None)
+
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             futures = {
                 executor.submit(
-                    self.search, sq, max_results=3, engines=engines
+                    self.search, sq, max_results=3, engines=site_engines
                 ): (sq, site_name)
                 for sq, site_name in site_queries
             }
