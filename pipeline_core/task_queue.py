@@ -351,15 +351,22 @@ class TaskQueue:
             self._local.conn = None
 
     def close_all(self):
-        """关闭本实例登记的全部 thread-local 连接（长驻进程优雅关停用）。
+        """使本实例登记的全部 thread-local 连接失效（长驻进程/测试关停用）。
 
-        其他线程残留的已关连接在其下次 _get_conn() 时探测失效并自动重建（自愈）。
+        安全性（P0，2026-08 CI 段错误修复，与 message_store.PersistentStore 同款）：
+        绝不跨线程 close()——另一线程正在执行语句时跨线程关连接会在 C 层
+        竞争触发 SIGSEGV。只关调用线程自己的连接，其余仅移出登记表；
+        拥有线程下次 _get_conn() 探测失效自动重建（自愈）。失效连接由 GC
+        在其线程结束后回收。
         """
         refs = list(self._conn_refs)
         self._conn_refs.clear()
         for ref in refs:
             conn = ref()
-            if conn is not None:
-                with contextlib.suppress(Exception):
+            if conn is None:
+                continue
+            with contextlib.suppress(Exception):
+                # 仅关闭属于当前线程的连接；其余线程的连接只从登记表移除
+                if conn is getattr(self._local, "conn", None):
                     conn.close()
         self._local.conn = None
