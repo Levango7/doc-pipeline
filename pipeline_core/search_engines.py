@@ -201,11 +201,19 @@ class DuckDuckGoEngine(SearchEngineBase):
     """DuckDuckGo 搜索（无需 API Key）"""
 
     name = "duckduckgo"
+    # 快速失败窗口：端点不可达（如 DNS 污染网络）时单次出网固定烧 30s
+    # （v4/v6 双栈各 15s 超时）。窗口内直接返回空，不再重复出网。
+    _FAIL_FAST_SECONDS = 60.0
 
     def __init__(self):
         self._api_url = "https://html.duckduckgo.com/html/"
+        self._last_fail_ts: float = 0.0
 
     def search(self, query: str, max_results: int = 10) -> list[SearchItem]:
+        import time as _time
+        if self._last_fail_ts and _time.time() - self._last_fail_ts < self._FAIL_FAST_SECONDS:
+            logger.debug("DuckDuckGo 近期失败，快速跳过")
+            return []
         try:
             data = urllib.parse.urlencode({"q": query, "b": ""}).encode()
             req = urllib.request.Request(
@@ -237,6 +245,8 @@ class DuckDuckGoEngine(SearchEngineBase):
                     ))
             return results
         except Exception as e:
+            import time as _time
+            self._last_fail_ts = _time.time()
             logger.debug(f"DuckDuckGo 搜索失败: {e}")
             return []
 
@@ -1181,16 +1191,20 @@ class SearchEngineManager:
             if eng:
                 engines["metaso"] = eng
 
-        # DuckDuckGo（无需 Key）
-        eng = create_engine("duckduckgo")
-        if eng:
-            engines["duckduckgo"] = eng
-
         # HTML 抓取引擎
         for name in ["bing", "baidu", "sogou", "360"]:
             eng = create_engine(name)
             if eng:
                 engines[name] = eng
+
+        # DuckDuckGo 注册在 HTML 引擎之后（串行 fallback 最后兜底）：
+        # "国际覆盖（国内可能不可用）"——实测不可达网络（DNS 污染）下单次
+        # 查询固定烧 30s（v4/v6 双栈各 15s 超时）颗粒无收，且原注册序在
+        # HTML 引擎之前，bing/sogou/360 出结果够数即停也躲不开它。
+        # 降序后：国内网络先拿到 HTML 引擎结果即停；可达环境兜底能力不变。
+        eng = create_engine("duckduckgo")
+        if eng:
+            engines["duckduckgo"] = eng
 
         # ProSearch（本地脚本）
         eng = create_engine("prosearch")
