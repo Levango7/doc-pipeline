@@ -744,7 +744,9 @@ class TestVersionsHandlers:
 
     def test_versions_list_path_rejected(self, handler, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        handler._handle_versions_list("C:/Windows/system32/cmd.exe")
+        # 越界样本必须跨平台：Windows 路径在 Linux 上被 resolve 成 cwd 内的
+        # 相对路径而通过校验；/etc/passwd 在两侧都落在 cwd 之外
+        handler._handle_versions_list("/etc/passwd")
         assert handler._json.call_args[0][1] == 400
 
     def test_versions_diff(self, handler, tmp_path, monkeypatch):
@@ -853,7 +855,8 @@ class TestSubmitTask:
 
     def test_submit_output_path_rejected(self, handler, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        handler._handle_submit_task(self._body(output="C:/Windows/temp/x.md"))
+        # 同 test_versions_list_path_rejected：跨平台越界路径
+        handler._handle_submit_task(self._body(output="/etc/passwd"))
         assert handler._json.call_args[0][1] == 400
 
 
