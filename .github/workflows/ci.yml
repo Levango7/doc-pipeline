@@ -177,7 +177,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add benchmark_results.json
+          # benchmark_results.json 在 .gitignore（运行产物），本 job 的目的
+          # 就是人工留存跨 run 稳定基线，故 -f 强制入库
+          git add -f benchmark_results.json
           git commit -m "chore(bench): 重立性能基线（ubuntu/3.12，workflow_dispatch）" || echo "no change"
           git push
 
