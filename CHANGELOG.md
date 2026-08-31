@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.1] - 2026-08-30
+
+### Fixed
+
+- **发版物 pyproject 依赖不完整**：`[project] dependencies` 此前只列 3 个包
+  (PyYAML/requests/selectolax)，但源码 import 还硬依赖 `aiohttp`、
+  `orjson`、`duckduckgo-search`——新用户 `pip install doc-pipeline`
+  会立即 ImportError。补齐 6 个硬依赖（与 requirements.txt 对齐），
+  wheel 重新构建后全栈 import 走通。
+
 ## [3.9.0] - 2026-08-30
 
 ### Test（覆盖率大补 + 测试可靠性）

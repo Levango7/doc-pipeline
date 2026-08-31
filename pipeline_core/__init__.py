@@ -78,4 +78,4 @@ __all__ = [
     "QualityFeedback", "get_quality_feedback", "record_quality",
 ]
 
-__version__ = "3.9.0"
+__version__ = "3.9.1"
