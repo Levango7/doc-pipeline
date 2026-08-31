@@ -3,6 +3,10 @@
 PyYAML>=6.0
 requests>=2.28.0
 
+# JSON 序列化（pipeline_core.fast_json 全局 3-10x 加速；无 orjson 时回退标准 json，
+# 但 admin/消息总线热路径性能下降明显——硬依赖）
+orjson>=3.0
+
 # 搜索引擎（可选，未安装时 researcher 自动降级为 bing/sogou/360）
 duckduckgo-search>=4.0.0
 
