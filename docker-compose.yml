@@ -1,0 +1,70 @@
+# Doc-Pipeline — 一键起服务（Admin API + 数据持久化）
+#
+# 用法:
+#   docker compose up -d          # 启动 Admin API 服务
+#   docker compose run --rm doc   # 一次性生成文档
+#   docker compose down           # 停止
+#
+# 数据持久化: 命名卷 doc_* 挂载到宿主机，容器重启不丢数据
+# 端口: 8910（Admin API），可在 .env 或 environment 覆盖
+
+services:
+  doc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: doc-pipeline:latest
+    container_name: doc-pipeline
+    restart: unless-stopped
+
+    # ── 端口 ──
+    ports:
+      - "${ADMIN_API_PORT:-8910}:8910"
+
+    # ── 环境变量 ──
+    environment:
+      # 非回环绑定强制要求 ADMIN_API_KEY（admin_api.py 启动时校验）
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-change-me-in-production}
+      # 可选: 配置 LLM 供应商密钥（推荐挂载 .env 文件替代明文写这里）
+      # BOCHA_API_KEY: ${BOCHA_API_KEY:-}
+      # TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+
+    # ── 数据持久化卷 ──
+    volumes:
+      # 运行时数据（checkpoints / logs / versions / backups）
+      - doc_checkpoints:/app/checkpoints
+      - doc_logs:/app/logs
+      - doc_versions:/app/versions
+      - doc_backups:/app/backups
+      # 输入/输出目录（宿主机 ./data ↔ 容器 /app/data）
+      - ./data:/app/data
+      # 可选: 挂载自定义 .env（优先级高于 environment）
+      # - ./.env:/app/.env:ro
+
+    # ── 一次性生成文档的命令示例（取消注释并注释掉 command: 下的服务模式） ──
+    # command: ["data/input.md", "-o", "data/output/doc.md"]
+
+    # ── 服务模式（默认）: 常驻 Admin API ──
+    command: ["-c", "config.production.json", "--admin", "--daemon"]
+
+    # ── 健康检查 ──
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8910/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+    # ── 资源限制（可选，按需调整） ──
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2G
+    #       cpus: "2.0"
+
+# ── 命名卷（Docker 管理，重启不丢） ──
+volumes:
+  doc_checkpoints:
+  doc_logs:
+  doc_versions:
+  doc_backups:
