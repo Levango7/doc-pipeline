@@ -334,7 +334,7 @@ class PipelineOrchestrator:
         return self._executor.build_dag(agent_order, config)
 
     def _execute_level(self, task: PipelineTask, level: list, input_file: str,
-                       plan, executor: ThreadPoolExecutor) -> bool:
+                       plan, executor) -> bool:
         return self._executor.execute_level(task, level, input_file, plan, executor)
 
     def _get_task_output(self, task: PipelineTask, key: str, default=None):
@@ -702,6 +702,65 @@ class PipelineOrchestrator:
         with self._lock:
             self._trim_task_history()
 
+    def _execute_plan(self, task: PipelineTask, plan: ExecutionPlan, input_file: str) -> None:
+        """执行计划的所有层级（run_plan 的内核，拆分为独立方法便于测试）。"""
+        total_nodes = plan.node_count
+        completed = 0
+
+        for _level_idx, level in enumerate(plan.levels):
+            if task.stop_event.is_set() or self._stop_event.is_set():
+                task.status = TaskStatus.CANCELLED
+                return
+
+            # 暂停检查点
+            paused_saved = False
+            while task.status == TaskStatus.PAUSED:
+                if not paused_saved:
+                    try:
+                        self._save_checkpoint(task)
+                    except Exception as e:
+                        self._log("warning", "暂停边界 checkpoint 保存失败",
+                                  task_id=task.id, error=str(e))
+                    paused_saved = True
+                if task.stop_event.is_set() or self._stop_event.is_set():
+                    task.status = TaskStatus.CANCELLED
+                    return
+                task.stop_event.wait(0.5)
+            if task.status == TaskStatus.CANCELLED:
+                return
+
+            max_workers = max(
+                (node.agent_config.parallelism.get("max_workers", 1) for node in level),
+                default=1,
+            )
+            executor_type = plan.raw.get("pipeline", {}).get("executor_type", "thread")
+            with create_executor(max_workers=max_workers, executor_type=executor_type) as executor:
+                for node in level:
+                    dag_node = TaskNode(
+                        name=node.agent_name,
+                        agent_name=node.agent_name,
+                        dependencies=node.dependencies,
+                        timeout=node.timeout,
+                        max_retries=node.max_retries,
+                    )
+                    dag_node.attempts = 0
+                    task.dag_nodes[node.agent_name] = dag_node
+
+                if not self._execute_level(task, level, input_file, plan, executor):
+                    return
+
+            completed += len(level)
+            task.current_step = completed
+            task.progress = int((completed / total_nodes) * 100)
+            self._merge_pooled_results(task)
+            self._save_checkpoint(task, full_state=True)
+
+            if task.status == TaskStatus.FAILED:
+                return
+
+        if task.status != TaskStatus.FAILED and task.status != TaskStatus.CANCELLED:
+            task.status = TaskStatus.DONE
+
     def run_plan(self, plan: ExecutionPlan, input_file: str = "",
                 task_id: str | None = None, wait: bool = True) -> PipelineTask:
         """按 Scheduler 生成的 ExecutionPlan 执行流水线"""
@@ -725,11 +784,6 @@ class PipelineOrchestrator:
         with self._lock:
             self._running_tasks[task.id] = task
 
-        # 入持久化任务队列（与 legacy run() 对齐）：主执行路径此前从不 submit，
-        # 导致 --recover 与队列查询对 run_plan 任务无效（finalize 里的
-        # update_status 更新的是不存在的行，空转）。
-        # run_plan_async 不同步此改动：其 finalize 刻意不更新队列，
-        # 只入队不更新会残留 running 状态被 recover 误重启
         self.task_queue.submit(task.id, plan.pipeline_name, input_file,
                                plan.raw.get("pipeline", {}))
 
@@ -754,75 +808,10 @@ class PipelineOrchestrator:
 
         def execute():
             try:
-                completed = 0
-
-                # 逐层执行，保持 Scheduler 定义的并行度
-                for _level_idx, level in enumerate(plan.levels):
-                    if task.stop_event.is_set() or self._stop_event.is_set():
-                        task.status = TaskStatus.CANCELLED
-                        return
-
-                    # 暂停检查点：任务被暂停时阻塞，直到恢复或取消；
-                    # 进入等待时保存边界快照（此时上一 level 已完结、无并发节点写入）
-                    paused_saved = False
-                    while task.status == TaskStatus.PAUSED:
-                        if not paused_saved:
-                            try:
-                                self._save_checkpoint(task)
-                            except Exception as e:
-                                self._log("warning", "暂停边界 checkpoint 保存失败",
-                                          task_id=task.id, error=str(e))
-                            paused_saved = True
-                        if task.stop_event.is_set() or self._stop_event.is_set():
-                            task.status = TaskStatus.CANCELLED
-                            return
-                        task.stop_event.wait(0.5)
-                    if task.status == TaskStatus.CANCELLED:
-                        return
-
-                    max_workers = max(
-                        (node.agent_config.parallelism.get("max_workers", 1) for node in level),
-                        default=1,
-                    )
-
-                    # 执行器类型从 pipeline 配置读取（默认 thread，可选 process）
-                    executor_type = plan.raw.get("pipeline", {}).get("executor_type", "thread")
-                    with create_executor(max_workers=max_workers, executor_type=executor_type) as executor:
-                        # 创建 dag_nodes 供 _execute_level 使用
-                        for node in level:
-                            dag_node = TaskNode(
-                                name=node.agent_name,
-                                agent_name=node.agent_name,
-                                dependencies=node.dependencies,
-                                timeout=node.timeout,
-                                max_retries=node.max_retries,
-                            )
-                            dag_node.attempts = 0
-                            task.dag_nodes[node.agent_name] = dag_node
-
-                        if not self._execute_level(task, level, input_file, plan, executor):
-                            return
-
-                    completed += len(level)
-                    task.current_step = completed
-                    task.progress = int((completed / total_nodes) * 100)
-
-                    # ── 池化节点结果合并 ──
-                    self._merge_pooled_results(task)
-
-                    # ── 事务提交：level 完成后保存完整状态 ──
-                    self._save_checkpoint(task, full_state=True)
-
-                    if task.status == TaskStatus.FAILED:
-                        return
-
-                if task.status != TaskStatus.FAILED and task.status != TaskStatus.CANCELLED:
-                    task.status = TaskStatus.DONE
-
+                self._execute_plan(task, plan, input_file)
             except Exception as e:
                 task.status = TaskStatus.FAILED
                 task.error = str(e)
-
             finally:
                 self._finalize_plan_task(task, plan)
 
