@@ -97,6 +97,10 @@ class MessageBus:
             wait_for_delivery: 是否等待投递完成
             persist: 是否持久化到 SQLite（REQUEST/RESPONSE 热路径可跳过）
         """
+        # OTel: 向 payload 注入 traceparent（OTel 安装时）
+        from .telemetry import inject_trace_context
+        inject_trace_context(msg.payload)
+
         deliver_now = False
         with self._lock:
             self._log.append(msg)

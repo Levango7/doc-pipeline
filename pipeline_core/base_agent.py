@@ -202,38 +202,50 @@ class BaseAgent(ABC):
         pass
 
     def _wrapped_handle(self, msg: Message) -> dict | None:
-        """包装处理函数，添加性能统计和错误处理"""
-        start_time = time.time()
-        self.status = AgentStatus.RUNNING
+        """包装处理函数，添加性能统计、错误处理和 OTel 追踪。"""
+        from .telemetry import set_span_error, start_span
 
-        try:
-            # 检查配置热重载
-            self._check_config_reload()
+        with start_span(
+            f"agent.{self.name}.handle",
+            attributes={"agent.name": self.name, "message.topic": msg.topic,
+                        "trace.id": msg.trace_id},
+        ) as span:
+            start_time = time.time()
+            self.status = AgentStatus.RUNNING
 
-            # 执行实际处理
-            result = self.handle(msg)
+            try:
+                # 检查配置热重载
+                self._check_config_reload()
 
-            # 记录成功
-            with self._stats_lock:
-                self._success_count += 1
-            processing_time = (time.time() - start_time) * 1000
-            self._record_processing_time(processing_time)
+                # 执行实际处理
+                result = self.handle(msg)
 
-            # 上报状态
-            self.report(AgentStatus.LOADED, f"处理完成，耗时 {processing_time:.1f}ms")
+                # 记录成功
+                with self._stats_lock:
+                    self._success_count += 1
+                processing_time = (time.time() - start_time) * 1000
+                self._record_processing_time(processing_time)
+                if span is not None:
+                    span.set_attribute("duration_ms", processing_time)
+                    if isinstance(result, dict):
+                        span.set_attribute("result.status", result.get("status", "unknown"))
 
-            # 通知 registry
-            if self.reg:
-                self.reg.record_processing_time(self.name, processing_time)
+                # 上报状态
+                self.report(AgentStatus.LOADED, f"处理完成，耗时 {processing_time:.1f}ms")
 
-            return result
+                # 通知 registry
+                if self.reg:
+                    self.reg.record_processing_time(self.name, processing_time)
 
-        except Exception as e:
-            with self._stats_lock:
-                self._error_count += 1
-            self._logger.exception(f"处理消息时出错: {e}")
-            self.report(AgentStatus.ERROR, str(e))
-            raise
+                return result
+
+            except Exception as e:
+                set_span_error(span, e)
+                with self._stats_lock:
+                    self._error_count += 1
+                self._logger.exception(f"处理消息时出错: {e}")
+                self.report(AgentStatus.ERROR, str(e))
+                raise
 
     def on_start(self):
         """Agent 启动时调用（可覆盖）"""
