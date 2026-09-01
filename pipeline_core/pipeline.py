@@ -419,6 +419,41 @@ class PipelineOrchestrator:
 
     # ─── 流水线执行 ─────────────────────────────
 
+    def _emit_task_events(self, task: PipelineTask, pipeline_name: str) -> None:
+        """触发任务终态事件钩子 + 总线发布。"""
+        if task.status == TaskStatus.DONE:
+            emit_event("task.completed", {"task_id": task.id, "pipeline": pipeline_name,
+                         "duration": task.finished_at - task.started_at, "result_keys": list(task.result.keys())})
+        elif task.status == TaskStatus.FAILED:
+            emit_event("task.failed", {"task_id": task.id, "pipeline": pipeline_name,
+                       "error": task.error, "duration": task.finished_at - task.started_at})
+        elif task.status == TaskStatus.CANCELLED:
+            emit_event("task.cancelled", {"task_id": task.id, "pipeline": pipeline_name})
+
+    def _finalize_task_queue(self, task: PipelineTask, config: dict) -> None:
+        """任务终态同步任务队列 + 清理临时文件 + 断点保留/删除。"""
+        try:
+            self.task_queue.update_status(
+                task.id,
+                task.status.value if hasattr(task.status, "value") else str(task.status),
+                result=dict(task.result) if task.result else None,
+                error=task.error,
+            )
+        except Exception as e:
+            self._logger.log("warning", "task_queue.update_status 失败",
+                             task_id=task.id, error=str(e))
+        self._cleanup_task_temp(task)
+        if task.status == TaskStatus.PAUSED:
+            try:
+                self._save_checkpoint(task)
+            except Exception as e:
+                self._logger.log("warning", "保存 PAUSED 断点失败",
+                                 task_id=task.id, error=str(e))
+        elif task.status == TaskStatus.DONE:
+            keep = bool((config or {}).get("checkpoint", {}).get("keep_on_success", False))
+            if not keep:
+                self._remove_checkpoint(task.id)
+
     def run(self, task_id: str | None = None, pipeline_name: str = "",
             input_file: str = "", config: dict | None = None,
             wait: bool = True, resume: bool = False) -> PipelineTask:
@@ -430,10 +465,8 @@ class PipelineOrchestrator:
             config）。仅保留为 --legacy 与 YAML 加载失败时的兜底；新能力只进
             run_plan()。两条路径的漂移由 tests/test_dual_path_parity.py 护栏。
         """
-
         task_id = task_id or str(uuid.uuid4())[:8]
 
-        # 检查是否可以断点续传
         if resume:
             task = self._load_checkpoint(task_id)
             if task:
@@ -448,9 +481,6 @@ class PipelineOrchestrator:
         with self._lock:
             self._running_tasks[task.id] = task
 
-        # 修复 P0：原代码引用未定义变量 `plan`（NameError）。
-        # run() 接收的是 pipeline_name + config，而非 ExecutionPlan；
-        # 用方法参数直接提交任务队列。
         self.task_queue.submit(task.id, pipeline_name, input_file,
                                (config or {}).get("pipeline", {}))
 
@@ -468,31 +498,14 @@ class PipelineOrchestrator:
 
         def run_steps():
             try:
-                # 使用 DAG 并行执行
                 self._run_dag_parallel(task, input_file, config or {})
-
-                # 完成
                 if task.status != TaskStatus.FAILED and task.status != TaskStatus.CANCELLED:
                     task.status = TaskStatus.DONE
                 task.progress = 100 if task.status == TaskStatus.DONE else task.progress
                 task.finished_at = time.time()
-
-                # ── 事件钩子 ──
-                if task.status == TaskStatus.DONE:
-                    emit_event("task.completed", {"task_id": task.id, "pipeline": pipeline_name,
-                                 "duration": task.finished_at - task.started_at, "result_keys": list(task.result.keys())})
-                elif task.status == TaskStatus.FAILED:
-                    emit_event("task.failed", {"task_id": task.id, "pipeline": pipeline_name,
-                               "error": task.error, "duration": task.finished_at - task.started_at})
-                elif task.status == TaskStatus.CANCELLED:
-                    emit_event("task.cancelled", {"task_id": task.id, "pipeline": pipeline_name})
-
-                # 生成报告
+                self._emit_task_events(task, pipeline_name)
                 self._generate_report(task)
-
-                # 通知回调
                 self._notify_callbacks(task)
-
                 self.bus.publish("pipeline.finished", "orchestrator", {
                     "task_id": task.id,
                     "status": task.status.value,
@@ -500,7 +513,6 @@ class PipelineOrchestrator:
                     "error": task.error,
                     "duration": task.finished_at - task.started_at,
                 })
-
             except Exception as e:
                 task.status = TaskStatus.FAILED
                 task.error = str(e)
@@ -509,38 +521,7 @@ class PipelineOrchestrator:
                 emit_event("task.failed", {"task_id": task.id, "pipeline": pipeline_name,
                            "error": str(e), "duration": task.finished_at - task.started_at})
             finally:
-                # 修复 P0：run_steps 的 finally 块缺失 task_queue.update_status、
-                # _cleanup_task_temp、PAUSED 检查点保留逻辑，导致：
-                #   1) 任务队列状态不同步（永远停在 running）
-                #   2) 临时文件泄漏
-                #   3) PAUSED 任务被误删断点无法续传
-                # 对齐 run_plan() 的 finally 块（见本类 run_plan 方法）。
-                try:
-                    self.task_queue.update_status(
-                        task.id,
-                        task.status.value if hasattr(task.status, "value") else str(task.status),
-                        result=dict(task.result) if task.result else None,
-                        error=task.error,
-                    )
-                except Exception as e:
-                    self._logger.log("warning", "task_queue.update_status 失败",
-                                     task_id=task.id, error=str(e))
-
-                # 清理临时文件（即使任务失败也需清理）
-                self._cleanup_task_temp(task)
-
-                # PAUSED 任务保留断点以支持续传；DONE 且未要求保留时删除断点
-                if task.status == TaskStatus.PAUSED:
-                    try:
-                        self._save_checkpoint(task)
-                    except Exception as e:
-                        self._logger.log("warning", "保存 PAUSED 断点失败",
-                                         task_id=task.id, error=str(e))
-                elif task.status == TaskStatus.DONE:
-                    keep = bool((config or {}).get("checkpoint", {}).get("keep_on_success", False))
-                    if not keep:
-                        self._remove_checkpoint(task.id)
-
+                self._finalize_task_queue(task, config or {})
                 with self._lock:
                     self._trim_task_history()
 
