@@ -326,6 +326,18 @@ def _check_regression(current: dict, baseline: dict, threshold: float) -> list[s
     return regressions
 
 
+def _flatten_for_history(results: dict) -> dict:
+    """把嵌套 benchmark 结果压平为 {metric_name: value}，便于 JSONL 趋势存储。"""
+    flat: dict[str, float] = {}
+    for bench_name, metrics in results.items():
+        if not isinstance(metrics, dict) or "error" in metrics:
+            continue
+        for k, v in metrics.items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                flat[f"{bench_name}.{k}"] = float(v)
+    return flat
+
+
 def _run_all_benchmarks(verbose: bool = True) -> dict:
     """执行全部基准并返回结果 dict"""
     benchmarks = [
@@ -407,6 +419,7 @@ def main():
 
     # 导出 JSON
     output_path = Path(__file__).parent / "benchmark_results.json"
+    history_path = Path(__file__).parent / "benchmark_history.jsonl"
 
     if CI_MODE:
         # CI 模式：对比 baseline，检测回归
@@ -416,7 +429,7 @@ def main():
                 baseline = json.load(f)
             print(f"\n{'=' * 70}")
             print(f"CI 回归检测 (阈值: {REGRESSION_THRESHOLD:.0%})")
-            print(f"{'=' * 70}")
+            print(f"{'='* 70}")
             regressions = _check_regression(all_results, baseline, REGRESSION_THRESHOLD)
             if regressions:
                 # 抗噪复验：共享 runner 上微基准单次波动可达 ±30%，
@@ -442,6 +455,17 @@ def main():
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(all_results, f, indent=2, default=str, ensure_ascii=False)
             print(f"已写入初始 baseline: {output_path}")
+
+        # ── 趋势记录：每次 CI 跑完追加到 JSONL 历史文件 ──
+        try:
+            flat = _flatten_for_history(all_results)
+            flat["_ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            with open(history_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(flat, default=str, ensure_ascii=False) + "\n")
+            print(f"趋势已追加: {history_path}")
+        except Exception as e:
+            print(f"趋势记录失败（非阻塞）: {e}")
+
     elif UPDATE_BASELINE:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(all_results, f, indent=2, default=str, ensure_ascii=False)

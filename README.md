@@ -1,8 +1,18 @@
 # Doc-Pipeline
 
-> 多 Agent 协作的文档生成流水线 — DAG 编排 / 质量门控 / 弹性容错 / 可观测性
+> **主打：多 Agent 协作的文档生成流水线** — 输入主题，自动检索/抓取/写作/质检/排版/落盘
 
 基于消息总线的多智能体文档生成系统。输入一个主题，自动完成**检索 → 抓取 → 写作 → 质量门控 → 检查 → 排版 → 安全落盘**全流程，输出结构化 Markdown 文档。
+
+## 场景分级
+
+| 级别 | 场景 | 入口 | 说明 |
+|---|---|---|---|
+| **主打** | 文档生成 | `python run.py <input> --pipeline docgen` | 完整 7 Agent 流水线，生产可用 |
+| **主打** | 文档生成 + 事实核查 | `--pipeline docgen-verified` | 增加 fact_checker 节点，数字类声明交叉验证 |
+| **实验性** | 需求分析 | `--pipeline docreq` | requirements_analyzer 输出结构化 DocumentSpec |
+| **实验性** | 文档增强 | `--enhance <input>` | 逐章节 LLM 深化 + 搜索补充 |
+| **实验性** | MCP Server | `--mcp` | JSON-RPC 2.0 over stdio，供外部 Agent 调度 |
 
 ---
 
