@@ -11,13 +11,17 @@
       "min_score": 0.3
     },
   "writer": {
-    "similarity_threshold": 0.8
-  },
+      "similarity_threshold": 0.8
+    },
   "safe_writer": {
-    "backup_dir": "backups",
-    "backup_ttl_days": 7
-  },
+      "backup_dir": "backups",
+      "backup_ttl_days": 7
+    },
   "layout": {
-    "dry_run": false
-  }
+      "dry_run": false
+    },
+  "admin_api": {
+      "host": "127.0.0.1",
+      "port": 8910
+    }
 }

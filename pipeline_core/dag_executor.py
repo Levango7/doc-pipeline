@@ -239,27 +239,93 @@ class DAGExecutor:
         )
         return self.execute_node_from_scheduler(task, node, input_file, plan)
 
+    @staticmethod
+    def _resolve_pool(node) -> tuple[str, int, int]:
+        """解析池化节点名 → (base_agent, pool_idx, pool_size)。"""
+        raw = node.agent_name
+        base = raw.split("_pool_")[0] if "_pool_" in raw else raw
+        idx = 0
+        if "_pool_" in raw:
+            try:
+                idx = int(raw.split("_pool_")[1])
+            except (ValueError, IndexError):
+                idx = 0
+        size = max(node.agent_config.pool_size, 1)
+        return base, idx, size
+
+    def _build_node_payload(self, task, node, input_file: str, plan,
+                            base_agent: str, pool_idx: int, pool_size: int) -> dict:
+        """构建节点执行的消息载荷（从依赖结果 + 配置 + 查询词组装）。"""
+        all_queries = self._extract_queries(input_file, node)
+        meta = self.registry.get_meta(base_agent)
+        if getattr(meta, "extracts_queries", False) and pool_size > 1 and len(all_queries) >= pool_size:
+            queries = all_queries[pool_idx::pool_size]
+        else:
+            queries = all_queries
+
+        output_file = (
+            node.agent_config.config.get("output")
+            or plan.raw.get("pipeline", {}).get("output")
+            or f"output/{task.id}_result.md"
+        )
+
+        dep_results_raw = {
+            dep: task.dag_nodes[dep].result for dep in node.dependencies if dep in task.dag_nodes
+        }
+        research_results = self._get_dep_list_results(task, node.dependencies, "results")
+        articles = self._get_dep_list_results(task, node.dependencies, "articles")
+        writer_content = self._get_latest_content(task, node.dependencies)
+
+        dep_results: dict = {}
+        for dep in node.dependencies:
+            if dep in task.dag_nodes:
+                dep_node = task.dag_nodes[dep]
+                if dep_node.result and isinstance(dep_node.result, dict):
+                    base = dep.split("_pool_")[0] if "_pool_" in dep else dep
+                    dep_results.setdefault(f"_{dep}_raw", {}).update(dep_node.result)
+                    if base not in dep_results:
+                        dep_results[base] = []
+                    for key, val in dep_node.result.items():
+                        if isinstance(val, list):
+                            dep_results[base].extend(val)
+                        else:
+                            dep_results[base].append({key: val})
+
+        ctor_config = getattr(meta, "config", None) or {}
+        merged_config = {**ctor_config, **node.agent_config.config}
+
+        spec_result = None
+        if "requirements_analyzer" in task.dag_nodes:
+            ra_result = task.dag_nodes["requirements_analyzer"].result
+            if isinstance(ra_result, dict):
+                spec_result = ra_result.get("spec")
+
+        return {
+            "task_id": task.id,
+            "input_file": input_file,
+            "config": merged_config,
+            "pipeline": plan.pipeline_name,
+            "node": node.agent_name,
+            "dependencies_results": dep_results_raw,
+            "queries": queries,
+            "target_file": output_file,
+            "target": output_file,
+            "results": research_results,
+            "articles": articles,
+            "content": writer_content,
+            "spec": spec_result,
+        }
+
     def execute_node_from_scheduler(self, task, node, input_file: str, plan) -> dict:
-        """由 run_plan 调度：基于 ExecutionNode 执行单个节点"""
+        """由 run_plan 调度：基于 ExecutionNode 执行单个节点。"""
         from .registry import AgentStatus
 
-        # 池化节点：strip `_pool_N` 后缀以找到实际 agent
-        raw_agent = node.agent_name
-        base_agent = raw_agent.split("_pool_")[0] if "_pool_" in raw_agent else raw_agent
-        # pool_idx 解析容错
-        pool_idx = 0
-        if "_pool_" in raw_agent:
-            try:
-                pool_idx = int(raw_agent.split("_pool_")[1])
-            except (ValueError, IndexError):
-                pool_idx = 0
-        pool_size = max(node.agent_config.pool_size, 1)
+        base_agent, pool_idx, pool_size = self._resolve_pool(node)
 
         instance = self.registry.get_instance(base_agent)
         if not instance:
             return {"error": f"Agent {base_agent} 未找到"}
 
-        # 熔断器检查：执行前先检查是否允许请求
         cb_cfg = node.agent_config.circuit_breaker if hasattr(node, "agent_config") and node.agent_config else None
         if cb_cfg and cb_cfg.get("enabled", False):
             breaker = self._cb_registry.get_or_create(
@@ -280,74 +346,8 @@ class DAGExecutor:
             return {"error": f"Agent {base_agent} 被限流"}
 
         try:
-            # 查询词提取（所有节点共享完整 queries；researcher 按池分片）。
-            # 提取失败（空输入且未配置 default_query）直接抛错使节点失败，
-            # 绝不静默回退到无关的内置默认主题。
-            all_queries = self._extract_queries(input_file, node)
-            meta2 = self.registry.get_meta(base_agent)
-            if getattr(meta2, "extracts_queries", False) and pool_size > 1 and len(all_queries) >= pool_size:
-                queries = all_queries[pool_idx::pool_size]
-            else:
-                queries = all_queries
-
-            output_file = (
-                node.agent_config.config.get("output")
-                or plan.raw.get("pipeline", {}).get("output")
-                or f"output/{task.id}_result.md"
-            )
-
-            # 合并依赖结果：对池化 agent 自动合并所有 pool 实例的结果
-            dep_results_raw = {
-                dep: task.dag_nodes[dep].result for dep in node.dependencies if dep in task.dag_nodes
-            }
-            research_results = self._get_dep_list_results(task, node.dependencies, "results")
-            articles = self._get_dep_list_results(task, node.dependencies, "articles")
-            writer_content = self._get_latest_content(task, node.dependencies)
-
-            # 保留 _raw 结构供需要完整 dict 的场景，同时正确填充 dep_results[base]
-            dep_results = {}  # type: ignore[var-annotated]
-            for dep in node.dependencies:
-                if dep in task.dag_nodes:
-                    dep_node = task.dag_nodes[dep]
-                    if dep_node.result and isinstance(dep_node.result, dict):
-                        base = dep.split("_pool_")[0] if "_pool_" in dep else dep
-                        dep_results.setdefault(f"_{dep}_raw", {}).update(dep_node.result)
-                        if base not in dep_results:
-                            dep_results[base] = []
-                        # 将 dep_node.result 的内容合并到 dep_results[base]
-                        for key, val in dep_node.result.items():
-                            if isinstance(val, list):
-                                dep_results[base].extend(val)
-                            else:
-                                dep_results[base].append({key: val})
-
-            # 三层配置合并：agent 构造配置（config.json，来自 meta.config）为基底，
-            # 流水线 YAML 节点 config 覆盖其上；agent 内仍可在运行时读取 payload 做最终覆盖
-            ctor_config = getattr(meta2, "config", None) or {}
-            merged_config = {**ctor_config, **node.agent_config.config}
-
-            # 收集上游 requirements_analyzer 产出的 DocumentSpec（供下游消费）
-            spec_result = None
-            if "requirements_analyzer" in task.dag_nodes:
-                ra_result = task.dag_nodes["requirements_analyzer"].result
-                if isinstance(ra_result, dict):
-                    spec_result = ra_result.get("spec")
-
-            msg_payload = {
-                "task_id": task.id,
-                "input_file": input_file,
-                "config": merged_config,
-                "pipeline": plan.pipeline_name,
-                "node": node.agent_name,
-                "dependencies_results": dep_results_raw,
-                "queries": queries,
-                "target_file": output_file,
-                "target": output_file,
-                "results": research_results,
-                "articles": articles,
-                "content": writer_content,
-                "spec": spec_result,
-            }
+            msg_payload = self._build_node_payload(task, node, input_file, plan,
+                                                     base_agent, pool_idx, pool_size)
 
             node_state = task.dag_nodes[node.agent_name]
             idempotency_key = f"{task.id}:{node.agent_name}:{node_state.attempts}"
