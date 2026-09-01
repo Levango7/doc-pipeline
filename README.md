@@ -255,26 +255,56 @@ python run.py input.md -c config.production.json -o output/doc.md
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/health` | GET | 总线 + Registry 健康状态（免鉴权） |
-| `/metrics` | GET | Prometheus 格式指标 |
+| **任务管理** | | |
 | `/tasks` | GET | 任务列表 |
-| `/api/tasks` | POST | 提交新任务（同步/异步，外部 Agent 调度入口） |
 | `/tasks/<id>` | GET | 单任务详情（含 result/output_content/output_path） |
 | `/tasks/<id>/cancel` | POST | 取消任务 |
 | `/tasks/<id>/rerun` | POST | 重跑流水线（复用 last plan） |
-| `/agents` | GET | 已注册 Agent |
-| `/dlq` | GET | 死信队列 |
-| `/dlq/<id>/replay` | POST | 重放死信 |
+| `/api/tasks` | POST | 提交新任务（同步/异步，外部 Agent 调度入口） |
+| **Agent 管理** | | |
+| `/agents` | GET | 已注册 Agent 列表 |
+| `/api/agents/` | GET | Agent 详情（含 stats/meta/熔断器状态） |
+| **配置与成本** | | |
+| `/api/config` | GET | 运行时配置快照 |
+| `/api/config/reload` | POST | 配置热更新（通知所有 Agent on_config_update） |
 | `/api/cost` | GET | LLM 成本统计（按供应商/Agent/时间维度） |
 | `/api/cost/budget` | POST | 设置预算上限（超限自动熔断） |
-| `/api/alerts` | GET | 告警历史查询（level/category/limit 过滤） |
-| `/api/logs` | GET | 结构化日志查询（level/agent/since/limit 过滤） |
+| **质量与日志** | | |
 | `/api/quality/feedback` | GET | 质量评分历史 + 弱项模式分析 |
-| `/api/config/reload` | POST | 配置热更新（通知所有 Agent on_config_update） |
-| `/api/openapi.json` | GET | OpenAPI 3.0 规范 |
-| `/api/dashboard` | GET | Dashboard 数据 |
+| `/api/logs` | GET | 结构化日志查询（level/agent/since/limit 过滤） |
+| `/api/alerts` | GET | 告警历史查询（level/category/limit 过滤） |
+| **版本管理** | | |
+| `/api/versions` | GET | 文件版本历史 |
+| `/api/versions/diff` | GET | 对比两版本差异 |
+| `/api/versions/rollback` | POST | 回滚到指定版本 |
+| `/api/versions/stats` | GET | 版本管理统计 |
+| **死信队列** | | |
+| `/dlq` | GET | 死信队列列表 |
+| `/dlq/<id>/replay` | POST | 重放死信 |
+| **事件钩子** | | |
+| `/api/events/hooks` | GET | 列出已注册事件钩子 |
+| `/api/events/hooks` | POST | 注册事件钩子（SSRF 防护，拒绝私有 IP） |
+| `/api/events/hooks/<id>` | DELETE | 注销事件钩子 |
+| **缓存** | | |
+| `/api/cache` | GET | 缓存统计 |
+| `/api/cache/clear` | POST | 清空所有缓存 |
+| **快捷操作** | | |
+| `/cancel` | POST | 取消任务（body 传 task_id） |
+| `/pause` | POST | 暂停任务 |
+| `/resume` | POST | 恢复暂停的任务 |
+| `/replay` | POST | 重放死信（body 传 dlq_id） |
+| `/rerun` | POST | 重跑流水线（body 传 task_id） |
+| **健康与指标** | | |
+| `/health` | GET | 总线 + Registry 健康状态（免鉴权） |
+| `/api/health/deep` | GET | 全组件深度健康检查 |
+| `/metrics` | GET | Prometheus 格式指标 |
+| `/api/pipeline` | GET | 流水线配置信息 |
+| **流式与规范** | | |
 | `/stream` | GET | SSE 流式推送文档生成进度（支持 Last-Event-ID 重连） |
 | `/stream/metrics` | GET | 流式指标快照（JSON） |
+| `/api/openapi.json` | GET | OpenAPI 3.0 规范 |
+| `/api/dashboard` | GET | Dashboard 数据 |
+| **静态资源** | | |
 | `/` | GET | API 纯文本索引（**非仪表盘**） |
 | `/index.html` | GET | 静态仪表盘入口（若 `--dashboard` 启动） |
 
