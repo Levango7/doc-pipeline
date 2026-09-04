@@ -21,6 +21,15 @@
   --status-ok: #4caf50;
   --status-warn: #ff9800;
   --status-error: #e94560;
+  --status-done: #81c784;
+  --status-info: #64b5f6;
+  --highlight-soft: #ff8a65;
+
+  /* 半透明色底（与对应状态 token 同源，集中定义避免散落硬编码） */
+  --tint-ok: rgba(76, 175, 80, 0.15);
+  --tint-warn: rgba(255, 152, 0, 0.15);
+  --tint-error: rgba(233, 69, 96, 0.15);
+  --tint-info: rgba(33, 150, 243, 0.15);
 
   --font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -40,6 +49,37 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+/* --- SVG 图标（token 化尺寸/颜色，currentColor 继承文字色） --- */
+.ico {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.125em;
+  fill: none;
+  flex-shrink: 0;
+}
+
+.ico-lg { width: 1.5em; height: 1.5em; }
+.ico-xl { width: 3rem; height: 3rem; }
+
+.card-header h2 .ico {
+  margin-right: 4px;
+  color: var(--text-muted);
+}
+
+.err-icon .ico {
+  color: var(--highlight);
+}
+
+.empty-state .icon .ico {
+  color: var(--text-muted);
+}
+
+.metric-icon .ico {
+  width: 1.2rem;
+  height: 1.2rem;
+  color: var(--text-muted);
 }
 
 /* --- Header ----------------------------------------------- */
@@ -95,7 +135,9 @@ body {
   flex: 1;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
+  /* 面板数可扩展（status/tasks/newtask/agents/metrics/quality/cost/logs），
+     行数自适应，不再固定 2 行 */
+  grid-auto-rows: minmax(230px, auto);
   gap: 16px;
   padding: 16px;
   min-height: 0;
@@ -280,11 +322,26 @@ body {
   white-space: nowrap;
 }
 
-.badge-status.running { background: rgba(76, 175, 80, 0.15); color: #4caf50; }
-.badge-status.pending { background: rgba(255, 152, 0, 0.15); color: #ff9800; }
-.badge-status.done    { background: rgba(76, 175, 80, 0.15); color: #81c784; }
-.badge-status.failed  { background: rgba(233, 69, 96, 0.15); color: #e94560; }
-.badge-status.waiting { background: rgba(33, 150, 243, 0.15); color: #64b5f6; }
+.badge-status.running { background: var(--tint-ok); color: var(--status-ok); }
+.badge-status.pending { background: var(--tint-warn); color: var(--status-warn); }
+.badge-status.done    { background: var(--tint-ok); color: var(--status-done); }
+.badge-status.failed  { background: var(--tint-error); color: var(--status-error); }
+.badge-status.waiting { background: var(--tint-info); color: var(--status-info); }
+
+/* 状态点（替代 emoji 指示符） */
+.badge-status .dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 2px;
+  vertical-align: middle;
+}
+
+.dot-running { background: var(--status-ok); }
+.dot-pending { background: var(--status-warn); }
+.dot-done    { background: var(--status-done); }
+.dot-failed  { background: var(--status-error); }
 
 /* Progress bar */
 .progress-wrap {
@@ -298,7 +355,7 @@ body {
 .progress-fill {
   height: 100%;
   border-radius: 4px;
-  background: linear-gradient(90deg, var(--highlight), #ff8a65);
+  background: linear-gradient(90deg, var(--highlight), var(--highlight-soft));
   transition: width 0.5s ease;
 }
 
@@ -356,6 +413,26 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 45%;
+}
+
+/* --- Logs panel ------------------------------------------- */
+.logs-table .log-level {
+  font-size: 0.65rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.logs-table .log-level.info  { color: var(--status-info); }
+.logs-table .log-level.warning { color: var(--status-warn); }
+.logs-table .log-level.error { color: var(--status-error); }
+.logs-table .log-level.debug { color: var(--text-muted); }
+
+.logs-table .log-msg {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  max-width: 0;               /* 配合 table 布局让 ellipsis 生效 */
 }
 
 /* --- New Task form ---------------------------------------- */

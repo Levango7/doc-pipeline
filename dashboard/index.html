@@ -8,8 +8,33 @@
 </head>
 <body>
 
+<!-- SVG icon sprite（Feather 风格，currentColor 着色，替代 emoji 功能图标） -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <defs>
+    <symbol id="i-wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></symbol>
+    <symbol id="i-status" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+    <symbol id="i-tasks" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-agents" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+    <symbol id="i-metrics" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2l-7 20-4-9-9-4 22-7z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></symbol>
+    <symbol id="i-quality" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="7"/><path d="M8.21 13.89 7 23l5-3 5 3-1.21-9.12"/></symbol>
+    <symbol id="i-cost" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></symbol>
+    <symbol id="i-logs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/></symbol>
+  </defs>
+</svg>
+
 <div class="header">
-  <h1>🔧 <span class="accent">Doc-Pipeline</span> Dashboard</h1>
+  <h1><svg class="ico ico-lg" aria-hidden="true"><use href="#i-wrench"/></svg> <span class="accent">Doc-Pipeline</span> Dashboard</h1>
   <div class="header-right">
     <span id="last-updated" class="last-updated">--</span>
     <span class="refresh-indicator"></span>
@@ -18,7 +43,7 @@
 
 <!-- Error overlay (hidden by default) -->
 <div id="error-overlay" class="error-overlay" style="display:none" role="alert" aria-live="assertive">
-  <div class="err-icon">⚠️</div>
+  <div class="err-icon"><svg class="ico ico-xl" aria-hidden="true"><use href="#i-warn"/></svg></div>
   <h2>Dashboard Offline</h2>
   <p id="error-msg">无法连接到 Admin API。请确保 pipeline 已在 <code>--admin</code>/<code>--dashboard</code> 模式下运行。</p>
   <button id="retry-btn" class="retry-btn">重试连接</button>
@@ -26,7 +51,7 @@
 
 <!-- Token prompt (shown on 401 when API key auth is enabled) -->
 <div id="token-prompt" class="error-overlay" style="display:none" role="dialog" aria-label="API Token 输入">
-  <div class="err-icon">🔑</div>
+  <div class="err-icon"><svg class="ico ico-xl" aria-hidden="true"><use href="#i-key"/></svg></div>
   <h2>需要 API Token</h2>
   <p>Admin API 已启用鉴权（ADMIN_API_KEY）。输入 Token 后仅保存在本浏览器会话（sessionStorage，关闭标签页即失效）。</p>
   <div style="display:flex;gap:8px;">
@@ -40,7 +65,7 @@
   <!-- TOP-LEFT: Pipeline Status -->
   <div class="card" id="panel-status">
     <div class="card-header">
-      <h2>📊 Pipeline Status</h2>
+      <h2><svg class="ico" aria-hidden="true"><use href="#i-status"/></svg> Pipeline Status</h2>
       <span id="badge-status" class="badge">--</span>
     </div>
     <div class="card-body"></div>
@@ -49,12 +74,12 @@
   <!-- TOP-RIGHT: Tasks -->
   <div class="card" id="panel-tasks">
     <div class="card-header">
-      <h2>📋 Tasks</h2>
+      <h2><svg class="ico" aria-hidden="true"><use href="#i-tasks"/></svg> Tasks</h2>
       <span id="badge-tasks" class="badge">0</span>
     </div>
     <div class="card-body">
       <div class="empty-state">
-        <div class="icon">📭</div>
+        <div class="icon"><svg class="ico ico-lg" aria-hidden="true"><use href="#i-inbox"/></svg></div>
         <div>暂无任务</div>
       </div>
     </div>
@@ -63,7 +88,7 @@
   <!-- FULL-WIDTH: New Task -->
   <div class="card wide" id="panel-newtask">
     <div class="card-header">
-      <h2>➕ 新建任务</h2>
+      <h2><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg> 新建任务</h2>
       <span id="newtask-status" class="badge">POST /api/tasks</span>
     </div>
     <div class="card-body">
@@ -87,12 +112,12 @@
   <!-- BOTTOM-LEFT: Agents -->
   <div class="card" id="panel-agents">
     <div class="card-header">
-      <h2>🤖 Agents</h2>
+      <h2><svg class="ico" aria-hidden="true"><use href="#i-agents"/></svg> Agents</h2>
       <span id="badge-agents" class="badge">0</span>
     </div>
     <div class="card-body">
       <div class="empty-state">
-        <div class="icon">🔌</div>
+        <div class="icon"><svg class="ico ico-lg" aria-hidden="true"><use href="#i-plug"/></svg></div>
         <div>暂无 Agent</div>
       </div>
     </div>
@@ -101,13 +126,55 @@
   <!-- BOTTOM-RIGHT: Metrics -->
   <div class="card" id="panel-metrics">
     <div class="card-header">
-      <h2>📈 Metrics</h2>
+      <h2><svg class="ico" aria-hidden="true"><use href="#i-metrics"/></svg> Metrics</h2>
       <span id="badge-metrics" class="badge">▲</span>
     </div>
     <div class="card-body">
       <div class="empty-state">
-        <div class="icon">📊</div>
+        <div class="icon"><svg class="ico ico-lg" aria-hidden="true"><use href="#i-chart"/></svg></div>
         <div>等待数据…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- QUALITY: /api/quality/feedback -->
+  <div class="card" id="panel-quality">
+    <div class="card-header">
+      <h2><svg class="ico" aria-hidden="true"><use href="#i-quality"/></svg> Quality</h2>
+      <span id="badge-quality" class="badge">--</span>
+    </div>
+    <div class="card-body">
+      <div class="empty-state">
+        <div class="icon"><svg class="ico ico-lg" aria-hidden="true"><use href="#i-quality"/></svg></div>
+        <div>暂无质量数据</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- COST: /api/cost -->
+  <div class="card" id="panel-cost">
+    <div class="card-header">
+      <h2><svg class="ico" aria-hidden="true"><use href="#i-cost"/></svg> Cost</h2>
+      <span id="badge-cost" class="badge">--</span>
+    </div>
+    <div class="card-body">
+      <div class="empty-state">
+        <div class="icon"><svg class="ico ico-lg" aria-hidden="true"><use href="#i-cost"/></svg></div>
+        <div>暂无成本数据</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LOGS: /api/logs -->
+  <div class="card wide" id="panel-logs">
+    <div class="card-header">
+      <h2><svg class="ico" aria-hidden="true"><use href="#i-logs"/></svg> Logs</h2>
+      <span id="badge-logs" class="badge">0</span>
+    </div>
+    <div class="card-body">
+      <div class="empty-state">
+        <div class="icon"><svg class="ico ico-lg" aria-hidden="true"><use href="#i-logs"/></svg></div>
+        <div>暂无日志</div>
       </div>
     </div>
   </div>

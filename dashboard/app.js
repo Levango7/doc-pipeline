@@ -49,6 +49,9 @@
     els.tasksPanel     = $('#panel-tasks .card-body');
     els.agentsPanel    = $('#panel-agents .card-body');
     els.metricsPanel   = $('#panel-metrics .card-body');
+    els.qualityPanel   = $('#panel-quality .card-body');
+    els.costPanel      = $('#panel-cost .card-body');
+    els.logsPanel      = $('#panel-logs .card-body');
 
     // New task form
     els.newTaskForm    = $('#newtask-form');
@@ -63,6 +66,9 @@
     els.badgeAgents    = $('#badge-agents');
     els.badgeStatus    = $('#badge-status');
     els.badgeMetrics   = $('#badge-metrics');
+    els.badgeQuality   = $('#badge-quality');
+    els.badgeCost      = $('#badge-cost');
+    els.badgeLogs      = $('#badge-logs');
   }
 
   // ----------------------------------------------------------
@@ -80,9 +86,22 @@
     return el;
   }
 
-  function emptyState (icon, msg) {
+  function iconEl (id, cls) {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('class', 'ico' + (cls ? ' ' + cls : ''));
+    svg.setAttribute('aria-hidden', 'true');
+    const use = document.createElementNS(ns, 'use');
+    use.setAttribute('href', '#' + id);
+    svg.appendChild(use);
+    return svg;
+  }
+
+  function emptyState (iconId, msg) {
     const box = elt('div', 'empty-state');
-    box.appendChild(elt('span', 'icon', icon));
+    const wrap = elt('span', 'icon');
+    wrap.appendChild(iconEl(iconId, 'ico-lg'));
+    box.appendChild(wrap);
     box.appendChild(document.createTextNode(msg));
     return box;
   }
@@ -123,16 +142,9 @@
     }
   }
 
-  function statusEmoji (status) {
-    switch ((status || '').toLowerCase()) {
-      case 'running': case 'processing': return '🟢';
-      case 'pending': case 'waiting':    return '🟡';
-      case 'done': case 'completed':
-      case 'success': case 'ok':         return '✅';
-      case 'failed': case 'error':
-      case 'dead': case 'unhealthy':     return '❌';
-      default:                           return '⚪';
-    }
+  /* 状态点：替代 emoji 指示符，颜色由 token 化 CSS 类控制 */
+  function statusDot (status) {
+    return elt('span', 'dot dot-' + statusClass(status));
   }
 
   // ----------------------------------------------------------
@@ -166,6 +178,9 @@
     const results = await Promise.allSettled([
       fetchJson(API_BASE + '/health'),
       fetchJson(API_BASE + '/api/dashboard'),
+      fetchJson(API_BASE + '/api/cost'),
+      fetchJson(API_BASE + '/api/quality/feedback'),
+      fetchJson(API_BASE + '/api/logs?limit=30&since=86400'),
     ]);
     const health = results[0].status === 'fulfilled' ? results[0].value : null;
     const dash = results[1].status === 'fulfilled' ? results[1].value : null;
@@ -173,6 +188,9 @@
       health,
       tasks: dash || null,           // /api/dashboard 含 tasks[].progress/steps 与 agents
       agents: dash || null,
+      cost: results[2].status === 'fulfilled' ? results[2].value : null,
+      quality: results[3].status === 'fulfilled' ? results[3].value : null,
+      logs: results[4].status === 'fulfilled' ? results[4].value : null,
       failedCount: results.filter(r => r.status === 'rejected').length,
     };
   }
@@ -184,7 +202,7 @@
   /* ---- Pipeline Status (top-left) ---- */
   function renderStatus (health) {
     if (!health || !health.status) {
-      els.statusPanel.replaceChildren(emptyState('📡', 'No status data'));
+      els.statusPanel.replaceChildren(emptyState('i-status', 'No status data'));
       return;
     }
 
@@ -247,7 +265,7 @@
     if (els.badgeTasks) els.badgeTasks.textContent = count;
 
     if (!tasks.length) {
-      els.tasksPanel.replaceChildren(emptyState('📋', 'No active tasks'));
+      els.tasksPanel.replaceChildren(emptyState('i-tasks', 'No active tasks'));
       return;
     }
 
@@ -262,14 +280,15 @@
     const tbody = elt('tbody');
     for (const t of tasks) {
       const sCls = statusClass(t.status);
-      const emoji = statusEmoji(t.status);
       const progress = t.progress != null ? Number(t.progress) || 0 : 0;
       const pct = Math.min(100, Math.max(0, Math.round(progress)));
 
       const tdId = elt('td', 'task-id', t.id == null ? '' : String(t.id));
       tdId.title = tdId.textContent;
 
-      const badge = elt('span', 'badge-status ' + sCls, emoji + ' ' + (t.status || 'unknown'));
+      const badge = elt('span', 'badge-status ' + sCls);
+      badge.appendChild(statusDot(t.status));
+      badge.appendChild(document.createTextNode(' ' + (t.status || 'unknown')));
       const tdStatus = elt('td');
       tdStatus.appendChild(badge);
 
@@ -326,7 +345,7 @@
     if (els.badgeAgents) els.badgeAgents.textContent = count;
 
     if (!list.length) {
-      els.agentsPanel.replaceChildren(emptyState('🤖', 'No agents registered'));
+      els.agentsPanel.replaceChildren(emptyState('i-agents', 'No agents registered'));
       return;
     }
 
@@ -377,17 +396,19 @@
                     : 0))));
 
     const items = [
-      { icon: '📤', label: 'Sent',     value: sent,     cls: 'ok' },
-      { icon: '📥', label: 'Received', value: received, cls: 'ok' },
-      { icon: '❌', label: 'Failed',   value: failed,   cls: failed > 0 ? 'error' : 'ok' },
-      { icon: '🔄', label: 'Retried',  value: retried,  cls: retried > 0 ? 'warn' : 'ok' },
-      { icon: '🗑️', label: 'DLQ',     value: dlq,      cls: dlq > 0 ? 'error' : 'ok' },
+      { icon: 'i-send',     label: 'Sent',     value: sent,     cls: 'ok' },
+      { icon: 'i-download', label: 'Received', value: received, cls: 'ok' },
+      { icon: 'i-x',        label: 'Failed',   value: failed,   cls: failed > 0 ? 'error' : 'ok' },
+      { icon: 'i-refresh',  label: 'Retried',  value: retried,  cls: retried > 0 ? 'warn' : 'ok' },
+      { icon: 'i-trash',    label: 'DLQ',      value: dlq,      cls: dlq > 0 ? 'error' : 'ok' },
     ];
 
     const grid = elt('div', 'metrics-grid');
     for (const m of items) {
       const card = elt('div', 'metric-card');
-      card.appendChild(elt('div', 'metric-icon', m.icon));
+      const iconWrap = elt('div', 'metric-icon');
+      iconWrap.appendChild(iconEl(m.icon));
+      card.appendChild(iconWrap);
       const body = elt('div', 'metric-body');
       body.appendChild(elt('div', 'metric-label', m.label));
       const value = elt('div', 'metric-value', formatNum(m.value));
@@ -397,6 +418,140 @@
       grid.appendChild(card);
     }
     els.metricsPanel.replaceChildren(grid);
+  }
+
+  /* ---- Quality (bottom) ---- */
+  function renderQuality (data) {
+    if (!data || data.total_records == null) {
+      els.qualityPanel.replaceChildren(emptyState('i-quality', '暂无质量数据'));
+      if (els.badgeQuality) els.badgeQuality.textContent = '--';
+      return;
+    }
+    if (els.badgeQuality) {
+      els.badgeQuality.textContent = 'avg ' + (data.avg_score ?? 0);
+    }
+
+    const grid = elt('div', 'metrics-grid');
+    const items = [
+      { label: 'Avg Score', value: data.avg_score ?? 0, cls: (data.avg_score ?? 0) >= 70 ? 'ok' : 'warn' },
+      { label: 'Tasks',     value: data.total_tasks ?? 0, cls: 'ok' },
+      { label: 'Records',   value: data.total_records ?? 0, cls: 'ok' },
+      { label: 'Weak',      value: data.total_weak ?? 0, cls: (data.total_weak ?? 0) > 0 ? 'error' : 'ok' },
+    ];
+    for (const m of items) {
+      const card = elt('div', 'metric-card');
+      card.appendChild(elt('div', 'metric-body'));
+      const body = card.firstChild;
+      body.appendChild(elt('div', 'metric-label', m.label));
+      const value = elt('div', 'metric-value', formatNum(m.value));
+      value.style.color = 'var(--status-' + m.cls + ')';
+      body.appendChild(value);
+      card.appendChild(body);
+      grid.appendChild(card);
+    }
+
+    // 弱项模式提示（最多 3 条）
+    const weak = Array.isArray(data.weak_patterns) ? data.weak_patterns.slice(0, 3) : [];
+    if (weak.length) {
+      const list = elt('div', 'agents-list');
+      for (const w of weak) {
+        const name = typeof w === 'string' ? w : (w.pattern || w.name || JSON.stringify(w).slice(0, 40));
+        list.appendChild(elt('div', 'agent-item warn', String(name)));
+      }
+      grid.appendChild(list);
+    }
+    els.qualityPanel.replaceChildren(grid);
+  }
+
+  /* ---- Cost (bottom) ---- */
+  function renderCost (data) {
+    if (!data || data.total_cost == null) {
+      els.costPanel.replaceChildren(emptyState('i-cost', '暂无成本数据'));
+      if (els.badgeCost) els.badgeCost.textContent = '--';
+      return;
+    }
+    const total = Number(data.total_cost) || 0;
+    if (els.badgeCost) els.badgeCost.textContent = '$' + total.toFixed(4);
+
+    const grid = elt('div', 'metrics-grid');
+    let remainingCls = 'ok';
+    let remainingText = '不限';
+    if (data.budget_remaining != null) {
+      remainingText = '$' + Number(data.budget_remaining).toFixed(4);
+      remainingCls = data.budget_exceeded ? 'error' : (Number(data.budget_remaining) / (Number(data.budget) || 1) < 0.2 ? 'warn' : 'ok');
+    }
+    const items = [
+      { label: 'Total',     value: '$' + total.toFixed(4), cls: 'ok' },
+      { label: 'Budget',    value: data.budget > 0 ? '$' + Number(data.budget).toFixed(2) : '不限', cls: 'ok' },
+      { label: 'Remaining', value: remainingText, cls: remainingCls },
+      { label: 'Exceeded',  value: data.budget_exceeded ? 'Yes' : 'No', cls: data.budget_exceeded ? 'error' : 'ok' },
+    ];
+    for (const m of items) {
+      const card = elt('div', 'metric-card');
+      const body = elt('div', 'metric-body');
+      body.appendChild(elt('div', 'metric-label', m.label));
+      const value = elt('div', 'metric-value', String(m.value));
+      value.style.color = 'var(--status-' + m.cls + ')';
+      body.appendChild(value);
+      card.appendChild(body);
+      grid.appendChild(card);
+    }
+
+    // 按供应商成本（最多 5 行）
+    const byProvider = data.by_provider && typeof data.by_provider === 'object' ? data.by_provider : {};
+    const rows = Object.entries(byProvider).slice(0, 5);
+    if (rows.length) {
+      const list = elt('div', 'agents-list');
+      for (const [name, info] of rows) {
+        const cost = typeof info === 'number' ? info : (info && (info.cost ?? info.total_cost)) || 0;
+        const item = elt('div', 'agent-item');
+        const infoEl = elt('div', 'agent-info');
+        infoEl.appendChild(elt('span', 'agent-name', name));
+        item.appendChild(infoEl);
+        item.appendChild(elt('span', 'agent-detail', '$' + (Number(cost) || 0).toFixed(4)));
+        list.appendChild(item);
+      }
+      grid.appendChild(list);
+    }
+    els.costPanel.replaceChildren(grid);
+  }
+
+  /* ---- Logs (full-width bottom) ---- */
+  function renderLogs (data) {
+    const logs = (data && Array.isArray(data.logs)) ? data.logs : [];
+    if (els.badgeLogs) els.badgeLogs.textContent = String(logs.length);
+
+    if (!logs.length) {
+      els.logsPanel.replaceChildren(emptyState('i-logs', '暂无日志'));
+      return;
+    }
+
+    const table = elt('table', 'tasks-table logs-table');
+    const thead = elt('thead');
+    const headRow = elt('tr');
+    for (const h of ['Time', 'Level', 'Agent', 'Message']) {
+      headRow.appendChild(elt('th', null, h));
+    }
+    thead.appendChild(headRow);
+
+    const tbody = elt('tbody');
+    for (const entry of logs.slice(0, 30)) {
+      const tr = elt('tr');
+      const ts = Number(entry.timestamp) || 0;
+      const time = ts > 0 ? new Date(ts * 1000).toLocaleTimeString() : '--';
+      tr.appendChild(elt('td', 'task-id', time));
+      const level = String(entry.level || 'info').toLowerCase();
+      tr.appendChild(elt('td', 'log-level ' + level, level.toUpperCase()));
+      tr.appendChild(elt('td', 'task-pipeline', String(entry.agent || '-')));
+      const msg = String(entry.message || entry.event || entry.msg || '');
+      const tdMsg = elt('td', 'log-msg', msg.slice(0, 160));
+      tdMsg.title = msg;
+      tr.appendChild(tdMsg);
+      tbody.appendChild(tr);
+    }
+    table.appendChild(thead);
+    table.appendChild(tbody);
+    els.logsPanel.replaceChildren(table);
   }
 
   // ----------------------------------------------------------
@@ -412,7 +567,7 @@
     const cell = elt('td');
     cell.colSpan = 4;
     const wrap = elt('div', 'live-stream');
-    wrap.appendChild(elt('div', 'live-label', '🔴 实时进度 · ' + id));
+    wrap.appendChild(elt('div', 'live-label', '实时进度 · ' + id));
     const meta = elt('div', 'live-meta');
     const bar = elt('div', 'progress-wrap live-bar');
     const fill = elt('div', 'progress-fill running');
@@ -441,7 +596,7 @@
       handleLiveEvent(id, msg);
     };
     es.onerror = () => {
-      sectionName.textContent = '⚠ 连接断开';
+      sectionName.textContent = '连接断开';
       closeLiveStream(id, 0);
     };
   }
@@ -457,7 +612,7 @@
         const pctv = total ? Math.min(100, Math.max(0, Math.round(((idx + 1) / total) * 100))) : 0;
         h.fill.style.width = pctv + '%';
         h.text.textContent = pctv + '%';
-        h.sectionName.textContent = '✍️ ' + (d.section_name || ('section ' + (idx + 1)))
+        h.sectionName.textContent = (d.section_name || ('section ' + (idx + 1)))
           + (d.char_count != null ? ' · ' + formatNum(d.char_count) + ' chars' : '');
         break;
       }
@@ -474,12 +629,12 @@
         h.fill.style.width = '100%';
         h.fill.className = 'progress-fill done';
         h.text.textContent = '100%';
-        h.sectionName.textContent = '✅ 完成';
+        h.sectionName.textContent = '完成';
         closeLiveStream(id, 1500);
         break;
       case 'error':
         h.fill.className = 'progress-fill failed';
-        h.sectionName.textContent = '❌ ' + (d.error || '生成失败');
+        h.sectionName.textContent = (d.error || '生成失败');
         closeLiveStream(id, 1500);
         break;
       default:
@@ -561,12 +716,12 @@
     showTaskMsg('提交中…', false);
     try {
       const resp = await postJson(API_BASE + '/api/tasks', body);
-      showTaskMsg('✅ 已提交任务 ' + (resp.task_id || '')
+      showTaskMsg('已提交任务 ' + (resp.task_id || '')
         + '（' + (resp.status || 'pending') + '）', false);
       els.ntQuery.value = '';
       update().catch(() => {});
     } catch (err) {
-      showTaskMsg('❌ 提交失败：' + (err.message || err), true);
+      showTaskMsg('提交失败：' + (err.message || err), true);
     } finally {
       els.ntSubmit.disabled = false;
     }
@@ -605,12 +760,15 @@
     if (!state.loaded) return;
 
     els.lastUpdated.textContent = 'Updated ' + timeAgo(state.lastUpdated)
-      + (state.partialFail ? ' · ⚠ 部分数据不可用' : '');
+      + (state.partialFail ? ' · 部分数据不可用' : '');
 
     renderStatus(state.health);
     renderTasks(state.tasks);
     renderAgents(state.agents);
     renderMetrics(state.health);
+    renderQuality(state.quality);
+    renderCost(state.cost);
+    renderLogs(state.logs);
   }
 
   function renderError () {
