@@ -20,7 +20,6 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -242,12 +241,23 @@ class PipelineOrchestrator:
         # 限流器注册中心
         self._rate_limiters = RateLimiterRegistry()
 
+        def _locked_checkpoint_save(task: PipelineTask, *args, **kwargs):
+            """checkpoint 保存必须持 task.result_lock：
+            as_completed 逐节点保存时兄弟节点仍在 worker 线程经 _set_task_output
+            写 task.result，无锁的 to_dict() 遍历可撞上 dict 并发变更
+            （RuntimeError: dictionary changed size / 撕裂快照）"""
+            lock = getattr(task, "result_lock", None)
+            if lock is not None:
+                with lock:
+                    return self._checkpoint.save(task, *args, **kwargs)
+            return self._checkpoint.save(task, *args, **kwargs)
+
         self._executor = DAGExecutor(
             self.registry, self.bus,
             self._cb_registry, self._rate_limiters,
             self._metrics, self._logger,
             stop_event=self._stop_event,
-            checkpoint_save_fn=self._checkpoint.save,
+            checkpoint_save_fn=_locked_checkpoint_save,
             audit_log_fn=self._audit_log,
         )
 
@@ -498,6 +508,10 @@ class PipelineOrchestrator:
 
         def run_steps():
             try:
+                # C2：legacy 路径此前全程不设 RUNNING，pause() 要求 RUNNING → 恒 False；
+                # 与 run_plan() (:796/:892) 的状态机对齐
+                if task.status != TaskStatus.CANCELLED:
+                    task.status = TaskStatus.RUNNING
                 self._run_dag_parallel(task, input_file, config or {})
                 if task.status != TaskStatus.FAILED and task.status != TaskStatus.CANCELLED:
                     task.status = TaskStatus.DONE
@@ -543,14 +557,11 @@ class PipelineOrchestrator:
             task = self._running_tasks.get(task_id)
             if task and task.status == TaskStatus.RUNNING:
                 task.status = TaskStatus.PAUSED
-                # 通知所有 agent 暂停
-                for name in self.registry.list_agent_names():  # type: ignore[attr-defined]
-                    inst = self.registry.get_instance(name)
-                    if inst:
-                        try:
-                            inst.on_pause()
-                        except Exception as e:
-                            self._log("warning", f"agent {name} on_pause 失败", error=str(e))
+                # C7：不向 registry 广播 on_pause——agent 实例是共享单例，
+                # 全量广播会让暂停任务 A 连带影响任务 B 的执行。基类 on_pause
+                # 目前为 no-op 且无 agent 覆写；暂停语义由执行器在层边界按
+                # per-task 状态（PAUSED → 阻塞等待）实现，与 cancel 的
+                # stop_event 模式一致。
                 return True
         return False
 
@@ -571,14 +582,7 @@ class PipelineOrchestrator:
             task = self._running_tasks.get(task_id)
             if task and task.status == TaskStatus.PAUSED:
                 task.status = TaskStatus.RUNNING
-                # 通知所有 agent 恢复
-                for name in self.registry.list_agent_names():  # type: ignore[attr-defined]
-                    inst = self.registry.get_instance(name)
-                    if inst:
-                        try:
-                            inst.on_resume()
-                        except Exception as e:
-                            self._log("warning", f"agent {name} on_resume 失败", error=str(e))
+                # C7：同 pause()——不向 registry 广播 on_resume（共享单例跨任务污染）
                 self._log("info", "Pipeline resumed", task_id=task_id)
                 return True
         return False
@@ -660,12 +664,18 @@ class PipelineOrchestrator:
         task.progress = 100 if task.status == TaskStatus.DONE else task.progress
         task.finished_at = time.time()
 
-        self.task_queue.update_status(
-            task.id,
-            task.status.value if hasattr(task.status, "value") else str(task.status),
-            result=dict(task.result) if task.result else None,
-            error=task.error,
-        )
+        # update_status 必须有异常保护：本方法在 execute() 的 finally 链中执行，
+        # TaskQueue 异常若外抛会中断后续报告/回调/清理（对照 _finalize_task_queue 的同款防护）
+        try:
+            self.task_queue.update_status(
+                task.id,
+                task.status.value if hasattr(task.status, "value") else str(task.status),
+                result=dict(task.result) if task.result else None,
+                error=task.error,
+            )
+        except Exception as e:
+            self._logger.log("warning", "task_queue.update_status 失败",
+                             task_id=task.id, error=str(e))
 
         # ── 事件钩子 ──
         if task.status == TaskStatus.DONE:

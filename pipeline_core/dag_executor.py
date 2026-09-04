@@ -409,11 +409,18 @@ class DAGExecutor:
                 # deepcopy 防止 feedback 污染原 msg_payload
                 writer_payload = copy.deepcopy(msg_payload)
                 writer_payload.update(feedback)
+                # 幂等 key 必须含节点维度 + 本次重做 attempt：
+                # - 缺节点维度：同层并行池节点（writer_pool_0/1）同 agent 名 key 碰撞，
+                #   bus.request 幂等缓存命中返回 None，后到节点的重做被静默吞掉
+                # - 缺 attempt 维度：整节点重试时 generation 重新计数，跨物理执行
+                #   的 key 相同，重试后的重做同样命中缓存不执行
+                regen_attempt = uuid.uuid4().hex[:8]
                 writer_result = self.bus.request(
                     topic=f"{regenerate_agent}.input", from_a="orchestrator", to_a=regenerate_agent,
                     payload=writer_payload, timeout=node.timeout,
-                    idempotency_key=f"regenerate_{task.id}_{regenerate_agent}_g{generation}",
+                    idempotency_key=f"regenerate_{task.id}_{node.agent_name}_{regenerate_agent}_g{generation}_{regen_attempt}",
                 )
+
                 if writer_result and writer_result.get("content"):
                     msg_payload["content"] = writer_result["content"]
                     msg_payload["generation_count"] = feedback["generation_count"]
@@ -424,7 +431,7 @@ class DAGExecutor:
                 result = self.bus.request(
                     topic=f"{recheck_agent}.input", from_a="orchestrator", to_a=recheck_agent,
                     payload=qg_payload, timeout=node.timeout,
-                    idempotency_key=f"regenerate_{task.id}_{recheck_agent}_g{generation}",
+                    idempotency_key=f"regenerate_{task.id}_{node.agent_name}_{recheck_agent}_g{generation}_{regen_attempt}",
                 )
                 if result:
                     self._set_task_output(task, recheck_agent, result)
@@ -439,7 +446,10 @@ class DAGExecutor:
                           generation=generation, score=result.get('overall_score', 0))
         except Exception as e:
             self._log("error", "质量重做异常", error=str(e))
-            result = result or {"status": "error", "error": str(e)}
+            # C3：原 `result = result or {...}` 是空操作（入参 result 恒为 truthy
+            # dict，调用方已 isinstance 校验），异常被吞后节点带着旧结果照常下发。
+            # 改为显式 error 终态，由 _business_failure 判定节点失败。
+            result = {**result, "status": "error", "error": str(e)}
 
         return result
 
@@ -560,6 +570,19 @@ class DAGExecutor:
                 continue
 
             if self._reuse_completed_node(task, node, dag_node, plan):
+                continue
+
+            # fail_fast=False 时失败依赖的下游不应带缺失依赖继续执行：
+            # 提交前检查依赖终态，任一依赖非 success 则跳过（skipped 级联到下游）
+            unmet_deps = [d for d in node.dependencies
+                          if d in task.dag_nodes
+                          and task.dag_nodes[d].status != "success"]
+            if unmet_deps:
+                dag_node.status = "skipped"
+                dag_node.error = f"依赖未成功，已跳过: {', '.join(unmet_deps)}"
+                dag_node.finished_at = time.time()
+                self._log("warning", f"Node {node.agent_name} 跳过（依赖未成功: {', '.join(unmet_deps)}）",
+                          task_id=task.id)
                 continue
 
             dag_node.status = "running"
@@ -749,7 +772,11 @@ class DAGExecutor:
                     task.error = last_error
 
                     if self._circuit_breaker(node, task):
-                        task.status = TaskStatus.FAILED
+                        # 修复：cancel 已置 CANCELLED 时不得覆写为 FAILED——
+                        # 熔断/fail_fast 分支无条件赋值会把用户取消的任务
+                        # 错报为失败，污染终态、exit code 与恢复逻辑
+                        if task.status is not TaskStatus.CANCELLED:
+                            task.status = TaskStatus.FAILED
                         # 修复 P0：f.cancel() 只能取消尚未启动的 future，
                         # 已在运行的节点不会被中断。设置 task.stop_event 软中断，
                         # 让运行中的节点在下次检查 stop_event 时主动退出。
@@ -759,7 +786,8 @@ class DAGExecutor:
 
                     fail_fast = getattr(plan, "fail_fast", True)
                     if fail_fast:
-                        task.status = TaskStatus.FAILED
+                        if task.status is not TaskStatus.CANCELLED:
+                            task.status = TaskStatus.FAILED
                         # 修复 P0：同上，设置 stop_event 软中断已运行节点。
                         task.stop_event.set()
                         self._cancel_unstarted_siblings(task, plan, futures, processed)
@@ -795,6 +823,17 @@ class DAGExecutor:
             if dag_node is None:
                 continue
             if self._reuse_completed_node(task, node, dag_node, plan):
+                continue
+            # 对齐线程版：fail_fast=False 时失败依赖的下游跳过执行
+            unmet_deps = [d for d in node.dependencies
+                          if d in task.dag_nodes
+                          and task.dag_nodes[d].status != "success"]
+            if unmet_deps:
+                dag_node.status = "skipped"
+                dag_node.error = f"依赖未成功，已跳过: {', '.join(unmet_deps)}"
+                dag_node.finished_at = time.time()
+                self._log("warning", f"Node {node.agent_name} 跳过（依赖未成功: {', '.join(unmet_deps)}）",
+                          task_id=task.id)
                 continue
             dag_node.status = "running"
             dag_node.started_at = time.time()
@@ -841,7 +880,9 @@ class DAGExecutor:
                     task.error = last_error
 
                     if self._circuit_breaker(node, task):
-                        task.status = TaskStatus.FAILED
+                        # 对齐线程版：CANCELLED 不得被覆写为 FAILED（终态守卫）
+                        if task.status is not TaskStatus.CANCELLED:
+                            task.status = TaskStatus.FAILED
                         # 对齐线程版（execute_level 同分支）的软中断语义：设置
                         # stop_event 让后续重试/层级入口立即退出。async 下同层兄弟
                         # 已由 gather 启动，无法像线程版那样 cancel 未启动的 future。
@@ -850,7 +891,9 @@ class DAGExecutor:
 
                     fail_fast = getattr(plan, "fail_fast", True)
                     if fail_fast:
-                        task.status = TaskStatus.FAILED
+                        # 对齐线程版：CANCELLED 不得被覆写为 FAILED（终态守卫）
+                        if task.status is not TaskStatus.CANCELLED:
+                            task.status = TaskStatus.FAILED
                         task.stop_event.set()
                         break
 

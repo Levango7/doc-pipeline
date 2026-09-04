@@ -21,7 +21,7 @@ Admin API v1 - 轻量级 REST API（零外部依赖）
   DELETE /api/events/hooks/<id> → 注销事件钩子
   GET  /dlq                 → 死信队列
   POST /dlq/<id>/replay     → 重放死信
-  GET  /stream?query=...    → SSE 流式推送文档生成进度
+  GET  /stream?task_id=<id>&query=...  → SSE 流式推送文档生成进度
 
 鉴权：
   - 通过环境变量 ADMIN_API_KEY 启用（非空时开启）
@@ -69,6 +69,10 @@ _TASK_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 # 访问日志脱敏：?token= 查询串凭证打码为 ***（SSE 场景才建议 query token）
 _QS_TOKEN_RE = re.compile(r"(token=)[^&\s]+")
+
+# 请求体大小上限（S4）：防 Content-Length 任意值直接 read 的内存 DoS。
+# 合法请求（任务提交/回滚/钩子注册均为 JSON 文本）远低于 1 MB，取 10 MB 留余量。
+_MAX_BODY_BYTES = 10 * 1024 * 1024
 
 
 def mask_token_query(text: str) -> str:
@@ -315,9 +319,13 @@ class AdminHandler(BaseHTTPRequestHandler):
         # 只处理 .html/.js/.css 文件
         if not any(path.endswith(ext) for ext in (".html", ".js", ".css", ".png", ".svg", ".ico", ".json")):
             return False
-        # 安全处理：防止路径遍历
+        # 安全处理：防止路径遍历。
+        # 关键：file_path 必须先 resolve 再做 relative_to —— relative_to 是词法
+        # 前缀比较，未 resolve 的路径中 `../` 不会被消解，"dashboard/../../x.json"
+        # 能通过校验而文件系统按真实路径读取（已实测可绕过）。resolve 后比较
+        # 同时兜住绝对路径拼接（Windows 下 Path / "C:/x" 会丢弃基路径）。
         clean_path = path.lstrip("/")
-        file_path = Path(self.dashboard_dir) / clean_path
+        file_path = (Path(self.dashboard_dir) / clean_path).resolve()
         if not file_path.exists() or not file_path.is_file():
             return False
         # 确保文件在 dashboard_dir 内
@@ -394,8 +402,10 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 500)
 
 
-    # 回环地址集合：未配置 API key 时仅对这些绑定地址放行（本机信任模式）
-    _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", ""}
+    # 回环地址集合：未配置 API key 时仅对这些绑定地址放行（本机信任模式）。
+    # 注意不含 ""：socket 语义中 host="" 绑定所有网卡，属于非回环绑定，
+    # 必须要求 ADMIN_API_KEY（否则空串可静默绕过启动安全门与运行时鉴权）
+    _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
     def _check_auth(self) -> bool:
         """校验 API key。
@@ -575,8 +585,14 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._json({"error": "unauthorized"}, 401)
                 return
 
-            # 读取请求体（已通过鉴权）
-            content_length = int(self.headers.get("Content-Length", 0))
+            # 读取请求体（已通过鉴权）；超限直接 413，不读入内存（S4 内存 DoS 防护）
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+            except (TypeError, ValueError):
+                return self._json({"error": "invalid Content-Length"}, 400)
+            if content_length > _MAX_BODY_BYTES:
+                self._json({"error": "request body too large"}, 413)
+                return
             body = self.rfile.read(content_length) if content_length > 0 else b""
 
             # 处理 POST 专属路由
@@ -1466,10 +1482,15 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json(stream_metrics_snapshot())
             return
 
-        task_id = params.get("task_id", ["stream"])[0]
+        # S5：task_id 必填——缺省时所有连接共享 "stream" 键，回调注册表互相覆盖、
+        # finally 注销误伤他人；订阅已提交任务或发起新流都必须携带唯一 task_id。
+        if "task_id" not in params:
+            self._json({"error": "missing 'task_id' parameter"}, 400)
+            return
+        task_id = params["task_id"][0]
         # task_id 会拼进临时输入文件名（stream_{task_id}.md），必须做字符白名单校验，
         # 防止 ../ 路径遍历把攻击者控制的内容写到任意路径（与 /tasks 路由同一防线）
-        if task_id != "stream" and not _validate_task_id(task_id):
+        if not _validate_task_id(task_id):
             self._json({"error": "invalid task id"}, 400)
             return
         query = params.get("query", [""])[0]
@@ -1491,7 +1512,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         )
 
         # 已有活跃流：直接挂接订阅（replay 历史后续推），不再重复起流水线
-        existing_callback = get_callback(task_id) if task_id != "stream" else None
+        existing_callback = get_callback(task_id)
 
         if not query and existing_callback is None:
             self._json({"error": "missing 'query' parameter"}, 400)

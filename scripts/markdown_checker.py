@@ -493,6 +493,11 @@ class Checker:
             "status": "pass" if p0 == 0 and p1 == 0 else "fail",
             "total_issues": len(self.issues),
             "by_level": by_level,
+            # W9：fix=True 曾是静默 no-op（仅存参数，不落盘不生效）。
+            # 显式声明"仅提供建议"，调用方/用户不再误以为文件已被修复。
+            "fix": {"requested": bool(self.fix), "applied": False,
+                    "note": "自动修复尚未实现，仅输出修复建议，不修改文件"}
+                    if self.fix else None,
             "summary": {
                 "P0_blocking": p0,
                 "P1_severe": p1,
@@ -547,7 +552,8 @@ def main():
     parser = argparse.ArgumentParser(description="MarkdownChecker v3")
     parser.add_argument("--file", "-f", required=True, help="待检查文件")
     parser.add_argument("--detail", "-d", action="store_true", help="显示详细问题")
-    parser.add_argument("--fix", action="store_true", help="自动修复（实验性）")
+    parser.add_argument("--fix", action="store_true",
+                        help="输出修复建议（自动修复尚未实现，不修改文件）")
     parser.add_argument("--format", choices=["text", "json", "md"], default="text")
     parser.add_argument("--rules", help="规则 YAML 路径")
     parser.add_argument("--no-incremental", action="store_true")

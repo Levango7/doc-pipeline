@@ -42,37 +42,54 @@ logger = logging.getLogger(__name__)
 
 # ─── 共享 aiohttp Session（连接池复用）──────────────
 _shared_aiohttp_session: object | None = None
+_shared_session_loop: object | None = None  # C15: 记录 session 绑定的创建 loop
 _session_lock = threading.Lock()
+
+
+class _EmptyContentError(Exception):
+    """C15: HTTP 成功但内容为空——请求已计费，不得回退同步重试同一供应商"""
 
 
 async def _get_shared_session():
     """获取共享 aiohttp.ClientSession（连接池复用，避免每次创建新连接）
 
     首次调用时创建 Session，后续复用。线程安全。
+
+    C15: aiohttp.ClientSession 绑定创建它的事件循环，跨 loop 使用会抛
+    "attached to a different loop"。writer 等调用方按文档新建 loop，此时
+    返回 None 让调用方直接走 run_in_executor 同步路径，而不是等运行时
+    报错后被动回退。
     """
-    global _shared_aiohttp_session
+    global _shared_aiohttp_session, _shared_session_loop
+    loop = asyncio.get_running_loop()
     if _shared_aiohttp_session is not None and not _shared_aiohttp_session.closed:
-        return _shared_aiohttp_session
+        if _shared_session_loop is loop:
+            return _shared_aiohttp_session
+        return None
     try:
         import aiohttp
     except ImportError:
         return None
     with _session_lock:
         if _shared_aiohttp_session is not None and not _shared_aiohttp_session.closed:
-            return _shared_aiohttp_session
+            if _shared_session_loop is loop:
+                return _shared_aiohttp_session
+            return None
         _shared_aiohttp_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=120),
             connector=aiohttp.TCPConnector(limit=20, limit_per_host=5),
         )
+        _shared_session_loop = loop
     return _shared_aiohttp_session
 
 
 async def _close_shared_session():
     """关闭共享 Session（应用退出时调用）"""
-    global _shared_aiohttp_session
+    global _shared_aiohttp_session, _shared_session_loop
     if _shared_aiohttp_session is not None:
         await _shared_aiohttp_session.close()
         _shared_aiohttp_session = None
+        _shared_session_loop = None
 
 
 def _close_shared_session_at_exit() -> None:
@@ -254,8 +271,13 @@ async def _call_llm_async(provider: LLMProvider, messages: list[dict],
             content = body["choices"][0]["message"].get("content", "") or ""
             content = re.sub(r'<\s*think\s*>.*?<\s*/\s*think\s*>', '', content, flags=re.DOTALL).strip()
             if not content:
-                raise ValueError(f"供应商 {provider.name} 返回空内容")
+                raise _EmptyContentError(f"供应商 {provider.name} 返回空内容")
             return content
+        except _EmptyContentError:
+            # C15：空内容是业务层结果而非传输故障，HTTP 调用已计费；
+            # 回退同步等于对同一供应商重复计费请求。直接上抛，
+            # 由 chat_async 的 per-provider except 走下一供应商。
+            raise
         except Exception as e:
             logger.debug(f"aiohttp 调用 {provider.name} 失败，回退同步: {e}")
 

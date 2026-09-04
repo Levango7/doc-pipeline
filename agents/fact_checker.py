@@ -35,11 +35,17 @@ MAX_CLAIMS = 30
 _MIN_SENT_LEN = 12
 
 # 数字类声明模式：百分比、带单位数值、年份、版本号、倍数/规模
+# 版本号模式（C14 收紧）：裸小数（如"延迟 0.5 秒"的 0.5、"准确率 99.5%"）
+# 不再误判为版本声明——要求 v 前缀或前置英文词（Kafka 3.5 / Redis 5.0），
+# 中文单位数值已由第 2 条模式覆盖，不会漏提取
 _CLAIM_PATTERNS = [
     re.compile(r"\d+(?:\.\d+)?%"),
     re.compile(r"\d+(?:\.\d+)?\s*(?:万|亿|千万|百万|k|K|M|GB|MB|TB|ms|秒|分钟|小时|天|年|人|台|次|元|美元|美金)"),
     re.compile(r"\b(?:19|20)\d{2}\s*年"),
-    re.compile(r"[Vv]?\d+\.\d+(?:\.\d+)?"),
+    re.compile(r"\b[Vv]\d+\.\d+(?:\.\d+)?"),
+    # 尾部用 (?!\d) 而非 \b：CJK 字符也是 \w，"Python 3.11版本" 的 "3.11版"
+    # 无词边界，尾部 \b 会导致整句漏提取
+    re.compile(r"\b[A-Za-z]{2,}\s+\d+\.\d+(?:\.\d+)?(?!\d)"),
     re.compile(r"\d+\s*(?:倍|个并发|万级|亿级)"),
 ]
 
@@ -47,10 +53,17 @@ _SENT_SPLIT = re.compile(r"[。！？!?\n]")
 
 
 def _normalize(text: str) -> str:
-    """归一化：去空白/中英文标点差异，用于包含匹配"""
-    return re.sub(
+    """归一化：去空白/中英文标点差异，用于包含匹配。
+
+    C14：数字间小数点必须保留——原实现把 '3.5' 去点成 '35'，来源中真实的
+    '35' 会与之匹配，产生跨值误判 supported。先用占位符保护 \\d.\\d，
+    剥离标点后还原，声明与语料两侧归一化保持一致。
+    """
+    protected = re.sub(r"(?<=\d)\.(?=\d)", "\x00", text)
+    stripped = re.sub(
         r"[\s,，。.、;；:：!！?？'\"“”‘’()（）\[\]【】《》<>〈〉\-—~～·…]+",
-        "", text)
+        "", protected)
+    return stripped.replace("\x00", ".")
 
 
 class FactCheckerAgent(BaseAgent):
@@ -90,6 +103,7 @@ class FactCheckerAgent(BaseAgent):
             self.report(AgentStatus.RUNNING, "未发现可验证的数字类声明")
             return {
                 "status": "ok",
+                "content": content,
                 "claims": [],
                 "summary": {"total": 0, "verified": 0, "unverified": 0},
                 "report_markdown": "",
@@ -232,6 +246,13 @@ class FactCheckerAgent(BaseAgent):
         data = __import__("json").loads(match.group())
 
         by_index = {v.get("index"): v for v in data.get("verdicts", [])}
+        # C14：索引全体无效（LLM 用 0 基编号、整体偏移或空 verdicts）时，
+        # 不能静默把全部声明降级为 unverifiable——抛错走 _verify_claims
+        # 的既有回退路径（字符串匹配），保持核查可用
+        valid = sum(1 for idx in by_index
+                    if isinstance(idx, int) and 1 <= idx <= len(claims))
+        if not by_index or valid == 0:
+            raise ValueError("LLM 返回的 verdicts 索引全部无效")
         results = []
         for i, claim in enumerate(claims):
             v = by_index.get(i + 1, {})

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -148,7 +149,15 @@ class Scheduler:
         lines.append(f"  总节点数: {plan.node_count}")
         return "\n".join(lines)
 
+    # pipeline 名白名单：仅允许字母/数字/下划线/连字符。
+    # 防止 MCP 等外部调度入口传入 "../xxx" 之类名称，
+    # 借 f"{name}.yaml" 拼拼接读取 pipeline_dir 之外的任意 yaml
+    _PIPELINE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
     def load(self, pipeline_name: str) -> dict:
+        if not self._PIPELINE_NAME_RE.match(pipeline_name or ""):
+            raise ValueError(
+                f"pipeline 名称非法: {pipeline_name!r}（仅允许字母/数字/下划线/连字符）")
         path = self.pipeline_dir / f"{pipeline_name}.yaml"
         if not path.exists():
             raise FileNotFoundError(f"pipeline 未找到: {path}")
@@ -338,6 +347,19 @@ class Scheduler:
 
     # ── Lockfile ─────────────────────
 
+    @staticmethod
+    def _topology_hash(plan: ExecutionPlan) -> str:
+        """拓扑指纹（W4）：锁定连线条目（node→dep 有序集合），防改 YAML 连线绕过校验"""
+        edges = sorted(
+            f"{node.agent_name}->{dep}"
+            for level in plan.levels
+            for node in level
+            for dep in (node.dependencies or [])
+        )
+        return hashlib.sha256(
+            json.dumps(edges, ensure_ascii=False).encode()
+        ).hexdigest()[:12]
+
     def generate_lockfile(self, plan: ExecutionPlan, output_dir: str = "pipelines") -> str:
         """生成 pipeline lockfile（版本锁定）"""
         lock = {
@@ -345,6 +367,7 @@ class Scheduler:
             "plan_id": plan.plan_id,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "node_count": plan.node_count,
+            "topology_hash": self._topology_hash(plan),
             "agents": {},
         }
         for level in plan.levels:
@@ -378,6 +401,19 @@ class Scheduler:
         issues = []
         if lock.get("pipeline") != plan.pipeline_name:
             issues.append(f"pipeline 名称不匹配: lock={lock.get('pipeline')}, plan={plan.pipeline_name}")
+
+        # W4：拓扑完整性校验。旧格式 lockfile 无 topology_hash 时不阻断
+        # （向后兼容），仅提示重锁；新格式一律严格比对。
+        expected_topo = self._topology_hash(plan)
+        if "topology_hash" not in lock:
+            import logging
+            logging.getLogger(__name__).warning(
+                "lockfile 为旧格式（缺少 topology_hash），建议重新 --write-lock: %s", lockfile)
+        elif lock.get("topology_hash") != expected_topo:
+            issues.append(
+                f"拓扑漂移: topology_hash 不匹配 lock={lock.get('topology_hash')}, "
+                f"当前={expected_topo}（YAML 连线已改动，请重新 --write-lock）"
+            )
 
         locked_agents = lock.get("agents", {})
         for level in plan.levels:

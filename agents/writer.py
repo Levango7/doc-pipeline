@@ -47,6 +47,24 @@ DEPENDENCIES = ["researcher", "fetcher"]
 CACHE_TTL = 0
 RESPAWN = False
 
+# ─── TF-IDF 分词（中文 2-gram）──────────────────────────
+# 中文无空格分隔：连续汉字若只按整段取 token，查询侧短词与文档侧长段
+# 在词面上永不相交，余弦相似度恒为 0（_semantic_rank 退化为无排序 fallback）。
+# 英文按单词、中文 run 整段 + 额外 2-gram，与 researcher._relevance_score 同一策略。
+_RE_TFIDF_EN_WORD = re.compile(r"[a-zA-Z]{2,}")
+_RE_TFIDF_CN_RUN = re.compile(r"[一-鿿]{2,}")
+
+
+def _tokenize_for_tfidf(text: str) -> list[str]:
+    """TF-IDF 分词：英文按单词；中文 run 保留整段并额外生成 2-gram。"""
+    tokens: list[str] = [w for w in _RE_TFIDF_EN_WORD.findall(text.lower())]
+    for run in _RE_TFIDF_CN_RUN.findall(text):
+        tokens.append(run)
+        if len(run) > 2:
+            for i in range(len(run) - 1):
+                tokens.append(run[i:i + 2])
+    return tokens
+
 
 @dataclass
 class ContentChunk:
@@ -566,7 +584,14 @@ class WriterAgent(BaseAgent):
                 polished = self._llm_chat(
                     [{"role": "user", "content": seg_prompt}],
                     max_tokens=1024, temperature=0.3, timeout=30)
-                polished_segments.append(polished)
+                # 防御空响应：_llm_chat 返回空串/纯空白时不抛异常，
+                # 直接 append 会把整段替换为空并随 result 缓存 1 小时
+                # （polish_cache_ttl=3600），造成静默内容丢失。空响应一律保留原文。
+                if polished and polished.strip():
+                    polished_segments.append(polished)
+                else:
+                    self.log_debug(f"  段{i}: LLM 空响应，保留原文")
+                    polished_segments.append(seg)
                 self.log_debug(f"  段{i}: {len(seg)}→{len(polished)} 字, {time.time()-t0:.1f}s")
             except Exception:
                 self.log_debug(f"  段{i} 润色失败, 保留原文")
@@ -1029,24 +1054,31 @@ class WriterAgent(BaseAgent):
         if stream_callback is None:
             stream_callback = self._get_stream_callback(task_id)
 
-        cache_key_short = hashlib.sha256((query + title[:50]).encode()).hexdigest()
-        cached = self._restructure_cache.get(cache_key_short)
-        if cached is not None:
-            self.log_info("LLM 重构缓存命中，跳过")
-            return cached  # type: ignore[no-any-return]
-
-        # 加载 prompt 模板
+        # C11：缓存 key 必须覆盖影响产出的全部输入。原 key 只含 query+title，
+        # 同题不同素材（articles）、不同 prompt profile / 质量反馈状态都会命中
+        # 错误缓存，返回与当前检索结果无关的旧文档。key 覆盖：
+        # query + title + 增强后的 system_prompt（含 profile 与质量反馈）+ 素材 context。
         template = self._load_prompt_template(self._prompt_profile)
-        system_prompt = template.get("system_prompt", "")
+        base_system_prompt = template.get("system_prompt", "")
         sections = template.get("sections", [])
 
         if not sections:
             self.log_warning("Prompt 模板为空或加载失败，跳过 LLM 重构")
             return None
 
-        # 质量闭环增强 prompt + 素材摘要（逻辑见辅助方法）
-        system_prompt = self._enhance_system_prompt_with_feedback(system_prompt)
+        # 素材摘要（并入缓存 key）
         context = self._build_article_context(articles)
+
+        # 质量闭环增强 prompt（随反馈状态变化，并入缓存 key）
+        system_prompt = self._enhance_system_prompt_with_feedback(base_system_prompt)
+
+        cache_key_short = hashlib.sha256(
+            (query + "\x00" + title[:50] + "\x00" + system_prompt + "\x00" + context).encode()
+        ).hexdigest()
+        cached = self._restructure_cache.get(cache_key_short)
+        if cached is not None:
+            self.log_info("LLM 重构缓存命中，跳过")
+            return cached  # type: ignore[no-any-return]
 
         # 并行生成：真异步并发所有 sections（aiohttp + asyncio.gather）
         sec_specs = []
@@ -1193,13 +1225,17 @@ class WriterAgent(BaseAgent):
         if not keywords:
             return paragraphs[:8]
 
-        # 1. 分词
+        # 1. 分词（英文单词 + 中文 run/2-gram，见 _tokenize_for_tfidf）
         all_docs = []
         for p in paragraphs:
-            words = re.findall(r'[\w\u4e00-\u9fff]{2,}', p["text"].lower())
-            all_docs.append(words)
+            all_docs.append(_tokenize_for_tfidf(p["text"]))
 
-        query_words = set(kw.lower() for kw in keywords if len(kw) > 1)
+        # 查询侧同样展开为 token 集合：中文关键词（如"核心架构"）需生成
+        # 2-gram 才能与文档侧 2-gram 命中
+        query_words: set[str] = set()
+        for kw in keywords:
+            if len(kw) > 1:
+                query_words.update(_tokenize_for_tfidf(kw.lower()))
         n_docs = len(all_docs)
         if n_docs == 0:
             return paragraphs[:8]

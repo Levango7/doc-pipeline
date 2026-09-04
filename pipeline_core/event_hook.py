@@ -310,6 +310,19 @@ class EventHookManager:
         if not _webhook_engine_ready:
             _logger.warning("[EventHook] webhook engine not ready, dropping event")
             return
+        # W6：worker 协程若已静默死亡（异常退出），事件会持续入队但永不被投递，
+        # 表现为"传输层存活、事件全部丢失"。投递前检测存活，死亡则重新拉起
+        # 投递协程（旧 session 由进程退出兜底回收，重启属罕见路径）。
+        global _webhook_worker_future
+        fut = _webhook_worker_future
+        if fut is not None and fut.done():
+            with contextlib.suppress(BaseException):
+                exc = fut.exception()
+            _logger.error(
+                f"[EventHook] webhook worker 异常退出(exception={exc})，重新拉起投递协程")
+            _webhook_worker_future = asyncio.run_coroutine_threadsafe(
+                _async_webhook_worker(), _webhook_loop  # type: ignore[arg-type]
+            )
         body = json.dumps({
             "event": event,
             "payload": payload,

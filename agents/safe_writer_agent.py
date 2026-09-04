@@ -62,7 +62,11 @@ class SafeWriterAgent(BaseAgent):
         if info.get("exists"):
             backup_path = str(Path(backup_dir) / f"{Path(target).stem}_{datetime.now():%Y%m%d_%H%M%S}{Path(target).suffix}")
             Path(backup_dir).mkdir(parents=True, exist_ok=True)
-            shutil.copy2(target, backup_path)
+            # 用 copy 而非 copy2：copy2 会把目标文件的 mtime 一并复制到备份，
+            # 而 _cleanup 按备份文件自身 mtime 判 TTL——目标文件超过
+            # backup_ttl_days 未修改时，刚创建的备份会立即被清理误删。
+            # copy() 不复制 mtime，备份 mtime = 创建时刻，TTL 语义正确。
+            shutil.copy(target, backup_path)
             self.log_info(f"备份: {Path(backup_path).name} ({info['size']:,} bytes)")
         enc = "utf-8-sig" if Path(target).suffix.lower() in {".csv", ".tsv"} else "utf-8"
         # 确保目标目录存在

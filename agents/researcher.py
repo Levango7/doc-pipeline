@@ -265,7 +265,11 @@ class ResearcherAgent(BaseAgent):
         """执行单次搜索（含缓存）"""
         if engines is None:
             engines = self._search_engines
-        cache_key = f"{task_id}:{query}"
+        # C13：缓存 key 不含 task_id——README 宣传"LRU+TTL 跨任务缓存"，
+        # 混入 task_id 后每个任务的同一查询必然 miss。key 覆盖 query + 引擎集
+        # （不同引擎集结果不同），跨任务、跨引擎组合均正确隔离。
+        engines_sig = ",".join(engines) if engines else ""
+        cache_key = f"{query}|engines={engines_sig}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             self.log_debug(f"缓存命中: {query[:40]}")
@@ -338,8 +342,10 @@ class ResearcherAgent(BaseAgent):
             except Exception as e:
                 self.log_error(f"{engine} 搜索失败: {e}")
 
-        # 缓存结果
-        self._cache.set(cache_key, [r.to_dict() for r in all_results])
+        # 缓存结果（仅非空结果）：全引擎失败/反爬零结果时若照常写缓存，
+        # 24h TTL 内同查询即使引擎恢复也持续返回空，静默劣化为占位文档
+        if all_results:
+            self._cache.set(cache_key, [r.to_dict() for r in all_results])
 
         return all_results
 

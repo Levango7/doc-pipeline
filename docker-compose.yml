@@ -23,8 +23,10 @@ services:
 
     # ── 环境变量 ──
     environment:
-      # 非回环绑定强制要求 ADMIN_API_KEY（admin_api.py 启动时校验）
-      ADMIN_API_KEY: ${ADMIN_API_KEY:-change-me-in-production}
+      # 非回环绑定强制要求 ADMIN_API_KEY（admin_api.py 启动时校验）。
+      # 默认值必须为空而非占位串：若默认非空，启动校验"缺失即拒绝"的
+      # 安全护栏会被永远短路，弱默认密钥也会直接随 compose 上线。
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
       # 可选: 配置 LLM 供应商密钥（推荐挂载 .env 文件替代明文写这里）
       # BOCHA_API_KEY: ${BOCHA_API_KEY:-}
       # TAVILY_API_KEY: ${TAVILY_API_KEY:-}

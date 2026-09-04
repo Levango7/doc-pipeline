@@ -303,7 +303,10 @@ class FetcherAgent(BaseAgent):
         # ── 优先：Firecrawl 提取 ──
         if self._firecrawl.is_available():
             try:
-                fc_result = await asyncio.to_thread(self._firecrawl.scrape, url, 30)
+                # W10：调用方 gather 全量并发且仅在 _download_html_async 内限流，
+                # Firecrawl 调用若不持信号量会绕过并发上限（打爆 API 速率/成本）
+                async with semaphore:
+                    fc_result = await asyncio.to_thread(self._firecrawl.scrape, url, 30)
                 if fc_result["success"]:
                     plain_text = fc_result["markdown"]
                     if fc_result["title"] and not title:

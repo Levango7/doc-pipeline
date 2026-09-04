@@ -132,9 +132,14 @@ class TestSearch:
         agent = _make_agent()
         cached = [SearchResult(title="CT", url="https://c.com", snippet="CS",
                                source="mock", query="q").to_dict()]
-        agent._cache.set("t1:cached-query", cached)
+        # C13：缓存 key 不含 task_id（跨任务缓存语义），格式为 query|engines=<集合>
+        key = f"cached-query|engines={','.join(agent._search_engines)}"
+        agent._cache.set(key, cached)
         out = agent._search("cached-query", "t1")
         assert len(out) == 1 and out[0].title == "CT"
+        # 跨任务同查询同样命中（task_id 不参与 key）
+        out2 = agent._search("cached-query", "another-task")
+        assert len(out2) == 1 and out2[0].title == "CT"
 
     def test_mock_only_short_circuit(self):
         agent = _make_agent()
