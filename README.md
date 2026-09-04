@@ -22,7 +22,7 @@
 |------|------|
 | **编排** | DAG 并行执行、断点续传、可视化执行计划、SQLite 任务队列恢复 |
 | **需求** | **requirements_analyzer 需求分析器**（输入 → 结构化 DocumentSpec：类型/范围/读者/深度，置信度评分 + 追问建议，`--pipeline docreq`） |
-| **检索** | Bocha + Tavily + Serper + Bing + Sogou + 360 六引擎、LRU+TTL 跨任务缓存 |
+| **检索** | Bocha + Tavily + Serper + Metaso + Bing + Sogou + 360 等 10 引擎、LRU+TTL 跨任务缓存 |
 | **抓取** | Async I/O（aiohttp 并发）/ 同步线程池降级、内容质量识别 |
 | **写作** | TF-IDF 向量语义匹配、骨架生成、LLM 润色、质量反馈闭环 |
 | **质量** | QualityGate v2（Profile 模板）、Style Enforcer、Citation Verifier、评分历史学习、**fact_checker 事实核查**（数字类声明 vs 检索源一致性，`--pipeline docgen-verified`） |
@@ -126,7 +126,7 @@ python run.py test_input.md --dashboard
                  └──────┬────────────┘
                         ▼
                  ┌─────────────┐
-                 │   Checker   │  死链/空链接/完整性检查
+                 │   Checker   │  结构完整性分级质检（P0-P3）
                  └──────┬──────┘
                         ▼
                  ┌─────────────┐
@@ -154,7 +154,7 @@ python run.py test_input.md --dashboard
 | `pipeline_core/version_manager.py` | 文档版本管理（自动版本号/diff/回滚） |
 | `pipeline_core/cache_manager.py` | 统一缓存（memory/file/multi 三级） |
 | `pipeline_core/llm_router.py` | 多供应商 LLM 路由器（16 供应商定义，按 .env 启用） |
-| `pipeline_core/search_engines.py` | 统一搜索引擎接口（11 引擎 + LRU+TTL 缓存） |
+| `pipeline_core/search_engines.py` | 统一搜索引擎接口（10 引擎 + mock 测试桩 + LRU+TTL 缓存） |
 | `pipeline_core/cost_tracker.py` | LLM 成本追踪（16 供应商定价表 + 预算熔断） |
 | `pipeline_core/alert_manager.py` | 告警机制（熔断/DLQ/限流/预算超限通知） |
 | `pipeline_core/quality_feedback.py` | 质量评分历史 + 弱项模式分析 + 写作建议 |
@@ -444,7 +444,7 @@ python -m pytest tests/ -m e2e -v
 ```
 doc-pipeline/
 ├── agents/              # 9 个 Agent 实现
-├── pipeline_core/       # 核心编排框架（32 个模块）
+├── pipeline_core/       # 核心编排框架（34 个模块）
 │   ├── pipeline.py      # Orchestrator（统一节点模型）
 │   ├── dag_executor.py  # DAG 构建 + 节点调度
 │   ├── scheduler.py     # YAML → ExecutionPlan + Schema + Lockfile
@@ -496,11 +496,10 @@ doc-pipeline/
 
 | 指标 | 数值 | 模式 |
 |------|------|------|
-| 端到端（docgen, 20 页抓取） | ~7s | mock（无网络 I/O） |
 | Fetcher 并发 | 20 页 / 3s (aiohttp) | 真实网络 |
 | LLM 额度消耗 | 0（质量门控跳过，规则兜底） | mock |
 | 消息总线吞吐 | 批量 drain 50 条/轮 | — |
-| 缓存命中 | 125 万 ops/s | — |
+| 缓存命中 | 74 万 ops/s (get_hit) | 基线（ubuntu/3.12） |
 | 测试覆盖 | 1400+ tests (+ e2e) | — |
 
 ### 生产模式预期耗时（config.production.json）
