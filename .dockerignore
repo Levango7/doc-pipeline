@@ -29,6 +29,18 @@ bus_data/
 
 # 会话/工具目录
 .zcode/
+.workbuddy/
+
+# 非运行时内容（镜像瘦身：tests 18K 行/docs/基准脚本/审计产物不进镜像）
+tests/
+docs/
+deliverables/
+.github/
+benchmark.py
+benchmark_results.json
+.coverage
+htmlcov/
+.dockerignore
 
 # 版本控制与编辑器
 .git/
