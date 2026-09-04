@@ -815,10 +815,32 @@ class TestRestructureDocument:
         out1 = w._restructure_document("c", [{"title": "a", "url": "u", "text": "t"}],
                                        "q", "标题")
         assert out1 and "生成内容-S1" in out1
-        # 第二次命中缓存（不再生成）
+        # 第二次同输入命中缓存（不再生成）。C11 修复后缓存 key 覆盖
+        # query+title+system_prompt+素材 context，第二次必须传相同素材
         w._generate_section_async = MagicMock(side_effect=AssertionError("不应再调用"))
-        out2 = w._restructure_document("c", [], "q", "标题")
+        out2 = w._restructure_document("c", [{"title": "a", "url": "u", "text": "t"}],
+                                       "q", "标题")
         assert out2 == out1
+
+    def test_cache_miss_on_different_articles(self, tmp_path):
+        """C11 回归守卫：素材不同 → 缓存 key 不同，不得返回旧文档"""
+        w = _make_writer(tmp_path)
+        w._llm_api_key = "k"
+        w._load_prompt_template = MagicMock(return_value={
+            "system_prompt": "sys",
+            "sections": [{"name": "S1", "prompt": "写 {title} 的 {query}"}],
+        })
+
+        async def _fake_gen(idx, sec_name, sec_prompt, system_prompt, context):
+            return (idx, sec_name, f"# 标题\n\n生成内容-{sec_name}-{context}")
+
+        w._generate_section_async = _fake_gen
+        out1 = w._restructure_document("c", [{"title": "a", "url": "u", "text": "素材甲"}],
+                                       "q", "标题")
+        out2 = w._restructure_document("c", [{"title": "a", "url": "u", "text": "素材乙"}],
+                                       "q", "标题")
+        assert out1 and out2
+        assert out1 != out2
 
     def test_stream_callback_picked_by_task_id(self, tmp_path):
         w = _make_writer(tmp_path)
