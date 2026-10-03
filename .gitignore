@@ -48,6 +48,9 @@ ROADMAP.md
 tests/*.db
 tests/.test_*
 
+# 渲染层验证 spike 的二进制产物（脚本与 README 纳入版本控制）
+spike/out/
+
 # 密钥
 .env
 *.secret

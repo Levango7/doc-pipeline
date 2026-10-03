@@ -63,7 +63,16 @@ _RE_WHITESPACE = re.compile(r"\s+")
 _RE_WHITESPACE_ALL = re.compile(r"\s")
 _RE_URL_SCHEME = re.compile(r"https?://")
 _RE_BLOCK_SPLIT = re.compile(
-    r"</?(?:p|div|section|li|td|article|blockquote)[^>]*>", re.IGNORECASE)
+    r"</?(?:p|div|section|li|td|article|blockquote|pre)[^>]*>", re.IGNORECASE)
+_RE_PRE_BLOCK = re.compile(
+    r"<pre\b[^>]*>(.*?)</pre>", re.DOTALL | re.IGNORECASE)
+_RE_CODE_BLOCK_LANG = re.compile(
+    r"<code\b[^>]*\bclass\s*=\s*[\"'][^\"']*"
+    r"(?:language|lang)-([a-zA-Z0-9_+#-]+)[^\"']*[\"'][^>]*>",
+    re.IGNORECASE)
+_RE_BR_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_RE_FENCE_IN_CODE = re.compile(r"^[ \t]*`{3,}[ \t]*\w*$", re.MULTILINE)
+_RE_TRAILING_WS = re.compile(r"[ \t]+$", re.MULTILINE)
 _RE_REMOVE_AREAS = {tag: re.compile(
     rf"<{tag}[^>]*>.*?</{tag}>", re.DOTALL | re.IGNORECASE)
     for tag in ("script", "style", "noscript", "svg", "head")}
@@ -92,6 +101,130 @@ class _DownloadAbort(Exception):
 
 class _DownloadRetry(Exception):
     """临时性下载失败，可重试"""
+
+
+def _unescape_html(text: str) -> str:
+    """HTML 实体反转义（命名/数字/十六进制三类）。
+
+    代码块里&nbsp;/&lt;/&gt;/&amp; 很常见，不还原会让代码完全不可读
+    （`if a&lt;b` 这种）。只做这四类常见实体，避免引入 html.unescape
+    对 &copy 等符号的展开污染正文。
+    """
+    def _num(m):
+        try:
+            return chr(int(m.group(1), 10))
+        except (ValueError, OverflowError):
+            return m.group(0)
+
+    def _hex(m):
+        try:
+            return chr(int(m.group(1), 16))
+        except (ValueError, OverflowError):
+            return m.group(0)
+
+    text = re.sub(r"&#x([0-9a-fA-F]+);", _hex, text)
+    text = re.sub(r"&#(\d+);", _num, text)
+    for entity, char in (
+        ("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
+        ("&#39;", "'"), ("&apos;", "'"), ("&nbsp;", " "),
+        ("&amp;", "&"),
+    ):
+        text = text.replace(entity, char)
+    # 残余命名实体（&copy; 等）→ 去掉分号留裸文本，避免污染代码
+    text = re.sub(r"&[a-zA-Z]{2,8};", "", text)
+    return text
+
+
+def _extract_pre_code(raw: str) -> str:
+    """把一个 <pre> 块的内层 HTML 转成 Markdown 围栏代码块。
+
+    关键点：**保留换行与缩进**。原实现用 separator=" " / \\s+→" " 把
+    <pre> 和普通段落同等对待，导致 `asyncio.run(main())` 被压成
+    `asyncio . run ( main ( ) )`，代码彻底不可读，且下游任何格式
+    转换（docx/pdf）都无法还原排版。
+    """
+    inner = raw
+
+    # <br> 在 <pre> 里是显式换行
+    inner = _RE_BR_TAG.sub("\n", inner)
+    # 保留 <br> 之外的标签作为分隔（span/div 在 <pre> 里常用于语法高亮分段）
+    inner = _RE_STRIP_TAGS.sub("", inner)
+    inner = _unescape_html(inner)
+
+    # 只做行尾空白清理，保留行首缩进（缩进即语义）
+    inner = _RE_TRAILING_WS.sub("", inner)
+    inner = inner.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+
+    if not inner.strip():
+        return ""
+
+    # 语言标注：<pre><code class="language-python">
+    lang = ""
+    m = _RE_CODE_BLOCK_LANG.search(raw)
+    if m:
+        lang = re.sub(r"[^a-zA-Z0-9_+#-]", "", m.group(1))[:20]
+
+    # 代码自身含 ``` 围栏时，用更长的围栏避免提前闭合
+    longest = max(
+        (len(m.group(1)) for m in re.finditer(r"^([`]+)", inner, re.MULTILINE)),
+        default=0,
+    )
+    fence = "`" * max(3, longest + 1)
+
+    return f"{fence}{lang}\n{inner}\n{fence}"
+
+
+def _harvest_pre_blocks(html: str) -> tuple[str, str]:
+    """摘出所有 <pre> 代码块并转成 Markdown，同时把它们从 HTML 中移除。
+
+    返回 (代码块文本, 剩余HTML)。代码块不再参与后续的段落密度筛选
+    （代码的 text_ratio 天然偏低，且会被 _RE_WHITESPACE 压平）。
+    """
+    blocks: list[str] = []
+    seen: set[str] = set()
+
+    def _take(m):
+        code = _extract_pre_code(m.group(1))
+        if code and code not in seen:      # 去重：同一段代码常被多处嵌入
+            seen.add(code)
+            blocks.append(code)
+        return " "  # 原位留空，避免相邻文本粘连成一个词
+
+    rest = _RE_PRE_BLOCK.sub(_take, html)
+    return ("\n\n".join(blocks), rest) if blocks else ("", html)
+
+
+def _dedupe_blocks(blocks: list[str]) -> list[str]:
+    """去掉"父块文本被子块完全包含"的冗余块。
+
+    CSS 选择器里同时匹配了容器标签（article/section/div）和它们的子节点
+    （p/li），父节点的 text() 本身就是所有子节点文本的拼接，
+    于是同一段文字会被收集两遍（表现为正文中段内容重复）。
+    这里按长度降序保留，被更长块完全包含的短块直接丢弃；
+    容器节点文本通常更长，故保留容器、丢弃子节点，语义等价。
+    """
+    kept: list[str] = []
+    for blk in sorted(blocks, key=len, reverse=True):
+        if any(blk in k for k in kept):
+            continue
+        kept.append(blk)
+    # 恢复原始顺序，避免正文被打乱
+    order = {id(b): i for i, b in enumerate(blocks)}
+    return sorted(kept, key=lambda b: order[id(b)])
+
+
+def _merge_code(text: str, code_text: str) -> str:
+    """把代码块拼回正文尾部。
+
+    放尾部而非原位插入：代码块在原文中的位置需要完整的 DOM/流上下文才能
+    准确还原（<pre> 常嵌在 <li>/<td> 里），而下游（writer 的 TF-IDF 匹配、
+    quality_gate 的评分）只关心内容完整性，不关心代码在正文中的精确位置。
+    """
+    if not code_text:
+        return text
+    if not text.strip():
+        return code_text
+    return f"{text.rstrip()}\n\n{code_text}"
 
 
 class FetcherAgent(BaseAgent):
@@ -535,6 +668,9 @@ class FetcherAgent(BaseAgent):
         if not html:
             return ""
 
+        # ── 先摘出 <pre> 代码块（保留换行/缩进），再对剩余内容做正文提取 ──
+        code_text, html = _harvest_pre_blocks(html)
+
         # ── 优先：selectolax 解析（C-bindings，比正则快 5-10x）──
         try:
             from selectolax.parser import HTMLParser
@@ -548,9 +684,9 @@ class FetcherAgent(BaseAgent):
             # 优先 <article> / <main> 容器
             container = tree.css_first("article") or tree.css_first("main") or tree
 
-            # 按块级标签提取段落，用文本密度筛选
+            # 按块级标签提取段落，用文本密度筛选（pre 已在上面摘走）
             scored = []
-            for node in container.css("p, div, section, li, td, blockquote, article, h1, h2, h3, h4, pre"):
+            for node in container.css("p, div, section, li, td, blockquote, article, h1, h2, h3, h4"):
                 blk = node.text(separator=" ", strip=True)
                 if not blk or len(blk) < 30:
                     continue
@@ -564,7 +700,7 @@ class FetcherAgent(BaseAgent):
                     continue
                 scored.append(blk)
 
-            text = '\n'.join(scored)
+            text = '\n'.join(_dedupe_blocks(scored))
 
             # 兜底：若密度法提取过少，退回到全文档纯文本
             if len(text) < MIN_CONTENT_LENGTH:
@@ -572,19 +708,33 @@ class FetcherAgent(BaseAgent):
                 # 清理 Unicode 噪声字符
                 fallback = _RE_NOISE_CHARS.sub(" ", fallback)
                 fallback = _RE_WHITESPACE.sub(" ", fallback).strip()
-                if len(fallback) > len(text):
+                # 只在兜底确实更长时替换：全文含 <article>/<main> 容器时，
+                # tree.text() 会把容器内所有段落再拼一遍（与 scored 重复），
+                # 直接赋值会导致正文重复输出。
+                if len(fallback) > len(text) * 1.5:
                     text = fallback
 
+            text = _merge_code(text, code_text)
             if text:
                 return text[:80000]  # 单页上限 80KB
         except Exception:
             pass  # selectolax 解析失败，回退到正则
 
         # ── 回退：正则启发式提取（无外部依赖）──
-        return self._extract_text_regex(html)
+        return self._extract_text_regex(html, code_text=code_text)
 
-    def _extract_text_regex(self, html: str) -> str:
-        """正则启发式 HTML 正文提取（selectolax 不可用时的 fallback）"""
+    def _extract_text_regex(self, html: str, code_text: str = "") -> str:
+        """正则启发式 HTML 正文提取（selectolax 不可用时的 fallback）
+
+        code_text: 调用方（_extract_text）已摘出的代码块文本，用于复用避免重复解析。
+        **无论是否传入，本方法都会重新从 html 摘除 <pre>**——否则传入
+        code_text 却不移除 <pre>，代码会以压平形态混进正文，
+        造成同一份代码出现两次（一次保真、一次塌陷）。
+        """
+        # 0. 摘出 <pre> 代码块（保留换行/缩进），避免被 _RE_WHITESPACE 压平
+        harvested, html = _harvest_pre_blocks(html)
+        code_text = code_text or harvested
+
         # 1. 移除明显无正文区域
         for _rx in _RE_REMOVE_AREAS.values():
             html = _rx.sub(" ", html)
@@ -625,9 +775,11 @@ class FetcherAgent(BaseAgent):
             fallback = _RE_HEX_ENTITY.sub(" ", fallback)       # 十六进制实体
             fallback = _RE_NOISE_CHARS.sub(" ", fallback)      # Unicode 噪声字符
             fallback = _RE_WHITESPACE.sub(" ", fallback).strip()
-            if len(fallback) > len(text):
+            # 同上：全文去标签会重复包含已提取的段落，仅在明显更长时替换
+            if len(fallback) > len(text) * 1.5:
                 text = fallback
 
+        text = _merge_code(text, code_text)
         return text[:80000]  # 单页上限 80KB
 
     def _is_content_usable(self, text: str, url: str, query: str) -> bool:
