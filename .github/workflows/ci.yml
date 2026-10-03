@@ -185,8 +185,15 @@ jobs:
           git commit -m "chore(bench): 重立性能基线（ubuntu/3.12，workflow_dispatch）" || echo "no change"
           git push
 
-      - name: Reset rolling cache key
-        run: |
-          # 旧键 cache 无法删除（无 Evict API 权限），写入新键使 restore
-          # 优先命中最新基线；restore-keys 回退也会先取时间最新的新键
-          echo "cache will roll on next main run"
+      # 旧键 cache 无法删除（无 Evict API 权限），因此这里主动写入新键：
+      # restore 会优先命中精确键，其次按 restore-keys 取时间最新的键。
+      #
+      # 这一步是必需的，不能只 echo：perf-regression 的 save 条件是
+      # `event_name == 'push'`，而本 job 由 workflow_dispatch 触发，
+      # 不主动保存的话刷新出的基线永远进不了缓存，perf job 会一直拿
+      # 几个月前的旧键比对 → 永久误报回归。
+      - name: Publish refreshed baseline to cache
+        uses: actions/cache/save@v4
+        with:
+          path: benchmark_results.json
+          key: perf-baseline-main-${{ github.run_id }}
