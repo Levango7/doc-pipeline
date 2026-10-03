@@ -27,6 +27,31 @@
 > pdf 是"定版归档"（可打印、可送审）。两者后端均为可选依赖，
 > 缺失时 renderer 如实回报跳过原因，**不影响 Markdown 主产物**。
 
+### 输入来源
+
+除了输入主题去公网检索，系统还能直接吃下**你手上的已有资料**：
+
+| 来源 | 支持 | 说明 |
+|---|---|---|
+| `.pdf` | ✅ | 数字版 PDF 提取，**按字号推断标题层级**（22pt→h1 / 16pt→h2），中文无损 |
+| `.png` `.jpg` 等图片 | 需 OCR 后端 | 扫描件/图片需 `paddleocr` 或 `mineru`，未安装时明确告知而非静默失败 |
+| `.md` `.txt` | ✅ | 编码嗅探（UTF-8 / GB18030 / GBK），中文不乱码 |
+
+资料进入**知识库**后持久化，可反复按语义检索：
+
+```python
+from pipeline_core.knowledge_base import KnowledgeBase
+
+kb = KnowledgeBase("knowledge_base.db")        # 默认 hash 嵌入（离线可用）
+kb.add_file("财报.pdf")                        # 自动经摄入层转 Markdown
+kb.search("本季度营收增长多少", top_k=3)        # 向量检索
+```
+
+**诚实边界**：内置 `hash` 嵌入是**特征哈希（词法相似）**，能找到"用词相近"
+的内容，**不能**理解同义词与语义改写（"营收" vs "收入" 匹配不上）。
+需要真语义请装 `sentence-transformers`（`local` 后端）或配 `EMBEDDING_API_KEY`
+（`api` 后端）；两者不可用时 `auto` 会自动回落到 hash 并记录原因，不会失败。
+
 ---
 
 ## 特性
@@ -176,7 +201,10 @@ python run.py test_input.md --dashboard
 | `pipeline_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
 | `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
 | `pipeline_core/renderer.py` | 渲染层：Markdown → docx（OOXML）/ pdf（ReportLab），双后端可选依赖 |
-| `agents/` | 10 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/fact_checker/layout/safe_writer/requirements_analyzer/renderer） |
+| `pipeline_core/ingest.py` | 摄入层：PDF/图片/文本 → 结构化 Markdown（PDF 按字号推断标题层级） |
+| `pipeline_core/knowledge_base.py` | 知识库：切块 → 向量化 → SQLite 持久化 → 向量检索 |
+| `pipeline_core/embeddings.py` | 嵌入层：可插拔后端（hash 内置 / local 模型 / API），auto 自动回落 |
+| `agents/` | 12 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/fact_checker/layout/safe_writer/requirements_analyzer/renderer/ingest/knowledge_base） |
 
 ---
 

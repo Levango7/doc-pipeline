@@ -48,6 +48,12 @@ ROADMAP.md
 tests/*.db
 tests/.test_*
 
+# 知识库与运行时数据库（本地数据，不入库）
+knowledge_base.db
+knowledge_base.db-wal
+knowledge_base.db-shm
+*.db-journal
+
 # 渲染层验证 spike 的二进制产物（脚本与 README 纳入版本控制）
 spike/out/
 
