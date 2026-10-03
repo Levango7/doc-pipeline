@@ -52,6 +52,15 @@ async def render(doc: str) -> bytes:
 needs_docx = pytest.mark.skipif(not renderer.HAS_DOCX, reason="python-docx 未安装")
 needs_pdf = pytest.mark.skipif(not renderer.HAS_PDF, reason="reportlab 未安装")
 
+# pymupdf 仅用于校验 pdf 文本层，是测试期依赖而非运行时依赖；
+# 未安装时跳过这几个用例，而不是让整条 CI 变红。
+try:
+    import pymupdf  # noqa: F401
+    HAS_PYMUPDF = True
+except ImportError:      # pragma: no cover - 环境相关
+    HAS_PYMUPDF = False
+needs_pdftext = pytest.mark.skipif(not HAS_PYMUPDF, reason="pymupdf 未安装")
+
 
 # ───────────────────────────── Markdown 解析 ─────────────────────────────
 
@@ -170,6 +179,7 @@ class TestRenderPdf:
         assert path.exists()
         assert res["size"] > 0
 
+    @needs_pdftext
     def test_chinese_fully_preserved(self, tmp_path):
         import re
 
@@ -180,12 +190,14 @@ class TestRenderPdf:
         cjk = re.compile(r"[\u4e00-\u9fff]")
         assert len(cjk.findall(text)) == len(cjk.findall(SAMPLE_MD))
 
+    @needs_pdftext
     def test_no_mojibake(self, tmp_path):
         import pymupdf
         _, path = self._render(tmp_path)
         text = "".join(p.get_text() for p in pymupdf.open(path))
         assert "�" not in text
 
+    @needs_pdftext
     def test_code_indent_preserved(self, tmp_path):
         """wordWrap="CJK" 会吞行首空格，缩进必须转 &nbsp; 才保得住。"""
         import pymupdf

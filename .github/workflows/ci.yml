@@ -39,7 +39,9 @@ jobs:
           # 实证教训（2026-08）：pytest>=8.0 漂到 9.1.1 + coverage 7.16.0 后，
           # Python 3.14 上 _sqlite3 C 模块段错误（exit 139），4 个版本矩阵全红。
           # 版本组合 = 本地全量验证过的组合（1423 passed / win + ubuntu）。
-          pip install "pytest==8.3.4" "pytest-cov==7.1.0" "coverage==7.15.2" "pytest-asyncio==0.25.2" "ruff==0.16.4" "mypy==1.20.2" "types-PyYAML" "bandit>=1.7.0" "pip-audit>=2.7.0"
+          # pymupdf：渲染层测试用它校验 pdf 文本层（中文保留率/代码缩进），
+          # 只在测试期需要，不是运行时依赖。
+          pip install "pytest==8.3.4" "pytest-cov==7.1.0" "coverage==7.15.2" "pytest-asyncio==0.25.2" "ruff==0.16.4" "mypy==1.20.2" "types-PyYAML" "bandit>=1.7.0" "pip-audit>=2.7.0" "pymupdf>=1.24.0"
 
       - name: Lint (ruff)
         run: |

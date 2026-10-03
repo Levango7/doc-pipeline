@@ -242,7 +242,12 @@ class TestExtractText:
 
     def test_selectolax_path(self, tmp_path):
         agent = _make_agent(tmp_path)
-        assert agent._use_selectolax  # 环境已安装 selectolax
+        # selectolax 是可选依赖，Python 3.14 等环境可能装不上
+        # （CI 上表现为 HTML解析: regex 降级）。这里只在装了的情况下
+        # 断言走的是 selectolax 路径；未装时该断言无意义——
+        # 正则回退路径由 test_regex_fallback_extraction 单独覆盖。
+        if not agent._use_selectolax:
+            pytest.skip("环境未安装 selectolax，走正则回退路径")
         html = (
             "<html><head><script>var x=1;</script></head><body>"
             "<nav>导航 首页 新闻 体育</nav>"
