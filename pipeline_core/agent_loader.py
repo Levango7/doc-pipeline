@@ -133,7 +133,7 @@ class AgentLoader:
     _TRUSTED_AGENTS = {
         "researcher", "fetcher", "writer", "quality_gate",
         "checker", "layout", "safe_writer_agent", "fast_pool_0",
-        "fact_checker", "requirements_analyzer",
+        "fact_checker", "requirements_analyzer", "renderer_agent",
     }
 
     def __init__(self, registry, bus, agents_dir: str = "agents", logger=None,

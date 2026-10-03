@@ -1,0 +1,41 @@
+feat(renderer): 多格式渲染层 —— Markdown → docx / pdf，并新增 docgen-render 流水线
+
+把 spike 阶段验证过的渲染能力落地为正式模块与Agent。
+这是系统里第一个"产出多种格式"的节点，也是"文档生成系统"区别于
+"Markdown 生成器"的关键一步。
+
+新增：
+- pipeline_core/renderer.py：渲染核心模块
+  - docx 走 OOXML 路线（python-docx），落真正的 Word 标题样式
+    （Title / Heading / List Bullet）→ Word 能自动生成目录、支持导航、
+    可二次编辑，产出的是"活文档"而非图片式死文件
+  - pdf 走 ReportLab 路线，A4 可打印定版归档，中文字符 100% 保留、
+    代码缩进保真
+  - 两后端均为可选依赖，缺失时返回结构化 error 结果而非抛异常中断流水线
+- agents/renderer_agent.py：renderer Agent（v1.0）
+  - Markdown 始终是中间态并保留，docx/pdf 是衍生产物
+  - 全部后端缺失时如实回报，不让流水线失败（渲染是增强而非前置）
+  - 产物文件名经task_id 净化，防路径穿越
+- pipelines/docgen-render.yaml + .lock：独立多格式流水线
+  - **不改 docgen**：docgen 是既有主链路，被广泛回归覆盖，改它会牵动
+    lockfile / 配置哈希；独立 pipeline 保持默认行为完全不变
+
+兼容性：
+- agent_loader._TRUSTED_AGENTS 增补 renderer_agent（否则加载器会走
+  AST 安全检查并拒绝加载）
+- 默认 docgen 链路零改动，行为完全不变
+
+验证：
+- tests/test_renderer.py 44 例（解析 / docx / pdf / 分发 / Agent 契约 /
+  pipeline 声明一致性），含"后端缺失降级"路径覆盖
+- 全量 1618 passed / 2 skipped（此前 1574），ruff + mypy 全过
+- 真实流水线实跑（35.8s，renderer 95.2ms）：产物
+  render_e2e.md 3061 B / .docx 37087 B / .pdf 5947 B，
+  中文 612→612（100% 保留、无豆腐块）、docx 11 个 Word 标题段落
+
+另修（连续两次 CI 变红的根因）：
+新增 .gitattributes 统一换行为LF。本仓库 core.autocrlf=true 且原先
+没有 .gitattributes，Windows 提交的 LF 在 checkout 到 Linux CI 时被转成
+CRLF，导致 ruff 的 W292（文件末尾缺换行）对所有文件误报——
+本地必过、CI 必红。git add --renormalize 已规范化 4 个受影响文件
+（`git diff -w` 确认仅换行符变化，无内容改动）。cmd/bat 保持 CRLF。

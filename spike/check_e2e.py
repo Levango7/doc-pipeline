@@ -11,7 +11,10 @@ sys.path.insert(0, str(ROOT))
 
 from agents.fetcher import FetcherAgent  # noqa: E402
 from spike.render_spike import (  # noqa: E402
-    OUT, parse_markdown, render_docx, render_pdf,
+    OUT,
+    parse_markdown,
+    render_docx,
+    render_pdf,
 )
 
 HTML = """<html><body><article>

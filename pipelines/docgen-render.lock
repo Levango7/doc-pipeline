@@ -1,0 +1,58 @@
+agents:
+  checker:
+    config_hash: e8cfc5dfe3f9
+    dependencies:
+    - quality_gate
+    pool_size: 1
+    version: '1.1'
+  fetcher:
+    config_hash: 608ae47a27f3
+    dependencies:
+    - researcher
+    pool_size: 1
+    version: '1.0'
+  layout:
+    config_hash: fd4abfa751e5
+    dependencies:
+    - checker
+    pool_size: 1
+    version: '2.0'
+  quality_gate:
+    config_hash: 27a3851a7e03
+    dependencies:
+    - writer
+    pool_size: 1
+    version: '2.0'
+  renderer:
+    config_hash: c8d6cc85f482
+    dependencies:
+    - safe_writer
+    pool_size: 1
+    version: '1.0'
+  researcher_pool_0:
+    config_hash: dacb28d53838
+    dependencies: &id001 []
+    pool_size: 2
+    version: '2.0'
+  researcher_pool_1:
+    config_hash: dacb28d53838
+    dependencies: *id001
+    pool_size: 2
+    version: '2.0'
+  safe_writer:
+    config_hash: a5047e77162a
+    dependencies:
+    - layout
+    pool_size: 1
+    version: '2.0'
+  writer:
+    config_hash: fab8f299574f
+    dependencies:
+    - fetcher
+    pool_size: 1
+    version: '2.0'
+created_at: '2026-10-04T00:39:22'
+node_count: 9
+pipeline: docgen-render
+plan_id: 6d3736ef
+topology_hash: 23d5d9b92290

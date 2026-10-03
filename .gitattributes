@@ -1,0 +1,43 @@
+# 统一换行策略
+#
+# 背景：本仓库在 Windows 上开发（core.autocrlf=true），提交时 LF 会被转成
+# CRLF，checkout 到 Linux CI 时每个文件都以 CRLF 结尾。ruff 的 W292
+# （文件末尾缺换行）因此在 CI 上对所有文件误报——本地过、CI 红，
+# 且每推送一次都可能触发，属于系统性问题。
+#
+# 明确约定：**仓库内统一 LF**，Windows 开发时由 Git 在工作区转换成本地换行，
+# 但入库与 CI 看到的永远是 LF。
+
+* text=auto eol=lf
+
+# 二进制，禁止任何换行转换
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdfa binary
+*.db   binary
+
+# Windows 批处理必须是 CRLF（cmd.exe 解析 LF-only 的 .cmd 会出错）
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
+# 明确 LF 的文本类型（覆盖上面的 text=auto eol=lf，保持一致）
+*.py   text eol=lf
+*.md   text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.json text eol=lf
+*.lock text eol=lf
+*.txt  text eol=lf
+*.cfg  text eol=lf
+*.toml text eol=lf
+*.sh   text eol=lf
+
+# PowerShell 脚本走 CRLF（历史惯例，避免本机执行异常）
+*.ps1  text eol=crlf

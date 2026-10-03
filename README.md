@@ -10,9 +10,22 @@
 |---|---|---|---|
 | **主打** | 文档生成 | `python run.py <input> --pipeline docgen` | 完整 7 Agent 流水线，生产可用 |
 | **主打** | 文档生成 + 事实核查 | `--pipeline docgen-verified` | 增加 fact_checker 节点，数字类声明交叉验证 |
+| **主打** | **文档生成 + 多格式渲染** | `--pipeline docgen-render` | 追加 renderer 节点，产出 **docx / pdf**（可编辑 Word / 可打印归档） |
 | **实验性** | 需求分析 | `--pipeline docreq` | requirements_analyzer 输出结构化 DocumentSpec |
 | **实验性** | 文档增强 | `--enhance <input>` | 逐章节 LLM 深化 + 搜索补充 |
 | **实验性** | MCP Server | `--mcp` | JSON-RPC 2.0 over stdio，供外部 Agent 调度 |
+
+### 输出格式
+
+| 格式 | 技术路线 | 适用 | 说明 |
+|---|---|---|---|
+| `.md` | — | 中间态 / 二次编辑 | 管线唯一中间产物，**始终保留** |
+| `.docx` | python-docx（OOXML） | 交付 / 二次编辑 | 落**真正的 Word 标题样式**（Title / Heading / List Bullet），Word 能自动生成目录、导航窗格可跳转 |
+| `.pdf` | ReportLab | 打印 / 归档 / 送审 | A4，中文字符 100% 保留，代码缩进保真 |
+
+> docx 与 pdf **互补而非替代**：docx 是"活文档"（可编辑、可协作），
+> pdf 是"定版归档"（可打印、可送审）。两者后端均为可选依赖，
+> 缺失时 renderer 如实回报跳过原因，**不影响 Markdown 主产物**。
 
 ---
 
@@ -162,7 +175,8 @@ python run.py test_input.md --dashboard
 | `pipeline_core/mcp_server.py` | MCP Server（JSON-RPC 2.0 over stdio，5 tools） |
 | `pipeline_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
 | `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
-| `agents/` | 9 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/fact_checker/layout/safe_writer/requirements_analyzer） |
+| `pipeline_core/renderer.py` | 渲染层：Markdown → docx（OOXML）/ pdf（ReportLab），双后端可选依赖 |
+| `agents/` | 10 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/fact_checker/layout/safe_writer/requirements_analyzer/renderer） |
 
 ---
 
@@ -470,13 +484,16 @@ doc-pipeline/
 │   └── ...              # 更多模块
 ├── pipelines/           # Pipeline 定义 + Quality Profile
 │   ├── docgen.yaml      # 默认文档生成流水线
+│   ├── docgen-render.yaml # 追加 renderer 节点，产出 docx/pdf
+│   ├── docgen-verified.yaml
 │   ├── three_pass.yaml  # 三阶段流水线（DAG 版）
 │   ├── test_pipeline.yaml
 │   └── quality/
 │       ├── technical-doc.yaml
 │       └── tutorial.yaml
 ├── dashboard/           # 前端仪表盘
-├── tests/               # 1400+ 个测试（另有 e2e）
+├── spike/               # 渲染层可行性验证脚本与结论（见 spike/README.md）
+├── tests/               # 1600+ 个测试（另有 e2e）
 ├── checkpoints/         # 断点 + 日志（自动轮转）
 ├── versions/            # 文档版本存储
 ├── run.py               # CLI 入口
