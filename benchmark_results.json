@@ -1,32 +1,32 @@
 {
   "HTML 正文提取 (selectolax vs regex)": {
     "selectolax": null,
-    "regex": 0.01762199810000311
+    "regex": 0.01580235439999953
   },
   "CacheManager 吞吐": {
-    "set_ops_per_sec": 495120.5375872746,
-    "get_hit_ops_per_sec": 757525.1411178696,
-    "get_miss_ops_per_sec": 1020805.2356815153,
-    "set_ms_per_op": 0.0020197102000111045,
-    "get_hit_ms_per_op": 0.0013200882000091953
+    "set_ops_per_sec": 614913.7995388922,
+    "get_hit_ops_per_sec": 930201.234154134,
+    "get_miss_ops_per_sec": 1214713.4843151874,
+    "set_ms_per_op": 0.00162624419999986,
+    "get_hit_ms_per_op": 0.0010750361999996016
   },
   "并行执行 (Thread vs Process)": {
-    "serial": 0.0437967560000061,
-    "thread_pool": 0.044908591999956116,
-    "process_pool": 0.05839477600000009,
-    "thread_speedup": 0.9752422431780737,
-    "process_speedup": 0.7500115421284608
+    "serial": 0.04316606700000136,
+    "thread_pool": 0.04673962200000403,
+    "process_pool": 0.04250082200000094,
+    "thread_speedup": 0.9235433482966044,
+    "process_speedup": 1.0156525207912546
   },
   "SSE 流式 chunk 传播": {
-    "emit_ops_per_sec": 130281.48095735536,
-    "emit_ms_per_op": 0.007675687999949333,
-    "consume_ms": 0.15616200005297287,
+    "emit_ops_per_sec": 149620.07721879912,
+    "emit_ms_per_op": 0.006683595000005482,
+    "consume_ms": 0.13268099999663718,
     "events_buffered": 100
   },
   "TF-IDF 语义匹配": {
     "n_paragraphs": 500,
     "n_terms": 699,
-    "elapsed_ms": 77.79585100001896,
+    "elapsed_ms": 78.90267999999878,
     "top_score": 0.4057086110115051
   }
 }
