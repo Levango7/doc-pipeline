@@ -12,6 +12,7 @@
 - 输出路径由配置或 pipeline 决定，绝不接受外部传入的任意路径
 """
 from pathlib import Path
+from typing import Any
 
 from pipeline_core import renderer
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
@@ -59,9 +60,11 @@ class RendererAgent(BaseAgent):
         task_id = payload.get("task_id", "")
 
         if not content:
-            result = {"status": "error", "message": "内容为空，无法渲染"}
-            self.publish("renderer.failed", {"task_id": task_id, **result})
-            return result
+            empty_result: dict[str, Any] = {
+                "status": "error", "message": "内容为空，无法渲染"}
+            self.publish("renderer.failed",
+                         {"task_id": task_id, **empty_result})
+            return empty_result
 
         title = payload.get("title") or self._title or "生成文档"
         base_name = self._resolve_base_name(payload, task_id)
@@ -81,7 +84,9 @@ class RendererAgent(BaseAgent):
         skipped = {f: r.get("message") for f, r in outputs.items()
                    if r.get("status") != "ok"}
 
-        result = {
+        # 显式标注为 dict[str, Any]：mypy 会按首个键把字面量推断成
+        # dict[str, str]，后续塞入 list/dict 就报错
+        result: dict[str, Any] = {
             "status": "ok" if ok_formats else "error",
             "task_id": task_id,
             "formats": ok_formats,
