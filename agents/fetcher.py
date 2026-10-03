@@ -63,7 +63,8 @@ _RE_WHITESPACE = re.compile(r"\s+")
 _RE_WHITESPACE_ALL = re.compile(r"\s")
 _RE_URL_SCHEME = re.compile(r"https?://")
 _RE_BLOCK_SPLIT = re.compile(
-    r"</?(?:p|div|section|li|td|article|blockquote|pre)[^>]*>", re.IGNORECASE)
+    r"</?(p|div|section|li|td|article|main|blockquote|h[1-6])\b[^>]*>",
+    re.IGNORECASE)
 _RE_PRE_BLOCK = re.compile(
     r"<pre\b[^>]*>(.*?)</pre>", re.DOTALL | re.IGNORECASE)
 _RE_CODE_BLOCK_LANG = re.compile(
@@ -84,6 +85,22 @@ _RE_QUERY_TOKEN = re.compile(r"[\w\u4e00-\u9fff]{2,}")
 
 # 最小可用内容长度
 MIN_CONTENT_LENGTH = 200
+
+# 标题标签：按结构信号处理，不受正文长度/密度门槛约束
+_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+# 标题长度上限：超过此长度多半是被误标的长段落（如整段正文塞进 h1），丢弃
+_MAX_HEADING_LEN = 120
+
+
+def _as_markdown_heading(tag: str, text: str) -> str:
+    """把 <hN> 文本转成 Markdown 标题，保留层级语义。
+
+    标题原先与普通段落同等对待，短标题（<30 字符）被直接丢弃，
+    导致 h1/h2 语义在提取阶段就丢失——下游渲染层再强也拿不到标题。
+    转成 Markdown 标记后，标题语义可穿透到 writer / quality_gate / 渲染层。
+    """
+    level = int(tag[1]) if tag[1:].isdigit() else 1
+    return f"{'#' * min(max(level, 1), 6)} {text}"
 # 大文章阈值：超过此长度的内容改为文件引用传递（减少消息总线内存压力）
 LARGE_ARTICLE_THRESHOLD = 50000  # 50KB
 # 最大下载数
@@ -202,15 +219,43 @@ def _dedupe_blocks(blocks: list[str]) -> list[str]:
     于是同一段文字会被收集两遍（表现为正文中段内容重复）。
     这里按长度降序保留，被更长块完全包含的短块直接丢弃；
     容器节点文本通常更长，故保留容器、丢弃子节点，语义等价。
+
+    以 '#' 开头的 Markdown 标题块不参与去重：短标题（"## 概述"）很容易
+    被正文里的同名片段包含（例如正文提到"…概述…"），但标题是结构信号，
+    删掉就丢了层级语义。
     """
+    headings = [b for b in blocks if b.startswith("#")]
+    bodies = [b for b in blocks if not b.startswith("#")]
+
     kept: list[str] = []
-    for blk in sorted(blocks, key=len, reverse=True):
+    kept_pos: dict[str, int] = {}
+    for idx, blk in sorted(
+        ((i, b) for i, b in enumerate(bodies) if not b.startswith("#")),
+        key=lambda pair: len(pair[1]), reverse=True,
+    ):
         if any(blk in k for k in kept):
             continue
         kept.append(blk)
-    # 恢复原始顺序，避免正文被打乱
-    order = {id(b): i for i, b in enumerate(blocks)}
-    return sorted(kept, key=lambda b: order[id(b)])
+        kept_pos[blk] = idx
+
+    kept.sort(key=lambda b: kept_pos[b])
+
+    # 标题与正文按各自在原文中的位置交织回单序列
+    merged: list[str] = []
+    hi = 0
+    bi = 0
+    h_pos = [i for i, b in enumerate(blocks) if b.startswith("#")]
+    b_pos = [kept_pos[b] for b in kept]
+    while hi < len(headings) or bi < len(kept):
+        h = h_pos[hi] if hi < len(h_pos) else len(blocks) + 1
+        b = b_pos[bi] if bi < len(b_pos) else len(blocks) + 1
+        if h <= b:
+            merged.append(headings[hi])
+            hi += 1
+        else:
+            merged.append(kept[bi])
+            bi += 1
+    return merged
 
 
 def _merge_code(text: str, code_text: str) -> str:
@@ -686,9 +731,21 @@ class FetcherAgent(BaseAgent):
 
             # 按块级标签提取段落，用文本密度筛选（pre 已在上面摘走）
             scored = []
-            for node in container.css("p, div, section, li, td, blockquote, article, h1, h2, h3, h4"):
+            for node in container.css(
+                "p, div, section, li, td, blockquote, article, h1, h2, h3, h4, h5, h6"
+            ):
                 blk = node.text(separator=" ", strip=True)
-                if not blk or len(blk) < 30:
+                if not blk:
+                    continue
+                # 标题是结构信号而非正文：不受正文长度/密度/链接密度门槛约束，
+                # 否则短标题（如 <h2>总结</h2>）会被整段丢弃、语义丢失。
+                # 仍然要求非纯数字，避免把表格里的数字当标题。
+                if node.tag in _HEADING_TAGS:
+                    if len(blk) > _MAX_HEADING_LEN:
+                        continue
+                    scored.append(_as_markdown_heading(node.tag, blk))
+                    continue
+                if len(blk) < 30:
                     continue
                 # 文本密度：可见字符占比
                 text_ratio = len(_RE_WHITESPACE_ALL.sub("", blk)) / max(len(blk), 1)
@@ -744,15 +801,29 @@ class FetcherAgent(BaseAgent):
         region = main_match.group(2) if main_match else html
 
         # 3. 按块级标签切分为候选段落，用文本密度筛选
-        blocks = _RE_BLOCK_SPLIT.split(region)
+        #    用 finditer 而非 split：split 拿不到标签名，无法区分标题与正文
         scored = []
-        for blk in blocks:
-            blk = _RE_STRIP_TAGS.sub("", blk)        # 去标签
+        for m in _RE_BLOCK_SPLIT.finditer(region):
+            tag = (m.group(1) or "").lower()
+            end = m.end()
+            nxt = _RE_BLOCK_SPLIT.search(region, end)
+            raw = region[end: nxt.start() if nxt else len(region)]
+
+            blk = _RE_STRIP_TAGS.sub("", raw)       # 去标签
             blk = _RE_NAMED_ENTITY.sub(" ", blk)     # 去命名 HTML 实体（含大写）
             blk = _RE_NUM_ENTITY.sub(" ", blk)       # 去数字实体
             blk = _RE_HEX_ENTITY.sub(" ", blk)       # 去十六进制实体
             blk = _RE_NOISE_CHARS.sub(" ", blk)      # 去常见 Unicode 噪声字符
             blk = _RE_WHITESPACE.sub(" ", blk).strip()
+            if not blk:
+                continue
+
+            # 标题是结构信号，不受正文长度门槛约束（与 selectolax 路径一致）
+            if tag in _HEADING_TAGS:
+                if len(blk) <= _MAX_HEADING_LEN:
+                    scored.append(_as_markdown_heading(tag, blk))
+                continue
+
             if len(blk) < 30:
                 continue
             # 文本密度：可见字符占比
@@ -765,7 +836,7 @@ class FetcherAgent(BaseAgent):
                 continue
             scored.append(blk)
 
-        text = '\n'.join(scored)
+        text = '\n'.join(_dedupe_blocks(scored))
 
         # 4. 兜底：若密度法提取过少，退回到全文档去标签
         if len(text) < MIN_CONTENT_LENGTH:
