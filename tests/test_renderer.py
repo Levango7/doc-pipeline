@@ -351,8 +351,11 @@ class TestPipelineDeclaration:
         assert any(n.startswith("renderer") for n in names)
 
     def test_renderer_is_trusted_agent(self):
-        from pipeline_core.agent_loader import AgentLoader
-        assert "renderer_agent" in AgentLoader._TRUSTED_AGENTS
+        from pathlib import Path
+
+        from pipeline_core.agent_loader import declares_sandbox_trust
+        p = Path(__file__).parent.parent / "agents" / "renderer_agent.py"
+        assert declares_sandbox_trust(p)
 
     def test_lockfile_in_sync(self):
         """lockfile 必须与 YAML 一致，否则运行时会被拒绝执行。"""

@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .artifacts import normalize_declaration
+
 if TYPE_CHECKING:
     from .registry import AgentMeta
 
@@ -127,15 +129,32 @@ class SecurityError(Exception):
     pass
 
 
+def declares_sandbox_trust(file_path: Path) -> bool:
+    """源码是否在模块顶层显式声明 `SANDBOX_TRUSTED = True`。
+
+    信任由 Agent 自己声明、由加载器核实，而不是 core 维护一份名单——
+    旧的 `_TRUSTED_AGENTS` 把 13 个内置 Agent 的名字写死在引擎里（还留着
+    `fast_pool_0` 这种测试遗留项），任何新增内置 Agent 都得回来改 core。
+
+    必须在 exec_module **之前**用 AST 判断：安全检查的意义就在于先于执行。
+    """
+    try:
+        tree = ast.parse(file_path.read_text(encoding="utf-8"),
+                         filename=str(file_path))
+    except (OSError, SyntaxError, ValueError):
+        return False
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "SANDBOX_TRUSTED" in names and isinstance(node.value, ast.Constant) \
+                and node.value.value is True:
+            return True
+    return False
+
+
 class AgentLoader:
     """Agent 发现和注册"""
-
-    _TRUSTED_AGENTS = {
-        "researcher", "fetcher", "writer", "quality_gate",
-        "checker", "layout", "safe_writer_agent", "fast_pool_0",
-        "fact_checker", "requirements_analyzer", "renderer_agent",
-        "ingest_agent", "knowledge_base_agent",
-    }
 
     def __init__(self, registry, bus, agents_dir: str = "agents", logger=None,
                  strict_safety: bool = True):
@@ -179,8 +198,9 @@ class AgentLoader:
                 # 必须先注册到 sys.modules，这样 _extract_meta 才能找到模块属性
                 sys.modules[f"agents.{name}"] = mod
 
-                if name not in self._TRUSTED_AGENTS:
-                    _check_safety(self.agents_dir / f"{name}.py", strict=self._strict_safety)
+                agent_file = self.agents_dir / f"{name}.py"
+                if not declares_sandbox_trust(agent_file):
+                    _check_safety(agent_file, strict=self._strict_safety)
 
                 spec.loader.exec_module(mod)  # type: ignore[union-attr]
 
@@ -252,6 +272,8 @@ class AgentLoader:
             regeneration_target = getattr(module, "REGENERATION_TARGET", getattr(cls, "REGENERATION_TARGET", ""))
             regeneration_recheck = getattr(module, "REGENERATION_RECHECK", getattr(cls, "REGENERATION_RECHECK", ""))
             results_merge = getattr(module, "RESULTS_MERGE", getattr(cls, "RESULTS_MERGE", ""))
+            produces = getattr(module, "PRODUCES", getattr(cls, "PRODUCES", {}))
+            consumes = getattr(module, "CONSUMES", getattr(cls, "CONSUMES", []))
         else:
             input_topics = getattr(cls, "INPUT_TOPICS", [])
             output_topics = getattr(cls, "OUTPUT_TOPICS", [])
@@ -269,6 +291,8 @@ class AgentLoader:
             regeneration_target = getattr(cls, "REGENERATION_TARGET", "")
             regeneration_recheck = getattr(cls, "REGENERATION_RECHECK", "")
             results_merge = getattr(cls, "RESULTS_MERGE", "")
+            produces = getattr(cls, "PRODUCES", {})
+            consumes = getattr(cls, "CONSUMES", [])
 
         return AgentMeta(
             name=agent_name,
@@ -288,4 +312,6 @@ class AgentLoader:
             regeneration_target=regeneration_target,
             regeneration_recheck=regeneration_recheck,
             results_merge=results_merge,
+            produces=normalize_declaration(produces),
+            consumes=list(consumes or []),
         )

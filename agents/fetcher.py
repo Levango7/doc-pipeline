@@ -33,12 +33,26 @@ except ImportError:
     USE_ASYNC = False
 
 AGENT_NAME = "fetcher"
+# 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
+# （信任来自声明本身，不再依赖 core 里写死的名单）
+SANDBOX_TRUSTED = True
+
+# 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
+# （类型名表见 pipeline_core/config_schema.py）
+CONFIG_SCHEMA = {
+    "max_downloads": ('int', 15),
+    "temp_dir": ('str', 'tmp_fetcher'),
+    "download_workers": ('int', 5),
+}
 AGENT_VERSION = "1.0"
 AGENT_DESC = "知识内容获取器 - 下载、提取正文、保存到本地、质量识别"
 AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 20
 INPUT_TOPICS = ["fetcher.input", "researcher.done"]
 OUTPUT_TOPICS = ["fetcher.done", "fetcher.progress"]
+# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：把每条检索结果抓成完整文章
+PRODUCES = {"articles": "list"}
+CONSUMES = ["results"]
 DEPENDENCIES = ["researcher"]
 CACHE_TTL = 0
 RESPAWN = False

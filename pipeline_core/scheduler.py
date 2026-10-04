@@ -7,6 +7,7 @@ Scheduler - 读取 pipeline.yaml 并生成可执行计划
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -84,64 +85,26 @@ class ExecutionPlan:
         return len(self.levels) - 1
 
 
-# ─── Agent Schema 定义 ─────────────────────
+# ─── Agent 配置契约 ─────────────────────────
+#
+# 引擎侧不持有 Agent 名单：配置项与默认值由各 Agent 模块的 CONFIG_SCHEMA
+# 声明，Scheduler 用 AST 读取（见 pipeline_core/config_schema.py）。
+# 过去这里是一张 AGENT_SCHEMAS 表，把 researcher/quality_gate 等 9 个
+# 领域 Agent 的名字与默认值写死在 core 里。
 
-AGENT_SCHEMAS = {
-    "researcher": {
-        "search_engines": (list, ["bing"]),
-        "max_results": (int, 10),
-        "cache_size": (int, 1000),
-        "max_workers": (int, 3),
-        "min_score": (float, 0.3),
-        "max_history": (int, 100),
-    },
-    "fetcher": {
-        "max_downloads": (int, 15),
-        "temp_dir": (str, "tmp_fetcher"),
-        "download_workers": (int, 5),
-    },
-    "writer": {
-        "prompt_profile": (str, "generic-tech"),
-        "pending_expire_secs": (int, 300),
-        "polish_cache_ttl": (int, 3600),
-    },
-    "quality_gate": {
-        "quality_profile": (str, "technical-doc"),
-        "threshold": ((int, float), 70),
-        "max_regenerations": (int, 3),
-        "min_output_chars": (int, 120),
-    },
-    "checker": {
-        "fail_fast": (bool, False),
-        "block_on_p1": (bool, False),
-    },
-    "layout": {
-        "style": (str, "markdown"),
-    },
-    "safe_writer": {
-        "backup_dir": (str, "backups"),
-        "atomic": (bool, True),
-    },
-    "ingest": {
-        "output_dir": (str, "output/ingested"),
-        "ocr_enabled": (bool, True),
-        "files_from_input": (bool, True),
-    },
-    "knowledge_base": {
-        "action": (str, ""),
-        "db_path": (str, "knowledge_base.db"),
-        "embedder": (str, "auto"),
-        "top_k": (int, 5),
-    },
-}
+from . import config_schema as _config_schema  # noqa: E402
 
 
 class Scheduler:
     """读取 pipeline.yaml 并生成可执行计划"""
 
-    def __init__(self, pipeline_dir: str = "pipelines"):
+    def __init__(self, pipeline_dir: str = "pipelines",
+                 agents_dir: str | Path | None = None):
         self.pipeline_dir = Path(pipeline_dir)
         self.pipeline_dir.mkdir(parents=True, exist_ok=True)
+        # Agent 源码目录：默认取安装目录，保证 cwd 变了也能找到声明
+        self.agents_dir = Path(agents_dir) if agents_dir else (
+            Path(__file__).parent.parent / "agents")
 
     def list_pipelines(self) -> list[str]:
         return [p.stem for p in self.pipeline_dir.glob("*.yaml")
@@ -379,25 +342,36 @@ class Scheduler:
                 + "（执行以 dependencies 为准，edges 请同步修正）")
 
     def _validate_agent_schemas(self, agent_map: dict[str, AgentConfig]):
-        """校验每个 agent 的 config 是否符合预设 schema"""
+        """按各 Agent 自己声明的 CONFIG_SCHEMA 校验并补默认值。
+
+        类型漂移必须在这里报错：Agent 里 `config.get(key, 硬编码默认)` 会
+        吞掉错型值（配了字符串 3 秒当成 3 秒用），只有这里有机会拒绝。
+        """
         for name, cfg in agent_map.items():
             base_name = name.split("_pool_")[0]
-            schema = AGENT_SCHEMAS.get(base_name, {})
+            schema = self._schema_for_agent(base_name)
             if not schema:
                 continue
-            for key, (expected_type, default) in schema.items():  # type: ignore[attr-defined]
+            for key, (typespec, default) in schema.items():
                 if key not in cfg.config:
-                    cfg.config[key] = default
+                    # 深拷贝：schema 里的默认值是共享对象，直接注入会让
+                    # 两个节点改同一个 list（同池实例互相污染）
+                    cfg.config[key] = copy.deepcopy(default)
                     continue
-                val = cfg.config[key]
-                if not isinstance(val, expected_type):
-                    type_name = expected_type.__name__ if isinstance(expected_type, type) else \
-                        "|".join(t.__name__ for t in expected_type)
+                value = cfg.config[key]
+                if not _config_schema.type_ok(value, typespec):
                     raise TypeError(
-                        f"[{name}] config.{key}: 期望 {type_name}, "
-                        f"实际 {type(val).__name__}={val!r}"
-                    )
+                        f"[{name}] config.{key}: 期望 "
+                        f"{_config_schema.type_names(typespec)}, "
+                        f"实际 {type(value).__name__}={value!r}")
 
+    def _schema_for_agent(self, agent_name: str) -> dict:
+        """在 agents_dir 里找该 Agent 的文件并读取其 CONFIG_SCHEMA。"""
+        for candidate in (self.agents_dir / f"{agent_name}.py",
+                          self.agents_dir / f"{agent_name}_agent.py"):
+            if candidate.exists():
+                return _config_schema.schema_for_file(candidate)
+        return {}
     # ── Lockfile ─────────────────────
 
     @staticmethod

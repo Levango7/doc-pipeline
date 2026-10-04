@@ -37,12 +37,26 @@ PARALLEL_POLISH_WORKERS = 4
 
 
 AGENT_NAME = "writer"
+# 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
+# （信任来自声明本身，不再依赖 core 里写死的名单）
+SANDBOX_TRUSTED = True
+
+# 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
+# （类型名表见 pipeline_core/config_schema.py）
+CONFIG_SCHEMA = {
+    "prompt_profile": ('str', 'generic-tech'),
+    "pending_expire_secs": ('int', 300),
+    "polish_cache_ttl": ('int', 3600),
+}
 AGENT_VERSION = "2.0"
 AGENT_DESC = "增强型内容整合 Agent - 多模板、智能分类、引用追踪、TF-IDF 语义匹配"
 AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 30
 INPUT_TOPICS = ["writer.input", "researcher.done", "researcher.partial", "fetcher.done"]
 OUTPUT_TOPICS = ["writer.done", "writer.progress"]
+# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：产出文档正文
+PRODUCES = {"content": "last"}
+CONSUMES = ["articles", "results", "spec"]
 DEPENDENCIES = ["researcher", "fetcher"]
 CACHE_TTL = 0
 RESPAWN = False

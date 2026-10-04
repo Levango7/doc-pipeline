@@ -22,7 +22,32 @@
 | `DEPENDENCIES` | list[str] | 依赖的其他 Agent |
 | `CACHE_TTL` | int | 缓存 TTL 秒数 |
 | `RESPAWN` | bool | 异常退出后是否自动重生 |
-| `SUPPORTS_REGENERATION` / `REGENERATION_TARGET` / `REGENERATION_RECHECK` | — | 质量门控重生成循环的可选配置（见 `agents/quality_gate.py`） |
+| `SUPPORTS_REGENERATION` / `REGENERATION_TARGET` / `REGENERATION_RECHECK` | — | 质量重做循环：声明支持就必须给出 `REGENERATION_TARGET`，引擎不再猜默认值 |
+| `PRODUCES` | dict[str, str] | 对外产物与合并策略：`{"content": "last"}`（机制见 `pipeline_core/artifacts.py`） |
+| `CONSUMES` | list[str] | 期望的上游产物名（声明意图，供校验与阅读） |
+| `CONFIG_SCHEMA` | dict[str, tuple] | 配置项契约：`{"threshold": (["int", "float"], 70)}`，类型名是**字符串** |
+| `SANDBOX_TRUSTED` | bool | 随产品发布的内置 Agent 显式声明为 `True`，加载器据此跳过 AST 沙箱检查 |
+
+### 1.1 产物契约（引擎怎么把上游结果给你）
+
+引擎组装下游载荷时**只认声明**：你 `PRODUCES` 里写过的键，才会被合并进
+`payload` 顶层（同时保留在 `payload["dependencies_results"][节点名]` 里原样可取）。
+
+| 策略 | 语义 | 典型 |
+|------|------|------|
+| `"list"` | 跨所有上游产出者拼接（含同层池化实例） | `researcher.results`、`fetcher.articles` |
+| `"last"` | 拓扑上**离你最近**的产出者胜出 | 正文 `content`（writer → layout 逐级覆盖） |
+| `"first"` | 最早的产出者定格 | `requirements_analyzer.spec` |
+
+顺序来自 DAG 层级，不来自任何写死的 Agent 名单；没声明的键不会外泄成顶层键，
+`task_id` / `config` / `queries` 等引擎自有键也永不被上游覆盖。
+
+### 1.2 配置契约怎么生效
+
+`Scheduler` 用 **AST** 读你的 `CONFIG_SCHEMA` 字面量（不执行 Agent 代码），
+在解析 pipeline 时：缺项补默认值、类型不符直接 `TypeError`。
+这样配错值不会在运行时被 `config.get(key, 硬编码默认)` 悄悄吞掉。
+类型名只接受 `str/int/float/bool/list/dict`，写别的在解析期即报错。
 
 ## 2. BaseAgent 必须实现的方法
 

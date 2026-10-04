@@ -87,7 +87,8 @@ class TestRegenerationStatusDiscipline:
     def test_error_status_is_not_washed_into_pass(self):
         ex = _make_executor()
         result = {"status": "error", "message": "内容为空", "score": 0}
-        out = ex._handle_regeneration(MagicMock(), MagicMock(), result, {})
+        out = ex._handle_regeneration(MagicMock(), MagicMock(), result, {},
+                              regenerate_agent="generator", recheck_agent="gate")
         assert out["status"] == "error", (
             f"业务失败被软化放行了（原缺陷）：{out['status']}")
 
@@ -95,7 +96,8 @@ class TestRegenerationStatusDiscipline:
         ex = _make_executor()
         result = {"status": "fail", "hard_floor": True, "needs_regenerate": False,
                   "violations": ["内容过短（40 < 200 字符）"]}
-        out = ex._handle_regeneration(MagicMock(), MagicMock(), result, {})
+        out = ex._handle_regeneration(MagicMock(), MagicMock(), result, {},
+                              regenerate_agent="generator", recheck_agent="gate")
         assert out["status"] == "fail"
         assert out.get("hard_floor") is True
 
@@ -103,13 +105,15 @@ class TestRegenerationStatusDiscipline:
         """已达重做上限的低分文档维持既有语义：accepted_with_warnings。"""
         ex = _make_executor()
         result = {"status": "fail", "needs_regenerate": True, "can_regenerate": False}
-        out = ex._handle_regeneration(MagicMock(), MagicMock(), result, {})
+        out = ex._handle_regeneration(MagicMock(), MagicMock(), result, {},
+                              regenerate_agent="generator", recheck_agent="gate")
         assert out["status"] == "accepted_with_warnings"
 
     def test_pass_stays_pass(self):
         ex = _make_executor()
         out = ex._handle_regeneration(MagicMock(), MagicMock(),
-                                      {"status": "pass", "needs_regenerate": False}, {})
+                                      {"status": "pass", "needs_regenerate": False}, {},
+                                      regenerate_agent="generator", recheck_agent="gate")
         assert out["status"] == "pass"
 
 
@@ -157,11 +161,47 @@ class TestHardFloorIsFatal:
         """checker 的 P1 问题等软失败语义不变：仍由 fail_fast 决定。"""
         ex = _make_executor()
         result = {"status": "fail", "needs_regenerate": True, "can_regenerate": False}
-        out = ex._handle_regeneration(MagicMock(), MagicMock(), result, {})
+        out = ex._handle_regeneration(MagicMock(), MagicMock(), result, {},
+                              regenerate_agent="generator", recheck_agent="gate")
         assert out["status"] == "accepted_with_warnings"
         assert not out.get("hard_floor")
 
-# ─── 4. QualityGate 产出保真底线 ───────────────────────────
+# ─── 5. 重做目标必须由 Agent 声明 ─────────────────────────
+
+class TestRegenerationTargetIsDeclared:
+    """旧实现把目标写死成 writer/quality_gate，等于引擎替领域做决定。"""
+
+    def test_missing_target_fails_loudly(self):
+        from pipeline_core.base_agent import AgentMeta
+
+        ex = _make_executor()
+        meta = AgentMeta(name="gatey", version="1.0",
+                         input_topics=["gatey.input"],
+                         supports_regeneration=True,
+                         regeneration_target="", regeneration_recheck="")
+        ex.registry.get_meta.return_value = meta
+        ex.registry.get.return_value = object()          # 实例存在即可
+        ex.bus.request.return_value = {"needs_regenerate": True,
+                                       "can_regenerate": True, "overall_score": 40}
+        ex._build_node_payload = lambda *a, **k: {}
+
+        node = MagicMock()
+        node.agent_name = "gatey"
+        node.timeout = 5
+        node.dependencies = []
+        node.agent_config.pool_size = 1
+        node.agent_config.config = {}
+        node.agent_config.rate_limit = {}
+        node.agent_config.circuit_breaker = {}
+        task = MagicMock()
+        task.id = "t-rt"
+        task.dag_nodes = {"gatey": MagicMock(result=None, dependencies=[],
+                                             attempts=0, status="pending")}
+        with pytest.raises(RuntimeError, match="REGENERATION_TARGET"):
+            ex.execute_node_from_scheduler(task, node, "in.md", MagicMock())
+
+
+# ─── 6. QualityGate 产出保真底线 ──────────────────────────
 
 class TestFidelityFloor:
     @pytest.fixture

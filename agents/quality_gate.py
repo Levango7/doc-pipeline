@@ -25,12 +25,27 @@ import yaml
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "quality_gate"
+# 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
+# （信任来自声明本身，不再依赖 core 里写死的名单）
+SANDBOX_TRUSTED = True
+
+# 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
+# （类型名表见 pipeline_core/config_schema.py）
+CONFIG_SCHEMA = {
+    "quality_profile": ('str', 'technical-doc'),
+    "threshold": (['int', 'float'], 70),
+    "max_regenerations": ('int', 3),
+    "min_output_chars": ('int', 120),
+}
 AGENT_VERSION = "2.0"
 AGENT_DESC = "质量门禁 Agent v2 - Profile 模板驱动、可插拔评分"
 AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 40
 INPUT_TOPICS = ["writer.done", "quality_gate.check", "quality_gate.input"]
 OUTPUT_TOPICS = ["quality_gate.done", "quality_gate.failed"]
+# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：只做判定，不重新导出正文（评分细节走 dependencies_results）
+PRODUCES: dict = {}
+CONSUMES = ["content"]
 DEPENDENCIES = ["writer"]
 CACHE_TTL = 0
 RESPAWN = False

@@ -12,12 +12,25 @@ from pathlib import Path
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "safe_writer"
+# 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
+# （信任来自声明本身，不再依赖 core 里写死的名单）
+SANDBOX_TRUSTED = True
+
+# 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
+# （类型名表见 pipeline_core/config_schema.py）
+CONFIG_SCHEMA = {
+    "backup_dir": ('str', 'backups'),
+    "atomic": ('bool', True),
+}
 AGENT_VERSION = "2.0"
 AGENT_DESC = "安全写入 Agent - 备份+验证+原子替换+过期清理"
 AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 99
 INPUT_TOPICS = ["writer.done", "layout.done", "safe_writer.write", "safe_writer.input", "safewriter.input"]
 OUTPUT_TOPICS = ["safe_writer.done", "safe_writer.failed"]
+# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：终态落盘，无下游产物
+PRODUCES: dict = {}
+CONSUMES = ["content"]
 DEPENDENCIES = ["layout"]
 CACHE_TTL = 0
 RESPAWN = False

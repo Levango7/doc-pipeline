@@ -22,12 +22,26 @@ from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 logger = logging.getLogger("agent.ingest")
 
 AGENT_NAME = "ingest"
+# 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
+# （信任来自声明本身，不再依赖 core 里写死的名单）
+SANDBOX_TRUSTED = True
+
+# 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
+# （类型名表见 pipeline_core/config_schema.py）
+CONFIG_SCHEMA = {
+    "output_dir": ('str', 'output/ingested'),
+    "ocr_enabled": ('bool', True),
+    "files_from_input": ('bool', True),
+}
 AGENT_VERSION = "1.0"
 AGENT_DESC = "资料摄入 Agent - PDF/图片/文本 → 结构化 Markdown"
 AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 10
 INPUT_TOPICS = ["ingest.input", "ingest.files", "researcher.input"]
 OUTPUT_TOPICS = ["ingest.done", "ingest.failed"]
+# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：摄入产物由 knowledge_base 经 dependencies_results 读取
+PRODUCES: dict = {}
+CONSUMES: list = []
 DEPENDENCIES: list[str] = []
 CACHE_TTL = 0
 RESPAWN = False

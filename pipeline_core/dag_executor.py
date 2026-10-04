@@ -9,7 +9,9 @@ import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any
 
+from .artifacts import collect_artifacts, normalize_declaration
 from .cache_manager import CacheManager
 from .circuit_breaker import backoff_with_jitter
 
@@ -259,7 +261,12 @@ class DAGExecutor:
 
     def _build_node_payload(self, task, node, input_file: str, plan,
                             base_agent: str, pool_idx: int, pool_size: int) -> dict:
-        """构建节点执行的消息载荷（从依赖结果 + 配置 + 查询词组装）。"""
+        """构建节点执行的消息载荷（上游产物 + 配置 + 查询词）。
+
+        上游传什么由各自 Agent 的 PRODUCES 声明决定（见 pipeline_core.artifacts），
+        引擎不再持有 `articles` / `content` / `spec` 这类领域键名，也不再靠
+        一份写死的 agent 名单决定"谁的内容更新"——顺序来自 DAG 层级。
+        """
         all_queries = self._extract_queries(input_file, node)
         meta = self.registry.get_meta(base_agent)
         if getattr(meta, "extracts_queries", False) and pool_size > 1 and len(all_queries) >= pool_size:
@@ -276,49 +283,97 @@ class DAGExecutor:
         dep_results_raw = {
             dep: task.dag_nodes[dep].result for dep in node.dependencies if dep in task.dag_nodes
         }
-        research_results = self._get_dep_list_results(task, node.dependencies, "results")
-        articles = self._get_dep_list_results(task, node.dependencies, "articles")
-        writer_content = self._get_latest_content(task, node.dependencies)
-
-        dep_results: dict = {}
-        for dep in node.dependencies:
-            if dep in task.dag_nodes:
-                dep_node = task.dag_nodes[dep]
-                if dep_node.result and isinstance(dep_node.result, dict):
-                    base = dep.split("_pool_")[0] if "_pool_" in dep else dep
-                    dep_results.setdefault(f"_{dep}_raw", {}).update(dep_node.result)
-                    if base not in dep_results:
-                        dep_results[base] = []
-                    for key, val in dep_node.result.items():
-                        if isinstance(val, list):
-                            dep_results[base].extend(val)
-                        else:
-                            dep_results[base].append({key: val})
+        artifacts = self._collect_upstream_artifacts(task, node, plan)
 
         ctor_config = getattr(meta, "config", None) or {}
         merged_config = {**ctor_config, **node.agent_config.config}
 
-        spec_result = None
-        if "requirements_analyzer" in task.dag_nodes:
-            ra_result = task.dag_nodes["requirements_analyzer"].result
-            if isinstance(ra_result, dict):
-                spec_result = ra_result.get("spec")
-
-        return {
+        payload = {
             "task_id": task.id,
             "input_file": input_file,
             "config": merged_config,
             "pipeline": plan.pipeline_name,
             "node": node.agent_name,
             "dependencies_results": dep_results_raw,
+            "upstream": artifacts,
             "queries": queries,
             "target_file": output_file,
             "target": output_file,
-            "results": research_results,
-            "articles": articles,
-            "content": writer_content,
-            "spec": spec_result,
         }
+        # 声明过的产物同时铺到顶层：既有 Agent 直接读 payload["content"] 的写法
+        # 不必改名；引擎自有键（queries/target/...）不会被上游覆盖。
+        for name, value in artifacts.items():
+            payload.setdefault(name, value)
+        return payload
+
+    def _produces_of(self, agent_name: str) -> dict[str, str]:
+        """取某节点（含池化实例）声明的产物与合并策略。"""
+        base = agent_name.split("_pool_")[0] if "_pool_" in agent_name else agent_name
+        meta = self.registry.get_meta(base)
+        if meta is None:
+            return {}
+        try:
+            return normalize_declaration(getattr(meta, "produces", {}) or {})
+        except ValueError as e:
+            self._log("error", f"Agent {base} 的 PRODUCES 声明无效: {e}")
+            return {}
+
+    def _artifacts_from(self, agent_name: str, result: dict) -> dict[str, Any]:
+        """按 Agent 声明挑出该结果里算作产物的键（引擎不再猜 `content`）。"""
+        produces = self._produces_of(agent_name)
+        return {name: result[name] for name in produces if name in result}
+
+    def _upstream_closure(self, task, node) -> list[str]:
+        """本节点的全部上游节点名，按"离本节点近的层级在前"排序。
+
+        为什么要闭包而不是只看直接依赖：中间节点（如只做结构检查的
+        checker）不重新导出正文，只看直接依赖会在它这里断链，
+        下游就拿不到内容了——旧实现正是靠一份写死的优先级表跨过这一跳的。
+        """
+        dag_nodes = getattr(task, "dag_nodes", {}) or {}
+        seen: set[str] = set()
+        closure: list[str] = []
+        frontier = list(node.dependencies or [])
+        while frontier:
+            nxt: list[str] = []
+            for name in frontier:
+                base = name.split("_pool_")[0] if "_pool_" in name else name
+                if base in seen:
+                    continue
+                seen.add(base)
+                # 池化兄弟实例一起纳入（同层并行，产物都是有效素材）
+                for sibling in [k for k in dag_nodes
+                                if k == base or k.startswith(base + "_pool_")]:
+                    if sibling not in closure:
+                        closure.append(sibling)
+                dep_node = dag_nodes.get(name) or dag_nodes.get(base)
+                if dep_node is not None:
+                    nxt.extend(getattr(dep_node, "dependencies", []) or [])
+            frontier = nxt
+        return closure
+
+    def _collect_upstream_artifacts(self, task, node, plan) -> dict[str, Any]:
+        """按声明收集上游产物；"最近的产出者"依据 DAG 层级判定。"""
+        level_of: dict[str, int] = {}
+        for idx, level in enumerate(getattr(plan, "levels", []) or []):
+            for exec_node in level:
+                level_of[exec_node.agent_name] = idx
+
+        def depth(name: str) -> int:
+            if name in level_of:
+                return level_of[name]
+            base = name.split("_pool_")[0] if "_pool_" in name else name
+            return level_of.get(base, -1)
+
+        # 远 → 近 遍历：`last` 因此在最近产出者处收尾（谁离得近谁说了算），
+        # `first` 因此在最远产出者处定格。方向只在这里定义一次。
+        ordered = sorted(self._upstream_closure(task, node), key=depth)
+        pairs: list[tuple[dict, dict[str, str]]] = []
+        for name in ordered:
+            result = getattr(task.dag_nodes.get(name), "result", None) if name in task.dag_nodes else None
+            if isinstance(result, dict):
+                pairs.append((result, self._produces_of(name)))
+        return collect_artifacts(pairs)
 
     def execute_node_from_scheduler(self, task, node, input_file: str, plan) -> dict:
         """由 run_plan 调度：基于 ExecutionNode 执行单个节点。"""
@@ -382,13 +437,19 @@ class DAGExecutor:
                           f"节点 {node.agent_name} 返回空响应（订阅者返回 None 或超时）",
                           task_id=task.id, node=node.agent_name)
 
-            # ── QualityGate 自动重做循环（外提为独立方法）──
+            # ── 质量重做循环（外提为独立方法）──
             meta = self.registry.get_meta(node.agent_name)
             if getattr(meta, "supports_regeneration", False) and isinstance(result, dict):
+                target = getattr(meta, "regeneration_target", "")
+                recheck = getattr(meta, "regeneration_recheck", "") or node.agent_name
+                if not target:
+                    raise RuntimeError(
+                        f"节点 {node.agent_name} 声明 supports_regeneration 却没给出 "
+                        f"REGENERATION_TARGET：重做目标不能由引擎猜（旧实现默认 writer）")
                 result = self._handle_regeneration(
                     task, node, result, msg_payload,
-                    regenerate_agent=getattr(meta, "regeneration_target", "writer"),
-                    recheck_agent=getattr(meta, "regeneration_recheck", "quality_gate"),
+                    regenerate_agent=target,
+                    recheck_agent=recheck,
                     max_gen=node.agent_config.config.get("max_regenerations", 3),
                 )
 
@@ -407,15 +468,17 @@ class DAGExecutor:
 
     def _handle_regeneration(self, task, node, result: dict,
                              msg_payload: dict,
-                             regenerate_agent: str = "writer",
-                             recheck_agent: str = "quality_gate",
+                             regenerate_agent: str,
+                             recheck_agent: str,
                              max_gen: int = 3) -> dict:
-        """QualityGate 自动重做循环 —— 独立方法，只重跑 affected node。
+        """质量门控触发的重做循环 —— 只重跑受影响的两跳，不重新调度整个层级。
 
-        与原内嵌逻辑相比：
-        - 不重新调度整个 level，减少线程池空转
-        - 避免重复检查点写入
-        - 使用 deepcopy 防止 feedback 污染原 payload
+        领域中立化处理：
+        - 反馈载荷不再拆成 `quality_scores`/`style_issues`/`citation_report`
+          这些 gate 专属键（实测没有任何 Agent 读它们），改为整体转发
+          `gate_feedback`，gate 想给什么由它自己的返回结构决定；
+        - 重做结果不再靠字面量 `content` 回灌，而是按重做 Agent 声明的
+          PRODUCES 合并进下游载荷。
         """
         try:
             generation = 0
@@ -423,34 +486,33 @@ class DAGExecutor:
                    and generation < max_gen and not task.stop_event.is_set()):
                 generation += 1
                 feedback = {
-                    "quality_scores": result.get("scores", {}),
-                    "overall_score": result.get("overall_score", 0),
-                    "style_issues": result.get("style_issues", []),
-                    "citation_report": result.get("citation_report", {}),
+                    "gate_feedback": dict(result),
                     "generation_count": result.get("generation_count", 0) + 1,
                 }
                 self._log("info", "质量门控重做",
                           score=result.get('overall_score', 0), generation=generation)
 
                 # deepcopy 防止 feedback 污染原 msg_payload
-                writer_payload = copy.deepcopy(msg_payload)
-                writer_payload.update(feedback)
+                regen_payload = copy.deepcopy(msg_payload)
+                regen_payload.update(feedback)
                 # 幂等 key 必须含节点维度 + 本次重做 attempt：
                 # - 缺节点维度：同层并行池节点（writer_pool_0/1）同 agent 名 key 碰撞，
                 #   bus.request 幂等缓存命中返回 None，后到节点的重做被静默吞掉
                 # - 缺 attempt 维度：整节点重试时 generation 重新计数，跨物理执行
                 #   的 key 相同，重试后的重做同样命中缓存不执行
                 regen_attempt = uuid.uuid4().hex[:8]
-                writer_result = self.bus.request(
+                regen_result = self.bus.request(
                     topic=f"{regenerate_agent}.input", from_a="orchestrator", to_a=regenerate_agent,
-                    payload=writer_payload, timeout=node.timeout,
+                    payload=regen_payload, timeout=node.timeout,
                     idempotency_key=f"regenerate_{task.id}_{node.agent_name}_{regenerate_agent}_g{generation}_{regen_attempt}",
                 )
 
-                if writer_result and writer_result.get("content"):
-                    msg_payload["content"] = writer_result["content"]
-                    msg_payload["generation_count"] = feedback["generation_count"]
-                    self._set_task_output(task, regenerate_agent, writer_result)
+                if isinstance(regen_result, dict) and regen_result:
+                    fresh = self._artifacts_from(regenerate_agent, regen_result)
+                    if fresh:
+                        msg_payload.update(fresh)
+                        msg_payload["generation_count"] = feedback["generation_count"]
+                    self._set_task_output(task, regenerate_agent, regen_result)
 
                 qg_payload = copy.deepcopy(msg_payload)
                 qg_payload.update(feedback)
@@ -458,7 +520,7 @@ class DAGExecutor:
                     topic=f"{recheck_agent}.input", from_a="orchestrator", to_a=recheck_agent,
                     payload=qg_payload, timeout=node.timeout,
                     idempotency_key=f"regenerate_{task.id}_{node.agent_name}_{recheck_agent}_g{generation}_{regen_attempt}",
-                )
+                ) or {}
                 if result:
                     self._set_task_output(task, recheck_agent, result)
 
@@ -1035,78 +1097,6 @@ class DAGExecutor:
             _write()
         if self._logger:
             self._logger.log("debug", "set_task_output", key=key)
-
-    def _get_latest_content(self, task, current_deps: list[str] = None) -> str:
-        """从上游依赖链中获取最新的 content（按优先级：layout > quality_gate > writer）
-
-        支持池化节点名（如 researcher_pool_0）自动解析为 base name。
-        QualityGate 重做后新生成的 content 也能正确获取。
-        """
-        content_priority = ["layout", "quality_gate", "writer", "fact_checker"]
-        checked = set()
-
-        def _try_get(name: str) -> str:
-            base = name.split("_pool_")[0] if "_pool_" in name else name
-            if base in checked:
-                return ""
-            checked.add(base)
-            for lookup in [name, base]:
-                result = self._get_task_output(task, lookup, {})
-                if isinstance(result, dict):
-                    c = result.get("content") or result.get("optimized")
-                    if c:
-                        return c  # type: ignore[no-any-return]
-            return ""
-
-        for source in reversed(content_priority):
-            c = _try_get(source)
-            if c:
-                return c
-
-        if current_deps:
-            for dep in reversed(current_deps):
-                c = _try_get(dep)
-                if c:
-                    return c
-
-        return ""
-
-    def _get_dep_list_results(self, task, deps: list[str], key: str = "results") -> list:
-        """统一收集依赖节点的列表结果，池化节点（如 researcher_pool_0/1）合并所有实例"""
-        collected = []
-        processed_nodes = set()
-
-        def _extract(name: str) -> list:
-            for store in (task.dag_nodes, task.result):
-                if name in store:
-                    obj = store[name]
-                    result = obj.result if hasattr(obj, "result") else obj
-                    if isinstance(result, dict):
-                        val = result.get(key)
-                        if isinstance(val, list):
-                            return val
-            return []
-
-        for dep in deps:
-            if dep in processed_nodes:
-                continue
-            if "_pool_" in dep:
-                base = dep.split("_pool_")[0]
-                pool_instances = [
-                    d for d in deps
-                    if d == base or d.startswith(base + "_pool_")
-                ]
-                for inst in pool_instances:
-                    if inst not in processed_nodes:
-                        collected.extend(_extract(inst))
-                        processed_nodes.add(inst)
-                processed_nodes.add(base)
-            else:
-                collected.extend(_extract(dep))
-                processed_nodes.add(dep)
-        return collected
-
-    # ─── 熔断器 ─────────────────────────────
 
     def _circuit_breaker(self, node, task) -> bool:
         """Per-agent 熔断器：失败达到阈值后返回 True（表示应熔断/跳过）。

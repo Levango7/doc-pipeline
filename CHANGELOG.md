@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added（2026-10-05，未发版）
 
+- **Phase 1 解耦——产物契约**（`pipeline_core/artifacts.py` + `config_schema.py`）：
+  节点之间传什么由 Agent 自己声明，引擎不再持有领域词表。
+  - Agent 声明 `PRODUCES`（`{"content": "last"}`）/ `CONSUMES`，Scheduler 与
+    DAGExecutor 按声明组装载荷；"谁的内容更新"由 DAG 层级决定，
+    取代写死的 `content_priority = ["layout","quality_gate","writer","fact_checker"]`
+    与 `articles`/`results`/`spec` 字面量拆解。
+  - 配置契约从 `scheduler.AGENT_SCHEMAS`（9 个内置 Agent 的集中表）下沉为各
+    Agent 模块的 `CONFIG_SCHEMA`，Scheduler 用 **AST** 读取（不执行 Agent 代码）；
+    默认值注入改为深拷贝，避免同池实例共享同一个 list 对象。
+  - 沙箱信任由 Agent 自证（模块顶层 `SANDBOX_TRUSTED = True`，加载器 AST 核实），
+    删除 core 里 13 个名字的 `_TRUSTED_AGENTS` 名单（含 `fast_pool_0` 测试遗留项）。
+  - 重做循环不再猜目标：声明 `SUPPORTS_REGENERATION` 必须给 `REGENERATION_TARGET`；
+    反馈载荷不再拆 `quality_scores`/`citation_report` 等 gate 专属键（实测无 Agent 读），
+    整体转发为 `gate_feedback`。
+  - 护栏：`tests/test_artifact_contract.py` 的 `TestCoreStaysDomainNeutral` 用 AST
+    扫 7 个 core 模块的代码级字符串常量，领域 Agent 名一旦回流 core 即失败。
+
 - **kb-docgen 流水线**：把此前未被任何流水线引用的摄入层 / 向量知识库接进编排，
   实现"本地资料 → 建库检索 → 知识库接地写作"。离线（无 LLM Key）也能交付
   抽取式草稿，`tests/test_kb_pipeline_wiring.py` 覆盖 21 例（含整条 DAG 离线跑通）。

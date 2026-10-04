@@ -353,12 +353,6 @@ class PipelineOrchestrator:
     def _set_task_output(self, task: PipelineTask, key: str, value, dag_node: bool = True):
         self._executor._set_task_output(task, key, value, dag_node)
 
-    def _get_latest_content(self, task: PipelineTask, current_deps: list[str] = None) -> str:
-        return self._executor._get_latest_content(task, current_deps)
-
-    def _get_dep_list_results(self, task: PipelineTask, deps: list[str], key: str = "results") -> list:
-        return self._executor._get_dep_list_results(task, deps, key)
-
     def _execute_node(self, task: PipelineTask, node: TaskNode, input_file: str, config: dict) -> dict:
         return self._executor.execute_node(task, node, input_file, config)
 

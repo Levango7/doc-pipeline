@@ -355,8 +355,11 @@ class TestLifecycle:
         assert "db_path" in snap and "embedder" in snap
 
     def test_is_trusted_agent(self):
-        from pipeline_core.agent_loader import AgentLoader
-        assert "knowledge_base_agent" in AgentLoader._TRUSTED_AGENTS
+        from pathlib import Path
+
+        from pipeline_core.agent_loader import declares_sandbox_trust
+        p = Path(__file__).parent.parent / "agents" / "knowledge_base_agent.py"
+        assert declares_sandbox_trust(p)
 
     def test_persists_across_agent_instances(self, tmp_path):
         a1 = _make_agent(tmp_path)

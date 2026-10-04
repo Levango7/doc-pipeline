@@ -74,7 +74,8 @@ class TestHandleRegeneration:
     def test_no_regenerate_when_not_needed(self):
         ex = _make_executor()
         result = {"status": "pass", "needs_regenerate": False}
-        out = ex._handle_regeneration(MagicMock(), MagicMock(), result, {})
+        out = ex._handle_regeneration(MagicMock(), MagicMock(), result, {},
+                              regenerate_agent="generator", recheck_agent="gate")
         assert out["status"] == "pass"
 
     def test_stops_at_max_generations(self):
@@ -84,7 +85,8 @@ class TestHandleRegeneration:
         ex.bus.request.return_value = {"needs_regenerate": True, "can_regenerate": True,
                                         "overall_score": 50, "scores": {}}
         result = {"needs_regenerate": True, "can_regenerate": True, "overall_score": 50}
-        ex._handle_regeneration(MagicMock(), MagicMock(), result, {}, max_gen=2)
+        ex._handle_regeneration(MagicMock(), MagicMock(), result, {}, max_gen=2,
+                            regenerate_agent="generator", recheck_agent="gate")
         # 应调用 bus.request 有限次
         assert ex.bus.request.call_count <= 4  # writer + qg per generation
 

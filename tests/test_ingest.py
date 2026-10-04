@@ -520,5 +520,8 @@ class TestIngestAgent:
         assert "output_dir" in snap and "ocr_enabled" in snap
 
     def test_ingest_agent_is_trusted(self):
-        from pipeline_core.agent_loader import AgentLoader
-        assert "ingest_agent" in AgentLoader._TRUSTED_AGENTS
+        from pathlib import Path
+
+        from pipeline_core.agent_loader import declares_sandbox_trust
+        p = Path(__file__).parent.parent / "agents" / "ingest_agent.py"
+        assert declares_sandbox_trust(p)

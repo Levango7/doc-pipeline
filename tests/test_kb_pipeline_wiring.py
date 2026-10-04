@@ -86,10 +86,15 @@ class TestPipelineDefinition:
         assert order == ["ingest", "knowledge_base", "writer",
                          "quality_gate", "checker", "layout", "safe_writer"]
 
-    def test_ingest_and_kb_are_registered_schemas(self):
-        """config 类型漂移必须在解析期报错，而不是运行时静默。"""
-        from pipeline_core.scheduler import AGENT_SCHEMAS
-        assert "ingest" in AGENT_SCHEMAS and "knowledge_base" in AGENT_SCHEMAS
+    def test_ingest_and_kb_declare_their_own_schema(self):
+        """config 类型漂移必须在解析期报错，而不是运行时静默。
+
+        声明由各 Agent 模块持有，Scheduler 用 AST 读取（core 不再集中名单）。
+        """
+        from pipeline_core.scheduler import Scheduler
+        sched = Scheduler()
+        assert "files_from_input" in sched._schema_for_agent("ingest")
+        assert "embedder" in sched._schema_for_agent("knowledge_base")
 
     def test_bad_type_in_config_rejected(self, tmp_path, corpus):
         from pipeline_core.scheduler import Scheduler

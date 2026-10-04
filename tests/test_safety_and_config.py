@@ -64,10 +64,38 @@ class TestSafetyCheck:
 
 
 class TestAgentLoaderTrusted:
-    def test_trusted_agents_set(self):
-        assert "researcher" in AgentLoader._TRUSTED_AGENTS
-        assert "writer" in AgentLoader._TRUSTED_AGENTS
-        assert "fetcher" in AgentLoader._TRUSTED_AGENTS
+    def test_builtin_agents_declare_their_own_trust(self):
+        """信任由 Agent 模块自证（SANDBOX_TRUSTED = True），core 不存名单。"""
+        from pathlib import Path
+
+        from pipeline_core.agent_loader import declares_sandbox_trust
+        agents_dir = Path(__file__).parent.parent / "agents"
+        for name in ("researcher", "writer", "fetcher", "quality_gate",
+                     "layout", "checker", "safe_writer_agent"):
+            assert declares_sandbox_trust(agents_dir / f"{name}.py"), name
+
+    def test_core_keeps_no_roster(self):
+        from pipeline_core.agent_loader import AgentLoader
+        assert not hasattr(AgentLoader, "_TRUSTED_AGENTS"), (
+            "内置 Agent 名单又回到引擎里了")
+
+    def test_declaration_must_be_literal_true(self, tmp_path):
+        """`SANDBOX_TRUSTED = False` 或运行时赋值都不算声明。"""
+        from pipeline_core.agent_loader import declares_sandbox_trust
+        f = tmp_path / "maybe.py"
+        f.write_text("SANDBOX_TRUSTED = False\n", encoding="utf-8")
+        assert declares_sandbox_trust(f) is False
+        f.write_text("import os\nsetattr(os, 'SANDBOX_TRUSTED', True)\n",
+                     encoding="utf-8")
+        assert declares_sandbox_trust(f) is False
+
+    def test_untrusted_agent_still_goes_through_ast_check(self, tmp_path):
+        from pipeline_core.agent_loader import _check_safety, declares_sandbox_trust
+        f = tmp_path / "evil.py"
+        f.write_text("import subprocess\nsubprocess.run('ls')\n",
+                     encoding="utf-8")
+        assert declares_sandbox_trust(f) is False
+        assert _check_safety(f, strict=False), "危险调用应被 AST 检查发现"
 
     def test_strict_safety_default_true(self):
         loader = AgentLoader.__new__(AgentLoader)

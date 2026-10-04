@@ -23,6 +23,18 @@ from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 from pipeline_core.knowledge_base import KnowledgeBase
 
 AGENT_NAME = "knowledge_base"
+# 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
+# （信任来自声明本身，不再依赖 core 里写死的名单）
+SANDBOX_TRUSTED = True
+
+# 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
+# （类型名表见 pipeline_core/config_schema.py）
+CONFIG_SCHEMA = {
+    "action": ('str', ''),
+    "db_path": ('str', 'knowledge_base.db'),
+    "embedder": ('str', 'auto'),
+    "top_k": ('int', 5),
+}
 AGENT_VERSION = "1.0"
 AGENT_DESC = "知识库 Agent - 资料索引与向量检索（支持 PDF/图片经摄入层）"
 AGENT_AUTHOR = "doc-pipeline"
@@ -30,6 +42,9 @@ AGENT_PRIORITY = 15
 INPUT_TOPICS = ["knowledge_base.input", "kb.index", "kb.search", "kb.input",
                 "ingest.done"]
 OUTPUT_TOPICS = ["kb.done", "kb.failed", "kb.results", "kb.indexed"]
+# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：检索命中经 dependencies_results 交给 writer，避免与 researcher.results 同名合并
+PRODUCES: dict = {}
+CONSUMES: list = []
 DEPENDENCIES: list[str] = []
 CACHE_TTL = 0
 RESPAWN = False

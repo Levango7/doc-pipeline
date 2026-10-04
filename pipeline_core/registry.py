@@ -64,6 +64,8 @@ class AgentMeta:
     regeneration_target: str = ""        # 重做目标 agent 名称
     regeneration_recheck: str = ""       # 重做后重新检查的 agent 名称
     results_merge: str = ""              # 池化结果合并策略: "extend" | "first"
+    produces: dict = field(default_factory=dict)   # 对外产物: {artifact: 合并策略}
+    consumes: list = field(default_factory=list)   # 期望上游提供的 artifact（文档/校验用）
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
