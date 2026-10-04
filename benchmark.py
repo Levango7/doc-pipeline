@@ -74,23 +74,28 @@ def bench_html_extraction():
     html = _gen_mock_html(LARGE_HTML_SIZE)
     results = {}
 
-    # selectolax
-    try:
-        from selectolax.parser import HTMLParser
+    # selectolax —— 按内核可用性取解析器（历史上这里写死
+    # `from selectolax.parser import HTMLParser`，在 selectolax 1.0 上必然
+    # ImportError，于是本项长期记为 null，等于没测）
+    from pipeline_core import selectolax_compat as compat
 
+    if compat.resolve_backend() is None:
+        results["selectolax"] = None
+    else:
         def _selectolax_extract(html_str):
-            tree = HTMLParser(html_str)
+            parsed = compat.get_parser(html_str)
+            if parsed is None:
+                return ""
+            tree, _backend = parsed
             for tag in ("nav", "footer", "aside", "script", "style"):
                 for node in tree.css(tag):
-                    node.decompose()
-            return tree.body.text(separator=" ", strip=True) if tree.body else ""
+                    tree.decompose(node)
+            return tree.text(separator=" ", strip=True)
 
         t0 = time.perf_counter()
         for _ in range(ITERATIONS):
             _selectolax_extract(html)
         results["selectolax"] = (time.perf_counter() - t0) / ITERATIONS
-    except ImportError:
-        results["selectolax"] = None
 
     # 正则
     def _regex_extract(html_str):

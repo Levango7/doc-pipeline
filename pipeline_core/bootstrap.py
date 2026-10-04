@@ -134,7 +134,6 @@ def _check_dependencies(report: StartupReport):
     optional = {
         "aiohttp": "aiohttp (异步 HTTP，缺失时 fetcher 降级为同步)",
         "requests": "requests (HTTP 请求，fetcher 同步下载路径使用)",
-        "selectolax": "selectolax (HTML 正文提取，缺失时降级为正则启发式)",
     }
 
     for mod, name in required.items():
@@ -150,6 +149,21 @@ def _check_dependencies(report: StartupReport):
             report.add(CheckResult(f"依赖 {name}", "ok", "已安装"))
         except ImportError:
             report.add(CheckResult(f"依赖 {name}", "warn", "未安装（可选，将降级）"))
+
+    # HTML 解析后端：按真实可用性探测，而不是"包能 import"。
+    # selectolax 1.0 起 selectolax.parser 在导入期即 raise ImportError，
+    # 旧的 importlib.import_module("selectolax") 检查会误报 OK。
+    try:
+        from pipeline_core.selectolax_compat import resolve_backend
+    except ImportError as e:  # pragma: no cover - 兼容层自身缺失
+        report.add(CheckResult("HTML 解析后端", "error", f"探测失败: {e}"))
+    else:
+        backend = resolve_backend()
+        if backend:
+            report.add(CheckResult("HTML 解析后端", "ok", f"selectolax:{backend}"))
+        else:
+            report.add(CheckResult("HTML 解析后端", "warn",
+                                   "未安装可用的 selectolax 内核，fetcher 将降级为正则启发式"))
 
 
 def _check_project_structure(report: StartupReport, project_root: Path):

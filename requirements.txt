@@ -13,7 +13,9 @@ duckduckgo-search>=4.0.0
 # 异步 I/O（可选，未安装时 fetcher 降级为同步）
 aiohttp>=3.8.0
 
-# HTML 解析（Fetcher 正文提取优先使用，未安装时降级为正则启发式）
+# HTML 解析后端（fetcher 经 pipeline_core/selectolax_compat 自动选内核：
+#   <=0.10 用 selectolax.parser(modest)，0.11+/1.0 用 selectolax.lexbor；
+#   两个都取不到时 fetcher 如实记降级计数，不再静默走正则）
 selectolax>=0.3.0
 
 # 渲染层（可选依赖；缺失时 renderer 节点如实回报跳过原因，

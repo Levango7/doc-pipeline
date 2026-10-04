@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
+from pipeline_core import selectolax_compat
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 from pipeline_core.url_guard import validate_public_http_url
 
@@ -299,11 +300,10 @@ class FetcherAgent(BaseAgent):
         self._stats_lock = threading.Lock()
         # aiohttp session 按调用创建/关闭（不跨事件循环复用），此字段仅保留兼容引用
         self._aio_session: aiohttp.ClientSession | None = None
-        try:
-            from selectolax.parser import HTMLParser  # noqa: F401
-            self._use_selectolax = True
-        except ImportError:
-            self._use_selectolax = False
+        # HTML 解析后端：C 内核（modest/lexbor/quick）可用则用它，否则正则启发式。
+        # 降级必须是可见信号（_parser_fallbacks + warning），不能再静默换路径。
+        self._parser_backend = selectolax_compat.resolve_backend() or "regex"
+        self._parser_fallbacks = 0
         # Firecrawl 网页提取增强（可选，优先于 HTML 下载 + 正则提取）
         from pipeline_core.search_engines import FirecrawlExtractor
         self._firecrawl = FirecrawlExtractor(
@@ -311,7 +311,7 @@ class FetcherAgent(BaseAgent):
         )
         self.log_info(f"Fetcher v{AGENT_VERSION} 初始化完成，临时目录: {self._temp_dir}"
                       f" | Async I/O: {'启用' if USE_ASYNC else '未安装 aiohttp，使用同步模式'}"
-                      f" | HTML解析: {'selectolax' if self._use_selectolax else 'regex'}"
+                      f" | HTML解析: {self._parser_backend}"
                       f" | Firecrawl: {'启用' if self._firecrawl.is_available() else '未配置'}"
                       f" | UA池: {len(self._ua_pool)} | 重试: {self._retry}")
 
@@ -717,14 +717,15 @@ class FetcherAgent(BaseAgent):
         code_text, html = _harvest_pre_blocks(html)
 
         # ── 优先：selectolax 解析（C-bindings，比正则快 5-10x）──
+        parsed = selectolax_compat.get_parser(html)
+        if parsed is None:
+            return self._extract_text_regex(html, code_text=code_text)
+        tree, backend = parsed
         try:
-            from selectolax.parser import HTMLParser
-            tree = HTMLParser(html)
-
             # 移除无正文节点
             for tag in ("script", "style", "noscript", "svg", "head", "nav", "footer", "aside"):
                 for node in tree.css(tag):
-                    node.decompose()
+                    tree.decompose(node)
 
             # 优先 <article> / <main> 容器
             container = tree.css_first("article") or tree.css_first("main") or tree
@@ -774,8 +775,13 @@ class FetcherAgent(BaseAgent):
             text = _merge_code(text, code_text)
             if text:
                 return text[:80000]  # 单页上限 80KB
-        except Exception:
-            pass  # selectolax 解析失败，回退到正则
+        except Exception as e:
+            # 不再静默吞异常：计数 + 首次告警，然后走正则回退
+            self._parser_fallbacks += 1
+            if self._parser_fallbacks == 1:
+                self.log_warning(
+                    f"HTML 解析后端 {backend} 提取失败，已降级为正则启发式"
+                    f"（本页之后同类失败不再重复告警）: {type(e).__name__}: {e}")
 
         # ── 回退：正则启发式提取（无外部依赖）──
         return self._extract_text_regex(html, code_text=code_text)

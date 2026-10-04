@@ -86,6 +86,17 @@ jobs:
 
       - name: Pipeline smoke test (docgen)
         run: |
+          set +e
+          python run.py --check > /tmp/check_ci.txt 2>&1
+          cat /tmp/check_ci.txt
+          # 正文提取必须落在 C 内核上。历史上 selectolax 1.0 让
+          # selectolax.parser 在导入期报错，CI 静默退成正则启发式，
+          # 而 --check 只探测顶层包所以照旧报 OK。
+          if ! grep -q "HTML 解析后端: selectolax:" /tmp/check_ci.txt; then
+            echo "::error::HTML 正文提取未使用 selectolax C 内核，已静默降级为正则启发式"
+            exit 1
+          fi
+          set -e
           python run.py test_input.md --pipeline docgen --output /tmp/out_ci.md
           test -f /tmp/out_ci.md && echo "PIPELINE SMOKE OK"
 
