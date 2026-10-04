@@ -659,8 +659,17 @@ class WriterAgent(BaseAgent):
 
         # ── 优先使用 fetcher 的完整文章 ──
         articles = payload.get("articles", [])
+        kb_hits = self._kb_hits(payload)
+        if articles and kb_hits:
+            self.log_warning(
+                f"任务 {task_id}: 同时存在网络文章({len(articles)})与知识库命中"
+                f"({len(kb_hits)})，当前优先使用网络文章，KB 接地未生效")
         if articles:
             return self._build_from_articles(articles, query, title, template_name, task_id)
+
+        # ── 本地知识库命中：用自己的资料接地（kb-docgen 流水线）──
+        if kb_hits:
+            return self._build_from_kb(kb_hits, query, title, task_id)
 
         # ── 次选：搜索摘要（旧模式） ──
         results = payload.get("results", [])
@@ -719,6 +728,75 @@ class WriterAgent(BaseAgent):
                 "char_count": len(content),
             }
         }
+
+    # ═══════════════════════════════════════════════
+    # 知识库接地：上游 knowledge_base 命中 → 抽取式草稿 → LLM 重构
+    # ═══════════════════════════════════════════════
+
+    @staticmethod
+    def _kb_hits(payload: dict) -> list[dict]:
+        """从上游 knowledge_base 节点结果里取检索命中。"""
+        dep = (payload.get("dependencies_results") or {}).get("knowledge_base") or {}
+        hits = dep.get("results") or []
+        return [h for h in hits
+                if isinstance(h, dict) and str(h.get("content", "")).strip()]
+
+    @staticmethod
+    def _kb_articles(hits: list[dict]) -> list[dict]:
+        """把切块伪装成"文章"，复用既有的素材上下文与缓存键（C11）。"""
+        return [{
+            "title": str(h.get("heading_path") or h.get("title") or ""),
+            "url": f"kb://{h.get('source', '?')}#{h.get('chunk_id', '')}",
+            "text": str(h.get("content", "")),
+            "relevance": float(h.get("score", 0) or 0),
+        } for h in hits]
+
+    def _build_from_kb(self, hits: list[dict], query: str, title: str,
+                        task_id: str) -> dict:
+        """基于本地知识库切块产出文档。
+
+        先做抽取式草稿（无 LLM 也能交付，且内容全部来自用户资料），
+        有 LLM 时再走既有的重构路径 —— 素材上下文进 prompt 也进缓存键。
+        """
+        self.log_info(f"任务 {task_id}: 使用知识库命中 {len(hits)} 个切块接地")
+
+        parts = [f"# {title}", "",
+                 f"> 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"]
+        if query:
+            parts.append(f"> 主题: {query}")
+        parts.append("")
+
+        groups: dict[str, list[dict]] = {}
+        for h in hits:
+            key = str(h.get("heading_path") or h.get("title") or "相关资料")
+            groups.setdefault(key, []).append(h)
+        for heading, items in groups.items():
+            parts.extend([f"## {heading}", ""])
+            for h in items:
+                parts.extend([str(h["content"]).strip(), ""])
+
+        parts.extend(["## 参考资料（本地知识库）", ""])
+        for i, h in enumerate(hits, 1):
+            parts.append(
+                f"{i}. {h.get('source', '?')} · "
+                f"{h.get('heading_path') or h.get('title') or '正文'}"
+                f"（相关度 {float(h.get('score', 0) or 0):.2f}）")
+
+        draft = "\n".join(parts).strip()
+        sources = sorted({str(h.get("source", "?")) for h in hits})
+        stats = {"kb_hits": len(hits), "kb_sources": len(sources),
+                 "char_count": len(draft), "llm_used": False}
+
+        if query and self._llm_api_key:
+            restructured = self._restructure_document(
+                draft, self._kb_articles(hits), query, title, task_id=task_id)
+            if restructured:
+                stats["llm_used"] = True
+                stats["char_count"] = len(restructured)
+                return {"status": "ok", "task_id": task_id,
+                        "content": restructured, "stats": stats}
+
+        return {"status": "ok", "task_id": task_id, "content": draft, "stats": stats}
 
     # ═══════════════════════════════════════════════
     # 新流程：文章 → 骨架 → TF-IDF 填充

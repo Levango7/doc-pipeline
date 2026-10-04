@@ -1,0 +1,110 @@
+# 本地资料驱动文档生成（RAG 接地）
+# 与 docgen 的区别：语料不是公网检索，而是你手上的文件。
+# 输入 Markdown 里同时写主题与资料清单，例如：
+#   # 主题
+#   Kafka 的配额与分区策略
+#   # 资料
+#   corpus/kafka-quota.md
+#   ~/docs/存储设计.pdf
+# 资料行由 ingest 解析成文件，检索词里的资料行会被剔除（见 knowledge_base_agent）。
+_name: kb-docgen
+_version: "1.0"
+description: 摄入本地资料 → 建库检索 → 知识库接地写作 → 质检 → 排版 → 落盘
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: ingest
+    version: "1.0"
+    timeout: 300
+    dependencies: []
+    config:
+      output_dir: output/ingested
+      ocr_enabled: true
+      files_from_input: true
+
+  - name: knowledge_base
+    version: "1.0"
+    timeout: 300
+    dependencies: ["ingest"]
+    config:
+      action: index_and_search
+      db_path: knowledge_base.db
+      embedder: auto
+      top_k: 6
+
+  - name: writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["knowledge_base"]
+    config:
+      prompt_profile: generic-tech
+
+  - name: quality_gate
+    version: "2.0"
+    timeout: 300
+    dependencies: ["writer"]
+    config:
+      quality_profile: technical-doc
+      threshold: 70
+      max_regenerations: 3
+
+  - name: checker
+    version: "1.1"
+    timeout: 300
+    dependencies: ["quality_gate"]
+    config:
+      fail_fast: false
+
+  - name: layout
+    version: "2.0"
+    timeout: 300
+    dependencies: ["checker"]
+    config:
+      style: markdown
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["layout"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+topology:
+  type: dag
+  levels:
+    - [ingest]
+    - [knowledge_base]
+    - [writer]
+    - [quality_gate]
+    - [checker]
+    - [layout]
+    - [safe_writer]
+
+  edges:
+    - [ingest, knowledge_base]
+    - [knowledge_base, writer]
+    - [writer, quality_gate]
+    - [quality_gate, checker]
+    - [checker, layout]
+    - [layout, safe_writer]
+
+pipeline:
+  timeout: 900
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import math
 import os
@@ -250,6 +251,29 @@ def auto_fallback_reasons() -> dict[str, str]:
     return dict(_AUTO_FALLBACK_REASONS)
 
 
+@contextlib.contextmanager
+def _offline_probe_env():
+    """auto 探测 local 后端期间禁止联网下载模型权重。
+
+    "选哪个嵌入器"不该有下载 100MB 模型的副作用：模型已在本地缓存就用，
+    没缓存就快速失败并回落 hash。实测 huggingface.co 不可达时，
+    `get_embedder("auto")` 会在 SentenceTransformer 构造里重试数分钟，
+    把流水线节点变成静默挂死。
+    """
+    keys = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    saved = {k: os.environ.get(k) for k in keys}
+    for k in keys:
+        os.environ[k] = "1"
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def get_embedder(name: str = "auto", **kwargs) -> Embedder:
     """按名称取嵌入后端。
 
@@ -257,6 +281,9 @@ def get_embedder(name: str = "auto", **kwargs) -> Embedder:
     失败即回落到下一个。只看 import 就选定候选会导致"选了却建不起来"
     （实测：sentence-transformers 装着但 huggingface.co 不可达），
     因此 auto 必须真正构造成功才算数。hash 是内置的，保证兜底。
+
+    探测 local 时处于离线模式（不下载权重）；确实需要新下载模型的，
+    请显式 `embedder: local`，那条路径允许联网拉取。
     """
     name = (name or "auto").strip().lower()
 
@@ -266,9 +293,16 @@ def get_embedder(name: str = "auto", **kwargs) -> Embedder:
             if candidate not in available_embedders():
                 continue
             try:
+                if candidate == "local":
+                    with _offline_probe_env():
+                        return get_embedder(candidate, **kwargs)
                 return get_embedder(candidate, **kwargs)
             except Exception as e:
-                _AUTO_FALLBACK_REASONS[candidate] = str(e)[:300]
+                reason = str(e)[:300]
+                if candidate == "local":
+                    reason += "（auto 不下载模型权重；需要语义嵌入请先离线备好模型，" \
+                              "或显式设 embedder: local）"
+                _AUTO_FALLBACK_REASONS[candidate] = reason
                 continue
         return HashEmbedder(dim=int(kwargs.get("dim", DEFAULT_HASH_DIM)))
 

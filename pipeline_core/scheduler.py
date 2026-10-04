@@ -120,6 +120,17 @@ AGENT_SCHEMAS = {
         "backup_dir": (str, "backups"),
         "atomic": (bool, True),
     },
+    "ingest": {
+        "output_dir": (str, "output/ingested"),
+        "ocr_enabled": (bool, True),
+        "files_from_input": (bool, True),
+    },
+    "knowledge_base": {
+        "action": (str, ""),
+        "db_path": (str, "knowledge_base.db"),
+        "embedder": (str, "auto"),
+        "top_k": (int, 5),
+    },
 }
 
 

@@ -88,11 +88,17 @@ def ocr_backend() -> str | None:
     return backend
 
 
-def available_backends() -> list[str]:
+def available_backends(include_ocr: bool = True) -> list[str]:
+    """可用解析后端。
+
+    `include_ocr=False` 用于只想报告"数字版能力"的场合：OCR 探测需要真的
+    实例化 PP-StructureV3（本机实测 84 秒，要加载模型权重），
+    不该为一条初始化日志付这个代价。
+    """
     out = []
     if HAS_PYMUPDF:
         out.append("pymupdf")
-    ocr = ocr_backend()
+    ocr = ocr_backend() if include_ocr else None
     if ocr:
         out.append(ocr)
     return out

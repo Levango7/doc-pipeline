@@ -13,10 +13,13 @@
 - 产物写入本地文件供下游节点读取，不塞进消息总线正文（避免撑爆）
 """
 import json
+import logging
 from pathlib import Path
 
 from pipeline_core import ingest as ingest_core
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+
+logger = logging.getLogger("agent.ingest")
 
 AGENT_NAME = "ingest"
 AGENT_VERSION = "1.0"
@@ -37,7 +40,8 @@ class IngestAgent(BaseAgent):
         self._ocr_enabled = config.get("ocr_enabled", True)
         self.log_info(
             f"Ingest v{AGENT_VERSION} 初始化完成"
-            f"（后端: {','.join(ingest_core.available_backends()) or 'pymupdf 缺失'}）"
+            f"（数字版后端: {','.join(ingest_core.available_backends(include_ocr=False)) or 'pymupdf 缺失'}；"
+            f"OCR 按需探测）"
         )
 
     def handle(self, msg: Message) -> dict | None:
@@ -53,9 +57,6 @@ class IngestAgent(BaseAgent):
             return no_files
 
         self.log_info(f"待摄入 {len(files)} 个文件")
-
-        # OCR 不可用时提前告知，但**不阻断**——纯文本/PDF 仍能处理
-        ocr = ingest_core.ocr_backend() if self._ocr_enabled else None
 
         batch = ingest_core.ingest_many(list(files))
         documents = batch.get("documents", [])
@@ -99,7 +100,7 @@ class IngestAgent(BaseAgent):
                 {"file": d.get("file"), "message": d.get("message", "")}
                 for d in failed
             ]
-        if needs_ocr and not ocr:
+        if needs_ocr and self._ocr_enabled and not ingest_core.ocr_backend():
             result["ocr_hint"] = (
                 "扫描件/图片需要 OCR 后端。推荐 pip install paddlepaddle "
                 "paddlex[ocr] paddleocr（PP-StructureV3，中文版面与表格"
@@ -114,18 +115,35 @@ class IngestAgent(BaseAgent):
 
     @staticmethod
     def _collect_files(payload: dict) -> list[str]:
-        """从payload 里收齐文件路径，兼容多种传参形态。"""
+        """从payload 里收齐文件路径，兼容多种传参形态。
+
+        流水线编排时没有 RPC 那样的 `files=` 入参，资料清单来自三处：
+        节点 config.files、节点 config.input_dir（目录批量），
+        或 CLI 输入 Markdown 里的路径行（每行一个，允许 `-`/`*` 项目符号）。
+        """
         files: list[str] = []
+        cfg = payload.get("config") or {}
 
         single = payload.get("file") or payload.get("path") or payload.get("input")
         if single:
             files.append(str(single))
 
-        listed = payload.get("files") or payload.get("paths") or []
+        listed = payload.get("files") or payload.get("paths") or cfg.get("files") or []
         if isinstance(listed, str):
             files.append(listed)
         else:
             files.extend(str(f) for f in listed)
+
+        input_dir = cfg.get("input_dir")
+        if input_dir:
+            base = Path(str(input_dir))
+            if not base.is_dir():
+                raise FileNotFoundError(f"config.input_dir 不是目录: {base}")
+            pattern = str(cfg.get("pattern", "*"))
+            files.extend(str(p) for p in sorted(base.glob(pattern)) if p.is_file())
+
+        if not files and cfg.get("files_from_input", True):
+            files.extend(IngestAgent._paths_from_input(str(payload.get("input_file", ""))))
 
         # 去重保序（set.add 返回 None，不能用在条件表达式里）
         seen: set[str] = set()
@@ -135,6 +153,37 @@ class IngestAgent(BaseAgent):
                 seen.add(f)
                 unique.append(f)
         return unique
+
+    @staticmethod
+    def _paths_from_input(input_file: str) -> list[str]:
+        """把输入文件里的路径行解析为磁盘上真实存在的资料文件。
+
+        主题描述之类的散文行解析不出路径就跳过；输入文件自身不算资料，
+        否则"吃自己的清单"会把提示词当成语料摄入。
+        """
+        if not input_file:
+            return []
+        src = Path(input_file)
+        if not src.is_file():
+            return []
+        out: list[str] = []
+        try:
+            text = src.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            logger.warning(f"读取资料清单失败 {input_file}: {e}")
+            return []
+        for raw in text.splitlines():
+            line = raw.strip().lstrip("-*•># ").strip().strip("`")
+            if not line or line == src.name:
+                continue
+            for cand in (Path(line), src.parent / line):
+                try:
+                    if cand.is_file():
+                        out.append(str(cand))
+                        break
+                except OSError:
+                    continue
+        return out
 
     def _save_artifact(self, task_id: str, markdown: str,
                        docs: list[dict]) -> str:
