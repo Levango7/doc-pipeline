@@ -370,12 +370,12 @@ class TestPipelineNameResolution:
     def test_ambiguous_candidates_rejected_not_guessed(self, capsys):
         """多义时退出 2 并列出候选，不得静默取首个"""
         import argparse
+
         import run
         args = argparse.Namespace(pipeline="docgen", pipeline_file=None, write_lock=False)
         fake = [PIPELINES_DIR / "a.yaml", PIPELINES_DIR / "b.yaml"]
-        with patch("run._resolve_pipeline_files", return_value=fake):
-            with pytest.raises(SystemExit) as exc_info:
-                run._resolve_pipeline_plan(args, MagicMock(), {})
+        with patch("run._resolve_pipeline_files", return_value=fake), pytest.raises(SystemExit) as exc_info:
+            run._resolve_pipeline_plan(args, MagicMock(), {})
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "拒绝猜测" in err
