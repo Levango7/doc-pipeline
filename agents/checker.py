@@ -88,7 +88,8 @@ class CheckerAgent(BaseAgent):
         if not target and not content:
             return {"status": "error", "message": "未指定文件或内容"}
 
-        result = self._check(target, content=content, fix=fix)
+        result = self._check(target, content=content, fix=fix,
+                             block_on_p1=self._block_on_p1(payload))
 
         # P0 问题需要阻断，但不 raise，避免破坏 checkpoint
         if result.get("P0", 0) > 0:
@@ -99,8 +100,16 @@ class CheckerAgent(BaseAgent):
 
         return result
 
+    def _block_on_p1(self, payload: dict) -> bool:
+        """节点 config 优先于构造期 config（DAG 里 YAML 写的值必须生效）。"""
+        cfg = payload.get("config") or {}
+        value = cfg.get("block_on_p1")
+        if value is None:
+            value = self.config.get("block_on_p1", False)
+        return bool(value)
+
     def _check(self, target: str = None, content: str = "",
-               fix: bool = False) -> dict:
+               fix: bool = False, block_on_p1: bool | None = None) -> dict:
         """调用 markdown_checker 核心逻辑"""
         # 读文件内容
         if not content and target:
@@ -124,12 +133,22 @@ class CheckerAgent(BaseAgent):
             p2 = result["summary"].get("P2_warning", 0)
             p3 = result["summary"].get("P3_suggestion", 0)
 
-            status = "pass" if p0 == 0 and p1 == 0 else "fail"
+            # 契约分层：status 表示"这次检查跑没跑成"，verdict 表示"文档有没有问题"。
+            # 以前 P1>0 直接把 status 写成 fail，而引擎把 fail 当业务失败 →
+            # 下游 layout/safe_writer 全部被跳过。检查器完成了工作却因"发现了问题"
+            # 而被判死，这与 pipeline 里 `checker.fail_fast: false` 的意图相反。
+            # 需要"P1 也阻断"的场景请显式开 block_on_p1。
+            verdict = "pass" if p0 == 0 and p1 == 0 else "fail"
+            if block_on_p1 is None:
+                block_on_p1 = bool(self.config.get("block_on_p1", False))
+            status = "fail" if (verdict == "fail" and block_on_p1) else "ok"
 
-            self.log_info(f"检查结果: P0={p0} P1={p1} P2={p2} P3={p3}  [{status}]")
+            self.log_info(f"检查结果: P0={p0} P1={p1} P2={p2} P3={p3}  "
+                          f"[verdict={verdict}{', block_on_p1' if block_on_p1 else ''}]")
 
             return {
                 "status": status,
+                "verdict": verdict,
                 "target": target or "<content>",
                 "P0": p0,
                 "P1": p1,

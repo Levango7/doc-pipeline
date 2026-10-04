@@ -111,8 +111,28 @@ class TestCheckerHandle:
         agent = _make_checker(tmp_path)
         res = agent.handle(_msg({"content": "# 标题\n\n这是正常的文档内容。\n"},
                                 "checker.check"))
-        assert res["status"] in ("pass", "fail")
+        # status = 这次检查跑没跑成；verdict = 文档有没有问题
+        assert res["status"] in ("ok", "fail"), res["status"]
+        assert res["verdict"] in ("pass", "fail"), res["verdict"]
         assert "P0" in res and "total_issues" in res
+
+    def test_findings_do_not_fail_the_node_by_default(self, tmp_path):
+        """P1 问题是"发现"，不是"检查器失败"：默认不得让下游被跳过。"""
+        agent = _make_checker(tmp_path)
+        res = agent.handle(_msg({"content": "没有任何标题的一行流水文本" * 4},
+                                "checker.check"))
+        assert res["verdict"] == "fail", res
+        assert res["status"] == "ok", (
+            f"P1 检出把节点判成业务失败，下游会被跳过：{res}")
+
+    def test_block_on_p1_makes_findings_fatal(self, tmp_path):
+        """需要严格阻断时在节点 config 里显式开 block_on_p1（opt-in）。"""
+        agent = _make_checker(tmp_path)
+        res = agent.handle(_msg({"content": "没有任何标题的一行流水文本" * 4,
+                                 "config": {"block_on_p1": True}},
+                                "checker.check"))
+        assert res["verdict"] == "fail"
+        assert res["status"] == "fail"
 
     def test_no_target_no_content_error(self, tmp_path):
         agent = _make_checker(tmp_path)
