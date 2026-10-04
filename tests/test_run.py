@@ -322,3 +322,62 @@ class TestServiceMode:
                 patch("builtins.print"), pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 2
+
+
+# ─── 流水线名解析（前缀匹配劫持的回归护栏）────────────────────
+
+PIPELINES_DIR = Path(__file__).parent.parent / "pipelines"
+
+
+class TestPipelineNameResolution:
+    """`--pipeline <name>` 必须解析到 `<name>.yaml`，不得被前缀匹配劫持"""
+
+    def test_all_shipped_pipelines_resolve_to_their_own_file(self):
+        """遍历真实 pipelines/ 目录：每个名字都要取到同名定义文件。
+
+        旧实现 `glob(f"{name}*.yaml")` + 首个成功即返回，按字母序
+        docgen-render.yaml 排在 docgen.yaml 之前，默认流水线永远跑的是渲染版。
+        """
+        import run
+        bad = []
+        for name in run._available_pipeline_names():
+            got = run._resolve_pipeline_files(name, None, PIPELINES_DIR)
+            if [p.stem for p in got] != [name]:
+                bad.append((name, [p.name for p in got]))
+        assert not bad, f"以下流水线名解析不到自己的定义文件: {bad}"
+
+    def test_docgen_specifically_is_not_render(self):
+        import run
+        got = run._resolve_pipeline_files("docgen", None, PIPELINES_DIR)
+        assert [p.name for p in got] == ["docgen.yaml"]
+
+    def test_prefix_only_name_still_matches_single_candidate(self):
+        """无精确同名时，唯一前缀匹配仍可用（向后兼容）"""
+        import run
+        got = run._resolve_pipeline_files("docgen-ver", None, PIPELINES_DIR)
+        assert [p.name for p in got] == ["docgen-verified.yaml"]
+
+    def test_unknown_name_yields_no_candidates(self):
+        import run
+        assert run._resolve_pipeline_files("docgen-typo", None, PIPELINES_DIR) == []
+
+    def test_explicit_pipeline_file_overrides_name(self, tmp_path):
+        import run
+        target = tmp_path / "custom.yaml"
+        target.write_text("x", encoding="utf-8")
+        assert run._resolve_pipeline_files("docgen", str(target), PIPELINES_DIR) == [target]
+
+    def test_ambiguous_candidates_rejected_not_guessed(self, capsys):
+        """多义时退出 2 并列出候选，不得静默取首个"""
+        import argparse
+        import run
+        args = argparse.Namespace(pipeline="docgen", pipeline_file=None, write_lock=False)
+        fake = [PIPELINES_DIR / "a.yaml", PIPELINES_DIR / "b.yaml"]
+        with patch("run._resolve_pipeline_files", return_value=fake):
+            with pytest.raises(SystemExit) as exc_info:
+                run._resolve_pipeline_plan(args, MagicMock(), {})
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "拒绝猜测" in err
+        assert "a.yaml" in err and "b.yaml" in err
+

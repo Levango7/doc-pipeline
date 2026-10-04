@@ -153,23 +153,43 @@ def _available_pipeline_names() -> list[str]:
     return list(_PIPELINE_NAMES_CACHE)
 
 
+def _resolve_pipeline_files(pipeline: str, pipeline_file: str | None,
+                            pipelines_dir: Path) -> list[Path]:
+    """按名字解析出候选流水线 YAML 文件。
+
+    精确名优先：`docgen` 必须命中 `docgen.yaml`。此前用
+    `glob(f"{pipeline}*.yaml")` 前缀匹配 + 首个可解析即返回，按字母序
+    `docgen-render.yaml` 排在 `docgen.yaml` 之前，导致默认流水线名永远取不到
+    自己的定义文件。仅在不存在精确同名文件时才允许前缀匹配，且多义不再择一。
+    """
+    if pipeline_file:
+        return [Path(pipeline_file)]
+    exact = pipelines_dir / f"{pipeline}.yaml"
+    if exact.exists():
+        return [exact]
+    return sorted(pipelines_dir.glob(f"{pipeline}*.yaml"))
+
+
 def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestrator,
                            config: dict) -> tuple[Any, bool]:
     """尝试从 YAML 文件解析 pipeline plan；失败时返回 (None, False) 表示应走 legacy 路径"""
     from pipeline_core.scheduler import LockfileMismatchError, Scheduler
     sched = Scheduler()
     base_dir = Path(__file__).parent
-    pipeline_files = []
-    if args_args.pipeline_file:
-        pipeline_files = [Path(args_args.pipeline_file)]
-    else:
-        pipelines_dir = base_dir / "pipelines"
-        pipeline_files = sorted(pipelines_dir.glob(f"{args_args.pipeline}*.yaml"))
-        if not pipeline_files:
-            available = ", ".join(_available_pipeline_names())
-            print(f"[run] ERROR: 未找到流水线 '{args_args.pipeline}'"
-                  f"（pipelines/ 下可用: {available or '无'}）", file=sys.stderr)
-            sys.exit(2)
+    pipeline_files = _resolve_pipeline_files(
+        args_args.pipeline, args_args.pipeline_file, base_dir / "pipelines")
+    if not pipeline_files:
+        available = ", ".join(_available_pipeline_names())
+        print(f"[run] ERROR: 未找到流水线 '{args_args.pipeline}'"
+              f"（pipelines/ 下可用: {available or '无'}）", file=sys.stderr)
+        sys.exit(2)
+    if len(pipeline_files) > 1:
+        candidates = ", ".join(pf.name for pf in pipeline_files)
+        print(f"[run] ERROR: 流水线名 '{args_args.pipeline}' 有 {len(pipeline_files)} 个候选"
+              f"（{candidates}），已拒绝猜测", file=sys.stderr)
+        print("[run] 提示: 使用完整流水线名，或用 --pipeline-file 指定具体文件",
+              file=sys.stderr)
+        sys.exit(2)
 
     write_lock = bool(getattr(args_args, "write_lock", False))
     for pf in pipeline_files:
