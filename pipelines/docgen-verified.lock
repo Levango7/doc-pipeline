@@ -5,6 +5,12 @@ agents:
     - quality_gate
     pool_size: 1
     version: '1.1'
+  fact_checker:
+    config_hash: 11e5aedb286d
+    dependencies:
+    - checker
+    pool_size: 1
+    version: '1.0'
   fetcher:
     config_hash: 608ae47a27f3
     dependencies:
@@ -14,7 +20,7 @@ agents:
   layout:
     config_hash: fd4abfa751e5
     dependencies:
-    - checker
+    - fact_checker
     pool_size: 1
     version: '2.0'
   quality_gate:
@@ -46,7 +52,7 @@ agents:
     pool_size: 1
     version: '2.0'
 created_at: '2026-10-05T01:44:16'
-node_count: 8
-pipeline: docgen
-plan_id: 47c4f016
-topology_hash: 6f706b933bce
+node_count: 9
+pipeline: docgen-verified
+plan_id: 9ca24c26
+topology_hash: 34a01b8c2d1b

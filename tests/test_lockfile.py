@@ -186,3 +186,130 @@ class TestWriteLockWiring:
         args = self._args(pipeline_file=str(target), pipeline="three_pass", write_lock=False)
         plan, loaded = run_mod._resolve_pipeline_plan(args, None, {})
         assert loaded and plan is not None
+
+
+# ─── 出厂流水线全量覆盖 ───────────────────────────────────
+
+class TestShippedPipelinesAreLocked:
+    """每条 pipelines/*.yaml 都必须有配套 .lock 且能通过校验。
+
+    此前 6 条流水线只有 2 条有锁，漂移护栏对另外 4 条形同虚设。
+    """
+
+    def test_every_pipeline_yaml_has_a_lock(self):
+        yamls = sorted(p.stem for p in (PROJECT / "pipelines").glob("*.yaml"))
+        missing = [n for n in yamls if not (PROJECT / "pipelines" / f"{n}.lock").exists()]
+        assert not missing, f"以下流水线缺少 lockfile（用 --write-lock 生成）: {missing}"
+        assert yamls, "pipelines/ 下没有 YAML？"
+
+    def test_every_pipeline_verifies_with_lock_enabled(self):
+        sched = Scheduler()
+        bad = []
+        for p in sorted((PROJECT / "pipelines").glob("*.yaml")):
+            try:
+                sched.parse_file(str(p))  # verify_lock 默认开启
+            except Exception as e:  # noqa: BLE001
+                bad.append((p.name, f"{type(e).__name__}: {e}"))
+        assert not bad, f"锁校验未通过: {bad}"
+
+    def test_lock_covers_config_not_only_topology(self, tmp_path, monkeypatch):
+        """加锁后改一个 config 数值必须被拦住（防"有锁但没用"）。
+
+        注意：Scheduler 的 pipeline_dir 默认是**相对路径** pipelines/，
+        generate_lockfile 会按它落盘 —— 不在 tmp 下 chdir 就会覆盖仓库里的
+        真实 lock（本测试第一版就犯过这个错，把 docreq.lock 写脏了）。
+        """
+        monkeypatch.chdir(tmp_path)
+        sandbox = tmp_path / "pipelines"
+        sandbox.mkdir()
+        src = (PROJECT / "pipelines" / "docreq.yaml").read_text(encoding="utf-8")
+        drifted = src.replace("max_results: 10", "max_results: 11", 1)
+        if drifted == src:
+            drifted = src.replace("threshold: 70", "threshold: 71", 1)
+        target = sandbox / "docreq.yaml"
+        target.write_text(drifted, encoding="utf-8")
+
+        sched = Scheduler(pipeline_dir=str(sandbox))
+        plan = sched.parse_file(str(target), verify_lock=False)
+        sched.generate_lockfile(plan)
+        further = (drifted.replace("max_results: 11", "max_results: 12")
+                   if "max_results" in drifted
+                   else drifted.replace("threshold: 71", "threshold: 72"))
+        target.write_text(further, encoding="utf-8")
+        with pytest.raises(LockfileMismatchError):
+            sched.parse_file(str(target))
+        # 仓库里的真实 lock 不许被动过
+        repo_lock = (PROJECT / "pipelines" / "docreq.lock").read_bytes()
+        assert b"max_results: 12" not in repo_lock
+
+
+# ─── edges 与 dependencies 一致性 ─────────────────────────
+
+class TestEdgesMatchDependencies:
+    """edges 只是给人看的连线图，执行以 dependencies 为准；
+    两者不一致必须报错，否则文档化的图与真实图悄悄分叉。"""
+
+    RAW_BASE = {
+        "name": "edgedemo",
+        "agents": [
+            {"name": "a", "version": "1.0", "dependencies": [], "config": {}},
+            {"name": "b", "version": "1.0", "dependencies": ["a"], "config": {}},
+        ],
+        "topology": {"levels": [["a"], ["b"]], "edges": [["a", "b"]]},
+    }
+
+    def _write(self, tmp_path, mutate):
+        raw = copy.deepcopy(self.RAW_BASE)
+        mutate(raw)
+        path = tmp_path / "edgedemo.yaml"
+        path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+                        encoding="utf-8")
+        return str(path)
+
+    def test_consistent_edges_pass(self, tmp_path):
+        plan = Scheduler().parse_file(self._write(tmp_path, lambda r: None),
+                                     verify_lock=False)
+        assert plan.node_count == 2
+
+    def test_edge_naming_unknown_agent_is_rejected(self, tmp_path):
+        """safewriter 式拼错：以前无人发现，现在解析期即报错。"""
+        path = self._write(tmp_path, lambda r: r["topology"].__setitem__(
+            "edges", [["a", "b"], ["b", "safewriter"]]))
+        with pytest.raises(ValueError, match="未定义的 Agent"):
+            Scheduler().parse_file(path, verify_lock=False)
+
+    def test_edges_block_is_optional(self, tmp_path):
+        """没写 edges 就不校验（YAML 允许只声明 levels），写了就必须一致。"""
+        path = self._write(tmp_path, lambda r: r["topology"].__setitem__("edges", []))
+        plan = Scheduler().parse_file(path, verify_lock=False)
+        assert plan.node_count == 2
+
+    def test_partial_edges_are_rejected(self, tmp_path):
+        """声明了一部分连线就必须齐全，缺一条即报错（防图与执行分叉）。"""
+        raw = copy.deepcopy(self.RAW_BASE)
+        raw["agents"].append({"name": "c", "version": "1.0",
+                              "dependencies": ["a"], "config": {}})
+        raw["topology"]["levels"] = [["a"], ["b"], ["c"]]
+        raw["topology"]["edges"] = [["a", "b"]]  # 少 a→c
+        path = tmp_path / "edgedemo.yaml"
+        path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+                        encoding="utf-8")
+        with pytest.raises(ValueError, match="edges 缺少"):
+            Scheduler().parse_file(str(path), verify_lock=False)
+
+    def test_extra_edge_is_rejected(self, tmp_path):
+        raw = copy.deepcopy(self.RAW_BASE)
+        raw["agents"].append({"name": "c", "version": "1.0",
+                              "dependencies": ["a"], "config": {}})
+        raw["topology"]["levels"] = [["a"], ["b"], ["c"]]
+        raw["topology"]["edges"] = [["a", "b"], ["a", "c"], ["b", "c"]]
+        path = tmp_path / "edgedemo.yaml"
+        path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+                        encoding="utf-8")
+        with pytest.raises(ValueError, match="edges 多出"):
+            Scheduler().parse_file(str(path), verify_lock=False)
+
+    def test_malformed_edge_is_rejected(self, tmp_path):
+        path = self._write(tmp_path, lambda r: r["topology"].__setitem__("edges", ["ab"]))
+        with pytest.raises(ValueError, match="二元组"):
+            Scheduler().parse_file(path, verify_lock=False)

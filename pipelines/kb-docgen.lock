@@ -5,10 +5,15 @@ agents:
     - quality_gate
     pool_size: 1
     version: '1.1'
-  fetcher:
-    config_hash: 608ae47a27f3
+  ingest:
+    config_hash: fc9e5efd88b0
+    dependencies: []
+    pool_size: 1
+    version: '1.0'
+  knowledge_base:
+    config_hash: 9ccb238b83aa
     dependencies:
-    - researcher
+    - ingest
     pool_size: 1
     version: '1.0'
   layout:
@@ -23,16 +28,6 @@ agents:
     - writer
     pool_size: 1
     version: '2.0'
-  researcher_pool_0:
-    config_hash: dacb28d53838
-    dependencies: &id001 []
-    pool_size: 2
-    version: '2.0'
-  researcher_pool_1:
-    config_hash: dacb28d53838
-    dependencies: *id001
-    pool_size: 2
-    version: '2.0'
   safe_writer:
     config_hash: a5047e77162a
     dependencies:
@@ -42,11 +37,11 @@ agents:
   writer:
     config_hash: fab8f299574f
     dependencies:
-    - fetcher
+    - knowledge_base
     pool_size: 1
     version: '2.0'
 created_at: '2026-10-05T01:44:16'
-node_count: 8
-pipeline: docgen
-plan_id: 47c4f016
-topology_hash: 6f706b933bce
+node_count: 7
+pipeline: kb-docgen
+plan_id: 805b1cb8
+topology_hash: e196e27b5b09

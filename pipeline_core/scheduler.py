@@ -109,9 +109,11 @@ AGENT_SCHEMAS = {
         "quality_profile": (str, "technical-doc"),
         "threshold": ((int, float), 70),
         "max_regenerations": (int, 3),
+        "min_output_chars": (int, 120),
     },
     "checker": {
         "fail_fast": (bool, False),
+        "block_on_p1": (bool, False),
     },
     "layout": {
         "style": (str, "markdown"),
@@ -287,6 +289,9 @@ class Scheduler:
                     )
             appeared.update(level)
 
+        # ── 2.1 校验 edges 与 dependencies 一致 ──
+        self._validate_edges(topology.get("edges", []), agent_map)
+
         # ── 3. 构建 ExecutionNode ──
         appeared.clear()
         levels: list[list[ExecutionNode]] = []
@@ -335,6 +340,43 @@ class Scheduler:
         )
 
     # ── Schema 校验 ─────────────────────
+
+    def _validate_edges(self, edges_raw: list, agent_map: dict[str, AgentConfig]) -> None:
+        """校验 `topology.edges` 与 agent.dependencies 声明的图一致。
+
+        执行只依据 dependencies，edges 是给人看的连线图 —— 所以它一旦写错
+        不会报错，只会误导人。`docgen-render.yaml` 里 `[layout, safewriter]`
+        拼错多年无人发现即为此证（`safe_writer` 才是节点名）。
+        """
+        if not edges_raw:
+            return
+        declared: set[tuple[str, str]] = set()
+        unknown: list[tuple[str, str]] = []
+        for edge in edges_raw:
+            if not isinstance(edge, (list, tuple)) or len(edge) != 2:
+                raise ValueError(
+                    f"topology.edges 条目必须是 [源, 目标] 二元组，收到: {edge!r}")
+            src, dst = str(edge[0]), str(edge[1])
+            for name in (src, dst):
+                if name.split("_pool_")[0] not in agent_map:
+                    unknown.append((src, dst))
+            declared.add((src, dst))
+        if unknown:
+            bad = sorted({f"{s}→{d}" for s, d in unknown})
+            raise ValueError(
+                f"topology.edges 引用了未定义的 Agent: {bad}"
+                f"（可用节点: {sorted(agent_map)}；注意 safewriter ≠ safe_writer）")
+
+        actual = {(d, name) for name, cfg in agent_map.items()
+                  for d in cfg.dependencies if d in agent_map}
+        if declared != actual:
+            missing = sorted(f"{s}→{d}" for s, d in actual - declared)
+            extra = sorted(f"{s}→{d}" for s, d in declared - actual)
+            raise ValueError(
+                "topology.edges 与各 agent 的 dependencies 不一致："
+                + (f"edges 缺少 {missing}；" if missing else "")
+                + (f"edges 多出 {extra}；" if extra else "")
+                + "（执行以 dependencies 为准，edges 请同步修正）")
 
     def _validate_agent_schemas(self, agent_map: dict[str, AgentConfig]):
         """校验每个 agent 的 config 是否符合预设 schema"""

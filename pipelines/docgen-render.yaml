@@ -109,8 +109,8 @@ topology:
     - [writer, quality_gate]
     - [quality_gate, checker]
     - [checker, layout]
-    - [layout, safewriter]
-    - [layout, renderer]
+    - [layout, safe_writer]
+    - [safe_writer, renderer]
 
 # ── 流水线全局策略 ──────────────────────────
 pipeline:

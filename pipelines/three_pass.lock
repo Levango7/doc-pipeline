@@ -6,7 +6,7 @@ agents:
     pool_size: 1
     version: '1.1'
   fetcher:
-    config_hash: 608ae47a27f3
+    config_hash: 297ef7f0ca2b
     dependencies:
     - researcher
     pool_size: 1
@@ -18,18 +18,18 @@ agents:
     pool_size: 1
     version: '2.0'
   quality_gate:
-    config_hash: e3ebdd7e47f8
+    config_hash: 65fefc330190
     dependencies:
     - writer
     pool_size: 1
     version: '2.0'
   researcher_pool_0:
-    config_hash: dacb28d53838
+    config_hash: bf4f6af9d425
     dependencies: &id001 []
     pool_size: 2
     version: '2.0'
   researcher_pool_1:
-    config_hash: dacb28d53838
+    config_hash: bf4f6af9d425
     dependencies: *id001
     pool_size: 2
     version: '2.0'
@@ -40,13 +40,13 @@ agents:
     pool_size: 1
     version: '2.0'
   writer:
-    config_hash: fab8f299574f
+    config_hash: bfadc3d346b4
     dependencies:
     - fetcher
     pool_size: 1
     version: '2.0'
 created_at: '2026-10-05T01:44:16'
 node_count: 8
-pipeline: docgen
-plan_id: 47c4f016
+pipeline: three_pass
+plan_id: 542469d6
 topology_hash: 6f706b933bce

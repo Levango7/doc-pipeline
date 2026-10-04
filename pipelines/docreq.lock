@@ -23,9 +23,15 @@ agents:
     - writer
     pool_size: 1
     version: '2.0'
+  requirements_analyzer:
+    config_hash: 6d1da7624de6
+    dependencies: []
+    pool_size: 1
+    version: '1.0'
   researcher_pool_0:
     config_hash: dacb28d53838
-    dependencies: &id001 []
+    dependencies: &id001
+    - requirements_analyzer
     pool_size: 2
     version: '2.0'
   researcher_pool_1:
@@ -46,7 +52,7 @@ agents:
     pool_size: 1
     version: '2.0'
 created_at: '2026-10-05T01:44:16'
-node_count: 8
-pipeline: docgen
-plan_id: 47c4f016
-topology_hash: 6f706b933bce
+node_count: 9
+pipeline: docreq
+plan_id: a16a3e6d
+topology_hash: 06008455dc1f

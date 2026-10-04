@@ -1,6 +1,6 @@
 agents:
   checker:
-    config_hash: e8cfc5dfe3f9
+    config_hash: 4cca84a3c824
     dependencies:
     - quality_gate
     pool_size: 1
@@ -18,7 +18,7 @@ agents:
     pool_size: 1
     version: '2.0'
   quality_gate:
-    config_hash: 27a3851a7e03
+    config_hash: e3ebdd7e47f8
     dependencies:
     - writer
     pool_size: 1
@@ -51,8 +51,8 @@ agents:
     - fetcher
     pool_size: 1
     version: '2.0'
-created_at: '2026-10-04T00:39:22'
+created_at: '2026-10-05T01:44:16'
 node_count: 9
 pipeline: docgen-render
-plan_id: 6d3736ef
+plan_id: ecf8a0d7
 topology_hash: 23d5d9b92290
