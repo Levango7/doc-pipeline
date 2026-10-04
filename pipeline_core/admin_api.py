@@ -54,9 +54,12 @@ from socketserver import ThreadingMixIn
 from typing import Any
 from urllib.parse import urlparse
 
+from . import scheduler as _scheduler_mod
+from .artifacts import task_output
 from .fast_json import dumps as _fast_dumps
 from .fast_json import loads as _fast_loads
 from .ids import new_task_id
+from .scheduler import resolve_pipeline_name
 
 _logger = logging.getLogger(__name__)
 
@@ -124,6 +127,13 @@ def _validate_webhook_url(url: str) -> tuple[bool, str]:
     if _is_private_ip(host):
         return False, f"host {host!r} 为私有/保留 IP，已拒绝（SSRF 防护）"
     return True, ""
+
+
+def _default_pipeline_from(orch) -> str:
+    """运行期配置里的 default_pipeline——只认真字符串（配置对象可能是 mock）。"""
+    cfg = getattr(orch, "config", None)
+    value = cfg.get("default_pipeline", "") if cfg is not None and hasattr(cfg, "get") else ""
+    return value if isinstance(value, str) else ""
 
 
 def _validate_output_path(path_str: str, base_dir: str | None = None) -> tuple[bool, str]:
@@ -743,25 +753,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not task:
             return self._json({"error": "task not found"}, 404)
         result = dict(getattr(task, "result", {}))
-        output_content = None
-        output_path_found = None
-        _MAX_OUTPUT = 512 * 1024
-        for key in ("safe_writer", "safewriter", "layout", "checker"):
-            val = result.get(key)
-            path = None
-            if isinstance(val, dict):
-                path = val.get("output_path") or val.get("path") or val.get("file")
-            elif isinstance(val, str) and val.endswith(".md"):
-                path = val
-            if path and Path(path).exists():
-                output_path_found = str(path)
-                with contextlib.suppress(Exception):
-                    size = Path(path).stat().st_size
-                    if size <= _MAX_OUTPUT:
-                        output_content = Path(path).read_text(encoding="utf-8")
-                    else:
-                        output_content = f"[文件过大 {size} bytes，已省略，路径: {path}]"
-                break
+        # 交付物由声明 WRITES_OUTPUT 的节点挂在任务上，接口层不再猜节点名
+        output_path_found, output_content = task_output(task)
         self._json({
             "id": task.id,
             "status": task.status.value if hasattr(task.status, "value") else str(task.status),
@@ -858,7 +851,11 @@ class AdminHandler(BaseHTTPRequestHandler):
             return self._json({"error": "missing 'query' field"}, 400)
 
         title = data.get("title", query)
-        pipeline_name = data.get("pipeline", "docgen")
+        pipeline_name, pipeline_err = resolve_pipeline_name(
+            str(data.get("pipeline", "")), _scheduler_mod.installed_pipelines(),
+            _default_pipeline_from(self.orch))
+        if pipeline_err:
+            return self._json({"error": pipeline_err}, 400)
         wait = bool(data.get("wait", False))
         output_path = data.get("output", "")
         # 安全修复 (P0): output 路径白名单校验，防止任意文件写入
@@ -903,20 +900,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             result = dict(getattr(task, "result", {}))
             response["result"] = result
             response["error"] = getattr(task, "error", None)
-            for key in ("safe_writer", "safewriter", "layout", "checker"):
-                val = result.get(key)
-                if isinstance(val, dict):
-                    path = val.get("output_path") or val.get("path") or val.get("file")
-                    if path and Path(path).exists():
-                        response["output_path"] = path
-                        with contextlib.suppress(Exception):
-                            response["output_content"] = Path(path).read_text(encoding="utf-8")
-                        break
-                elif isinstance(val, str) and val.endswith(".md") and Path(val).exists():
-                    response["output_path"] = val
-                    with contextlib.suppress(Exception):
-                        response["output_content"] = Path(val).read_text(encoding="utf-8")
-                    break
+            response["output_path"], response["output_content"] = task_output(task)
 
             self._detach_stream_callback(task_id, callback)
             with contextlib.suppress(OSError):
@@ -1420,10 +1404,17 @@ class AdminHandler(BaseHTTPRequestHandler):
         self._pump_sse(existing_callback, task_id, start_cursor=last_event_id)
 
     def _find_streaming_agent(self):
-        """查找具备 handle_streaming 能力的 writer agent 实例"""
-        for a in self.orch.registry._agents.values():
-            if hasattr(a, "handle_streaming"):
-                return a
+        """按**能力**找支持流式生成的节点实例（不按名字猜）。
+
+        旧实现遍历 `registry._agents.values()`——那存的是 AgentMeta.to_dict()
+        出来的 dict，`hasattr(dict, "handle_streaming")` 恒为 False，
+        于是本方法恒返回 None，API 提交的任务从来没能挂上流式回调
+        （调用方拿到 None 就静默跳过，SSE 只剩进度没有增量内容）。
+        """
+        for name in self.orch.registry.list_agent_names():
+            inst = self.orch.registry.get_instance(name)
+            if hasattr(inst, "_register_stream_callback"):
+                return inst
         return None
 
     def _start_stream_worker(self, writer_agent, task_id: str,
@@ -1438,18 +1429,19 @@ class AdminHandler(BaseHTTPRequestHandler):
             from pipeline_core.scheduler import Scheduler
             try:
                 sched = Scheduler()
-                plan = sched.parse("docgen")
+                name, err = resolve_pipeline_name(
+                    "", _scheduler_mod.installed_pipelines(), _default_pipeline_from(orch))
+                if err:
+                    callback.on_error(err)
+                    return
+                plan = sched.parse(name)
                 # 按 task_id 注册回调，writer 的 _restructure_document 会按 task_id 拾取
                 writer_agent._register_stream_callback(task_id, callback)
                 task = _aio.run(orch.run_plan_async(
                     plan, input_file=str(input_file), task_id=task_id
                 ))
                 # 流水线完成后发送 complete 事件
-                content = ""
-                if task and task.result:
-                    writer_result = task.result.get("writer", {})
-                    if isinstance(writer_result, dict):
-                        content = writer_result.get("content", "")
+                content = str(getattr(task, "output_content", "") or "") if task else ""
                 callback.on_complete(content, {
                     "status": task.status.value if task else "unknown",
                     "task_id": task_id,

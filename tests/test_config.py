@@ -65,8 +65,12 @@ class TestFileLoading:
     def test_deep_merge_preserves_unmatched_keys(self, tmp_json_config: Path):
         """配置文件只覆盖部分 key，其余 defaults 仍保留。"""
         c = ConfigCenter(config_file=str(tmp_json_config))
-        # 配置文件中没有 quality_gate，应保留 default
-        assert c.get("quality_gate.min_score") == 70
+        # 配置文件只覆盖 llm/researcher/execution，其余 default 必须原样保留。
+        # （原来这里断言的是 defaults 里的 quality_gate 项——那是一份从没人读的
+        # Agent 内置默认值，已随 P1-4 从 core 移除；语义用真实存在的键复验。）
+        assert c.get("execution.max_workers") == 8
+        assert c.get("checkpoint.dir") == "checkpoints"
+        assert c.get("llm.model") == "gpt-4"
 
 
 class TestEnvOverride:

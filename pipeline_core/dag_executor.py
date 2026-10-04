@@ -11,7 +11,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from .artifacts import collect_artifacts, normalize_declaration
+from .artifacts import collect_artifacts, normalize_declaration, output_artifact_name
 from .cache_manager import CacheManager
 from .circuit_breaker import backoff_with_jitter
 
@@ -318,6 +318,27 @@ class DAGExecutor:
             self._log("error", f"Agent {base} 的 PRODUCES 声明无效: {e}")
             return {}
 
+    def _record_task_output(self, task, meta, payload: dict, result, plan) -> None:
+        """声明 `WRITES_OUTPUT` 的节点成功后，把交付物挂到任务上。
+
+        接口层（Admin API / MCP）过去各自扫一遍
+        `("safe_writer","safewriter","layout","checker")` 去找产物路径——
+        三份重复的猜测，且把领域节点名写进了引擎外壳。
+        现在只有落盘节点自己声明终点，引擎按 `pipeline.output_artifact`
+        （默认 `content`）取载荷里的交付物。
+        """
+        if not isinstance(result, dict) or not getattr(meta, "writes_output", False):
+            return
+        if result.get("status") in ("error", "blocked", "fail"):
+            return
+        artifact = output_artifact_name(getattr(plan, "raw", None))
+        content = payload.get(artifact)
+        path = payload.get("target_file") or payload.get("target") or ""
+        if isinstance(content, str) and content:
+            task.output_content = content
+        if path:
+            task.output_path = str(path)
+
     def _artifacts_from(self, agent_name: str, result: dict) -> dict[str, Any]:
         """按 Agent 声明挑出该结果里算作产物的键（引擎不再猜 `content`）。"""
         produces = self._produces_of(agent_name)
@@ -461,6 +482,7 @@ class DAGExecutor:
                     f"{_HARD_FLOOR_PREFIX} 产出未过保真底线: {violations}")
 
             self.registry.set_status(base_agent, AgentStatus.STOPPED)
+            self._record_task_output(task, meta, msg_payload, result, plan)
             return result or {}
         except Exception:
             self.registry.set_status(base_agent, AgentStatus.ERROR)

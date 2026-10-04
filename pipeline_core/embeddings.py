@@ -229,10 +229,14 @@ def available_embedders() -> list[str]:
     "能力探测必须真实例化" 的结论一致。
     """
     out = ["hash"]
+    # 用 find_spec 而不是 import：sentence_transformers 会拉起 torch，
+    # 本机实测冷导入 78 秒——而 auto 只是想知道"有没有这个候选"，
+    # 真要用它（模型已缓存）才付得起加载成本。
     try:
-        import sentence_transformers  # noqa: F401
-        out.append("local")
-    except Exception:
+        import importlib.util
+        if importlib.util.find_spec("sentence_transformers") is not None:
+            out.append("local")
+    except (ImportError, ValueError):
         pass
     if os.environ.get("EMBEDDING_API_KEY") or os.environ.get("OPENAI_API_KEY"):
         out.append("api")

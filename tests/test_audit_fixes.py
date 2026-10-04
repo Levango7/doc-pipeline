@@ -321,7 +321,7 @@ class TestSubmitTaskTempCleanup:
 
     def test_wait_true_removes_temp_input(self):
         h = self._handler_with_orch()
-        h._handle_submit_task(b'{"query": "test topic", "wait": true}')
+        h._handle_submit_task(b'{"query": "test topic", "pipeline": "docgen", "wait": true}')
         call = h._json.call_args[0]
         assert len(call) == 1 or call[1] == 200
         input_arg = h.orch.run_plan.call_args.kwargs["input_file"]
@@ -329,7 +329,7 @@ class TestSubmitTaskTempCleanup:
 
     def test_wait_false_temp_removed_after_terminal(self):
         h = self._handler_with_task_lifecycle()
-        h._handle_submit_task(b'{"query": "async topic"}')
+        h._handle_submit_task(b'{"query": "async topic", "pipeline": "docgen"}')
         input_arg = h.orch.run_plan.call_args.kwargs["input_file"]
         import time as _t
         deadline = _t.time() + 5
@@ -486,7 +486,7 @@ class TestMcpBusinessFailureIsError:
             resp = self._server(orch)._handle_request({
                 "jsonrpc": "2.0", "id": 3, "method": "tools/call",
                 "params": {"name": "generate_document",
-                           "arguments": {"query": "topic"}},
+                           "arguments": {"query": "topic", "pipeline": "docgen"}},
             })
         assert "error" not in resp
         assert resp["result"]["isError"] is True
@@ -533,7 +533,9 @@ class TestMcpValidationAndOutput:
         task.status = SimpleNamespace(value="done")
         task.pipeline_name = "docgen"
         task.error = None
-        task.result = {"safe_writer": {"output_path": str(src)}}
+        # 交付物契约：由声明 WRITES_OUTPUT 的落盘节点挂在任务上
+        task.output_path = str(src)
+        task.output_content = "# Doc" + chr(10) + chr(10) + "content"
         orch = MagicMock()
         orch.run_plan.return_value = task
 
@@ -543,8 +545,8 @@ class TestMcpValidationAndOutput:
             resp = self._server(orch)._handle_request({
                 "jsonrpc": "2.0", "id": 12, "method": "tools/call",
                 "params": {"name": "generate_document",
-                           "arguments": {"query": "t", "wait": True,
-                                         "output": rel_target}},
+                           "arguments": {"query": "t", "pipeline": "docgen",
+                                         "wait": True, "output": rel_target}},
             })
             payload = json.loads(resp["result"]["content"][0]["text"])
             assert target_abs.exists()
@@ -569,7 +571,7 @@ class TestMcpValidationAndOutput:
         self._server(orch)._handle_request({
             "jsonrpc": "2.0", "id": 13, "method": "tools/call",
             "params": {"name": "generate_document",
-                       "arguments": {"query": "cleanup", "wait": True}},
+                       "arguments": {"query": "cleanup", "pipeline": "docgen", "wait": True}},
         })
         input_arg = orch.run_plan.call_args.kwargs["input_file"]
         assert Path(input_arg).exists() is False

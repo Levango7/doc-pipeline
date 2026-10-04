@@ -1,4 +1,5 @@
 {
+  "default_pipeline": "docgen",
   "parallel": true,
   "timeout": 300,
   "fail_fast": false,

@@ -36,6 +36,8 @@ from pipeline_core.admin_api import (
 def handler():
     h = AdminHandler.__new__(AdminHandler)
     h.orch = MagicMock()
+    # 交付流水线名的解析归引擎：外壳只拿 (名字, 错误)
+    h.orch.resolve_pipeline_name.return_value = ("docgen", "")
     h._json = MagicMock()
     h.headers = {}
     h.path = "/"
@@ -447,25 +449,26 @@ class TestBasicHandlers:
         task.id = "t1"
         task.status.value = "done"
         task.pipeline_name = "docgen"
-        task.result = {"safe_writer": {"output_path": str(out_file)}}
+        task.output_path = str(out_file)
+        task.output_content = ""
         handler.orch.get_task.return_value = task
         handler._handle_get_task("t1")
         data = handler._json.call_args[0][0]
         assert data["output_path"] == str(out_file)
         assert data["output_content"] == "# 文档内容"
 
-    def test_handle_get_task_string_path_variant(self, handler, tmp_path):
-        out_file = tmp_path / "doc2.md"
-        out_file.write_text("内容2", encoding="utf-8")
+    def test_handle_get_task_falls_back_to_inline_content(self, handler):
+        """落盘文件不在时（如容器内路径丢失）退回引擎记录的内存产出。"""
         task = MagicMock()
         task.id = "t2"
         task.status.value = "done"
         task.pipeline_name = "p"
-        task.result = {"layout": str(out_file)}
+        task.output_path = "output/gone.md"
+        task.output_content = "# 内存里的最终稿"
         handler.orch.get_task.return_value = task
         handler._handle_get_task("t2")
         data = handler._json.call_args[0][0]
-        assert data["output_content"] == "内容2"
+        assert data["output_content"] == "# 内存里的最终稿"
 
     def test_handle_rerun_task(self, handler):
         new_task = MagicMock()
@@ -555,7 +558,7 @@ class TestDashboardAndPipeline:
         assert data["circuit_breaker"]["state"] == "CLOSED"
 
     def test_handle_agent_detail_not_found(self, handler):
-        handler.orch.registry._agents = {}
+        handler.orch.registry._agents = {}     # 详情端点按 meta 表查
         handler._handle_agent_detail("ghost")
         assert handler._json.call_args[0][1] == 404
 
@@ -802,7 +805,7 @@ class TestHookHandlers:
 
 class TestSubmitTask:
     def _body(self, **kw):
-        base = {"query": "Kafka 架构"}
+        base = {"query": "Kafka 架构", "pipeline": "docgen"}
         base.update(kw)
         return json.dumps(base).encode()
 
@@ -813,7 +816,8 @@ class TestSubmitTask:
         task.id = "t-100"
         task.status.value = "done"
         task.pipeline_name = "docgen"
-        task.result = {"safe_writer": {"output_path": str(out_file)}}
+        task.output_path = str(out_file)
+        task.output_content = "# 输出"
         task.error = None
         handler.orch.run_plan.return_value = task
         handler._find_streaming_agent = MagicMock(return_value=None)
@@ -867,7 +871,8 @@ class TestStreamCallbackHelpers:
         writer = WriterAgent(
             name="writer", meta=AgentMeta(name="writer", version="2.0"),
             config={"quiet": True}, message_bus=None, registry=None)
-        handler.orch.registry._agents = {"writer": writer}
+        handler.orch.registry.list_agent_names.return_value = ["writer"]
+        handler.orch.registry.get_instance.return_value = writer
 
         cb = handler._attach_stream_callback("t-200")
         assert cb is not None
@@ -877,7 +882,7 @@ class TestStreamCallbackHelpers:
         assert cb.is_closed()
 
     def test_attach_without_writer_returns_none(self, handler):
-        handler.orch.registry._agents = {}
+        handler.orch.registry.list_agent_names.return_value = []
         assert handler._attach_stream_callback("t-201") is None
         handler._detach_stream_callback("t-201", None)  # None 回调直接返回
 

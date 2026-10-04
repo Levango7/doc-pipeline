@@ -111,3 +111,40 @@ def collect_artifacts(ordered_results: list[tuple[dict, dict[str, str]]],
             merge_artifact(merged, name, result[name], _strategy_for(strategy,
                                                                       result[name]))
     return merged
+
+
+def output_artifact_name(plan_raw: dict | None) -> str:
+    """本流水线"最终交付物"的 artifact 名。
+
+    默认 `content`（文本正文）。接口层与引擎都只认这个名字，
+    不再遍历 `safe_writer`/`layout`/`checker` 这些具体节点名。
+    """
+    raw = plan_raw or {}
+    name = (raw.get("pipeline", {}) or {}).get("output_artifact")
+    return str(name) if name else "content"
+
+
+def task_output(task, max_bytes: int = 512 * 1024) -> tuple[str | None, str | None]:
+    """取任务交付物 (路径, 内容)。
+
+    交付物由声明 `WRITES_OUTPUT` 的落盘节点在成功时挂到 task.output_*，
+    接口层不必再遍历 `safe_writer`/`layout`/`checker` 这类具体节点名去猜——
+    那份猜测此前在 admin_api 与 mcp_server 里各写了一份。
+    路径存在时优先读磁盘（落盘结果是最终态），否则回退到内存里的产出。
+    """
+    import logging
+    from pathlib import Path
+
+    path = str(getattr(task, "output_path", "") or "")
+    inline = getattr(task, "output_content", "") or ""
+    if path:
+        try:
+            pth = Path(path)
+            if pth.exists():
+                size = pth.stat().st_size
+                if size <= max_bytes:
+                    return path, pth.read_text(encoding="utf-8")
+                return path, f"[文件过大 {size} bytes，已省略，路径: {path}]"
+        except OSError as e:
+            logging.getLogger(__name__).debug("读取交付物失败 %s: %s", path, e)
+    return (path or None), (inline if isinstance(inline, str) and inline else None)

@@ -95,6 +95,44 @@ class ExecutionPlan:
 from . import config_schema as _config_schema  # noqa: E402
 
 
+def installed_pipelines(pipeline_dir: str | Path | None = None) -> list[str]:
+    """安装目录下的流水线清单（模块级函数，不挂在 Scheduler 上）。
+
+    两个原因：
+      1. 实例的 `pipeline_dir` 是相对路径，会随进程 cwd 变化——服务端外壳
+         在临时目录里跑就会得到"一条都没有"；
+      2. 测试普遍 patch `scheduler.Scheduler` 类，目录查询跟着变 mock 后
+         `list(MagicMock())` 是空迭代，可用清单被无声吞成空。
+    """
+    root = Path(pipeline_dir) if pipeline_dir else (
+        Path(__file__).parent.parent / "pipelines")
+    return sorted(p.stem for p in root.glob("*.yaml") if not p.name.startswith("_"))
+
+
+def resolve_pipeline_name(requested: str, available: list[str],
+                          configured: str = "") -> tuple[str, str]:
+    """决定跑哪条流水线，返回 (名字, 错误信息)。纯函数，便于两侧外壳共用。
+
+    引擎外壳（Admin API / MCP / OpenAPI）此前各自把 `"docgen"` 写成默认值，
+    等于在通用引擎里内置了一个具体产品。现在默认值来自配置，
+    只接受确实存在的流水线，歧义时不猜而是把可用清单回给调用方。
+    """
+    names = list(available or [])
+    name = str(requested or "").strip()
+    if not name:
+        cand = str(configured or "").strip()
+        name = cand if cand in names else ("" if cand else (names[0] if len(names) == 1 else ""))
+        if cand and cand not in names:
+            return "", (f"config.default_pipeline '{cand}' 不存在"
+                        f"（可用: {', '.join(names) or '无'}）")
+    if not name:
+        return "", ("未指定 pipeline，且无法确定默认值"
+                    f"（可用: {', '.join(names) or '无'}；可设 config.default_pipeline）")
+    if name not in names:
+        return "", f"pipeline '{name}' 不存在（可用: {', '.join(names) or '无'}）"
+    return name, ""
+
+
 class Scheduler:
     """读取 pipeline.yaml 并生成可执行计划"""
 

@@ -35,7 +35,6 @@ class ConfigCenter:
             "checkpoint": {"dir": "checkpoints", "max_age_days": 7},
             "agents": {"dir": "agents", "cache_dir": "cache", "log_dir": "logs"},
             "execution": {"max_workers": 8, "fail_fast": True, "max_retries": 3},
-            "quality_gate": {"min_score": 70, "max_regenerations": 3},
             "llm": {"api_key_env": "LLM_API_KEY", "model": "@cf/moonshotai/kimi-k2.6"},
         }
         previous = self._data

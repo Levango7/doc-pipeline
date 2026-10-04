@@ -29,6 +29,8 @@ AGENT_PRIORITY = 99
 INPUT_TOPICS = ["writer.done", "layout.done", "safe_writer.write", "safe_writer.input", "safewriter.input"]
 OUTPUT_TOPICS = ["safe_writer.done", "safe_writer.failed"]
 # 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：终态落盘，无下游产物
+# 本节点是流水线的落盘终点：引擎据此把交付物挂到 task.output_*
+WRITES_OUTPUT = True
 PRODUCES: dict = {}
 CONSUMES = ["content"]
 DEPENDENCIES = ["layout"]

@@ -23,8 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 重做循环不再猜目标：声明 `SUPPORTS_REGENERATION` 必须给 `REGENERATION_TARGET`；
     反馈载荷不再拆 `quality_scores`/`citation_report` 等 gate 专属键（实测无 Agent 读），
     整体转发为 `gate_feedback`。
-  - 护栏：`tests/test_artifact_contract.py` 的 `TestCoreStaysDomainNeutral` 用 AST
-    扫 7 个 core 模块的代码级字符串常量，领域 Agent 名一旦回流 core 即失败。
+  - **P1-4 接口层去领域化**：Admin API / MCP / OpenAPI 此前各自把 `"docgen"` 写成
+    默认流水线名，并各写一份"从 result 里翻 safe_writer/layout/checker 找产出"的
+    猜测。现在：落盘节点声明 `WRITES_OUTPUT`，引擎把交付物挂到
+    `task.output_path/output_content`，接口层共用 `artifacts.task_output`；
+    默认值改由 `config.default_pipeline` 提供（纯函数
+    `scheduler.resolve_pipeline_name` 解析，歧义时报错列出可用清单而不猜）。
+    OpenAPI 的 `pipeline` 字段改为 enum 列举真实流水线。
+- 护栏：`tests/test_artifact_contract.py` 的 `TestCoreStaysDomainNeutral` 用 AST
+    扫 11 个 core 模块的代码级字符串常量，领域 Agent 名一旦回流 core 即失败。
 
 - **kb-docgen 流水线**：把此前未被任何流水线引用的摄入层 / 向量知识库接进编排，
   实现"本地资料 → 建库检索 → 知识库接地写作"。离线（无 LLM Key）也能交付
@@ -40,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed（2026-10-05）
 
+- **SSE 流式回调从来没挂上过**：`admin_api._find_streaming_agent` 遍历
+  `registry._agents.values()`——那存的是 `AgentMeta.to_dict()` 的 dict，
+  `hasattr(dict, "handle_streaming")` 恒为 False，于是方法恒返回 None，
+  API 提交的任务静默失去增量内容。改为按能力在实例上查找。
+- **`embedder: auto` 冷导入 sentence_transformers 78 秒**（拉起 torch）：
+  auto 只需知道"有没有这个候选"，改用 `find_spec`；真要用（模型已缓存）
+  才付加载成本。kb-docgen CLI 实测 78s → 3.9s。
 - **默认流水线跑错定义文件**：`--pipeline docgen` 因 `glob("docgen*.yaml")` 前缀
   匹配 + 首个成功即返回，实际一直在跑 `docgen-render.yaml`；改为精确同名优先、
   多义显式报错（`run.py`）。

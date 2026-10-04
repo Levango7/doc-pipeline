@@ -42,11 +42,12 @@ class TestMCPServer:
         task = SimpleNamespace(id="tid", status=SimpleNamespace(value="running"),
                                pipeline_name="docgen", result={}, error=None)
         orch = MagicMock()
+        orch.resolve_pipeline_name.return_value = ("docgen", "")
         orch.run_plan.return_value = task
         s = MCPServer(orch=orch)
         with patch("pipeline_core.mcp_server.new_task_id",
                    side_effect=new_task_id) as mock_gen:
-            s._tool_generate_document(11, {"query": "t"})
+            s._tool_generate_document(11, {"query": "t", "pipeline": "docgen"})
             mock_gen.assert_called_once()
         input_arg = orch.run_plan.call_args.kwargs["input_file"]
         stem = Path(input_arg).stem

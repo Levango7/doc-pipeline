@@ -225,6 +225,10 @@ class TestCoreStaysDomainNeutral:
         "pipeline_core.dag_executor", "pipeline_core.artifacts",
         "pipeline_core.registry", "pipeline_core.message_bus_v3",
         "pipeline_core.pipeline", "pipeline_core.agent_loader",
+        # 接口层也纳入：外壳内置 "docgen" 等于在通用引擎里塞了一个具体产品
+        "pipeline_core.admin_api", "pipeline_core.mcp_server",
+        "pipeline_core.openapi_spec", "pipeline_core.config",
+        "pipeline_core.scheduler",
     ])
     def test_no_agent_names_in_orchestration_core(self, mod_name):
         import importlib

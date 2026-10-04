@@ -6,6 +6,15 @@
 from __future__ import annotations
 
 
+def _available_pipelines() -> list[str]:
+    """把可用流水线列进 OpenAPI 的 enum，而不是在规范里写死一个产品名。"""
+    try:
+        from .scheduler import Scheduler
+        return Scheduler().list_pipelines()
+    except Exception:  # pragma: no cover - 规范生成不该因目录问题失败
+        return []
+
+
 def _schemas() -> dict:
     """components.schemas 定义"""
     return {
@@ -15,7 +24,12 @@ def _schemas() -> dict:
             "properties": {
                 "query": {"type": "string", "description": "文档主题/查询"},
                 "title": {"type": "string", "description": "文档标题"},
-                "pipeline": {"type": "string", "default": "docgen"},
+                "pipeline": {
+                    "type": "string",
+                    "description": "流水线名；缺省用 config.default_pipeline，"
+                                   "未配置且存在多条时接口返回 400 并列出可用值",
+                    "enum": _available_pipelines(),
+                },
                 "wait": {"type": "boolean", "default": False},
                 "output": {"type": "string", "description": "输出文件路径（白名单目录内）"},
             },

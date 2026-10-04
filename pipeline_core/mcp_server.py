@@ -36,9 +36,12 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from . import scheduler as _scheduler_mod
+from .artifacts import task_output
 from .fast_json import dumps as _fast_dumps
 from .fast_json import loads as _fast_loads
 from .ids import new_task_id
+from .scheduler import resolve_pipeline_name
 
 try:
     from . import __version__ as SERVER_VERSION
@@ -49,6 +52,13 @@ PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "doc-pipeline"
 
 # 项目根锚（与 generate_document / list_pipelines 共用，消除同文件内分叉）
+def _default_pipeline_from(orch) -> str:
+    """运行期配置里的 default_pipeline——只认真字符串。"""
+    cfg = getattr(orch, "config", None)
+    value = cfg.get("default_pipeline", "") if cfg is not None and hasattr(cfg, "get") else ""
+    return value if isinstance(value, str) else ""
+
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # task_id 仅允许字母、数字、下划线、连字符（对齐 admin_api._validate_task_id）
@@ -98,8 +108,8 @@ TOOLS = [
                 },
                 "pipeline": {
                     "type": "string",
-                    "description": "流水线名（可选，默认 docgen）",
-                    "default": "docgen",
+                    "description": "流水线名（可选，缺省用 config.default_pipeline；"
+                                   "未配置且存在多条时会报错并列出可用值）",
                 },
                 "wait": {
                     "type": "boolean",
@@ -152,8 +162,8 @@ TOOLS = [
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "流水线名（默认 docgen）",
-                    "default": "docgen",
+                    "description": "流水线名（缺省用 config.default_pipeline；"
+                                   "未配置且存在多条时会报错并列出可用值）",
                 },
             },
         },
@@ -236,7 +246,7 @@ class MCPServer:
             return self._tool_error(req_id, "Missing 'query' argument")
 
         title = args.get("title", query)
-        pipeline_name = args.get("pipeline", "docgen")
+        pipeline_name = args.get("pipeline", "")
         wait = bool(args.get("wait", False))
         output_arg = str(args.get("output", "") or "")
 
@@ -251,10 +261,17 @@ class MCPServer:
         input_file = Path(tempfile.gettempdir()) / f"mcp_{task_id}.md"
         input_file.write_text(f"# {title}\n\n## 查询\n\n{query}\n", encoding="utf-8")
 
+        resolved, err = resolve_pipeline_name(
+            pipeline_name, _scheduler_mod.installed_pipelines(),
+            _default_pipeline_from(self.orch))
+        if err:
+            with contextlib.suppress(OSError):
+                input_file.unlink()
+            return self._tool_error(req_id, err)
         try:
             from .scheduler import Scheduler
             sched = Scheduler()
-            plan = sched.parse(pipeline_name)
+            plan = sched.parse(resolved)
         except Exception as e:
             with contextlib.suppress(OSError):
                 input_file.unlink()
@@ -303,21 +320,9 @@ class MCPServer:
 
     @staticmethod
     def _extract_output_content(task) -> tuple[Path | None, str | None]:
-        """从任务结果中提取输出路径与最终文档内容（与 admin_api 同样的 key 约定）"""
-        result = dict(getattr(task, "result", {}) or {})
-        for key in ("safe_writer", "safewriter", "layout", "checker"):
-            val = result.get(key)
-            path = None
-            if isinstance(val, dict):
-                path = val.get("output_path") or val.get("path") or val.get("file")
-            elif isinstance(val, str) and val.endswith(".md"):
-                path = val
-            if path and Path(path).exists():
-                try:
-                    return Path(path), Path(path).read_text(encoding="utf-8")
-                except Exception:
-                    return Path(path), None
-        return None, None
+        """交付物取自引擎记录的 task.output_*（与 Admin API 同一份实现）。"""
+        path, content = task_output(task)
+        return (Path(path) if path else None), content
 
     @staticmethod
     def _write_output_target(result: dict, content: str | None,
@@ -406,7 +411,11 @@ class MCPServer:
         return self._tool_result(req_id, {"pipelines": pipelines})
 
     def _tool_get_pipeline_info(self, req_id: Any, args: dict) -> dict:
-        name = args.get("name", "docgen")
+        name = args.get("name", "")
+        name, err = resolve_pipeline_name(name, _scheduler_mod.installed_pipelines(),
+                                          _default_pipeline_from(self.orch))
+        if err:
+            return self._tool_error(req_id, err)
         try:
             from .scheduler import Scheduler
             sched = Scheduler()

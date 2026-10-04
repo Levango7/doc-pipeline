@@ -134,6 +134,10 @@ class PipelineTask:
     steps: list[StepResult] = field(default_factory=list)
     current_step: int = 0
     result: dict = field(default_factory=dict)
+    # 落盘终点（由声明 WRITES_OUTPUT 的节点在执行成功时写入）：
+    # 接口层直接读这两个字段，不再靠猜 agent 名去 result 里翻找
+    output_path: str = ""
+    output_content: str = ""
     started_at: float = 0
     finished_at: float = 0
     error: str = ""
@@ -1013,6 +1017,15 @@ class PipelineOrchestrator:
             self._logger.log("error", "Audit log 失败", error=str(e))
 
     # ─── 查询 ─────────────────────────────
+
+    def resolve_pipeline_name(self, requested: str = "") -> tuple[str, str]:
+        """跑哪条流水线：默认值来自 config.default_pipeline，歧义不猜。"""
+        from .scheduler import Scheduler, resolve_pipeline_name
+        return resolve_pipeline_name(
+            requested,
+            Scheduler.installed_pipelines(),
+            str(self.config.get("default_pipeline", "") or ""),
+        )
 
     def get_task(self, task_id: str) -> PipelineTask | None:
         return self._running_tasks.get(task_id)

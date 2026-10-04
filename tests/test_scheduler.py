@@ -181,3 +181,40 @@ class TestSchedulerFromDict:
         assert len(w_node.dependencies) == 2
         for i in range(2):
             assert f"f_pool_{i}" in w_node.dependencies
+
+# ─── 流水线名解析（外壳不再内置默认产品名）─────────────────
+
+from pipeline_core.scheduler import installed_pipelines, resolve_pipeline_name  # noqa: E402
+
+
+class TestResolvePipelineName:
+    AVAILABLE = ["docgen", "docgen-render", "kb-docgen"]
+
+    def test_explicit_name_wins(self):
+        assert resolve_pipeline_name("kb-docgen", self.AVAILABLE, "docgen") == ("kb-docgen", "")
+
+    def test_configured_default_is_used(self):
+        assert resolve_pipeline_name("", self.AVAILABLE, "kb-docgen") == ("kb-docgen", "")
+
+    def test_unknown_explicit_name_is_rejected_with_choices(self):
+        name, err = resolve_pipeline_name("nope", self.AVAILABLE, "docgen")
+        assert name == ""
+        assert "不存在" in err and "kb-docgen" in err
+
+    def test_ambiguity_is_not_guessed_when_no_default(self):
+        """多条流水线且没配默认值 → 报错列出可用，绝不静默挑一个。"""
+        name, err = resolve_pipeline_name("", self.AVAILABLE, "")
+        assert name == "" and "未指定" in err
+
+    def test_single_pipeline_is_implicit_default(self):
+        assert resolve_pipeline_name("", ["only"], "") == ("only", "")
+
+    def test_stale_config_default_is_reported_not_swallowed(self):
+        name, err = resolve_pipeline_name("", self.AVAILABLE, "removed_pipeline")
+        assert name == "" and "default_pipeline" in err
+
+    def test_installed_pipelines_is_cwd_independent(self, tmp_path, monkeypatch):
+        """实例默认 pipeline_dir 是相对路径；外壳要用安装目录视角。"""
+        monkeypatch.chdir(tmp_path)
+        assert "docgen" in installed_pipelines()
+        assert installed_pipelines(tmp_path) == []
