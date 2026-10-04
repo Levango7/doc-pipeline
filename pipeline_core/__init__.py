@@ -1,6 +1,10 @@
 """
-pipeline_core v3 - 文档生成流水线核心框架
+pipeline_core v3 - 工作流引擎层（领域无关）
 =========================================
+DAG 编排、消息总线、重试/熔断/限流、检查点与 Agent 加载。
+文档领域能力（渲染/摄入/增强）在 `docpipeline/`，本包不得反向依赖它
+（依赖方向由 tests/test_layering.py 把关）。
+
 核心特性：
   - 消息总线支持异步广播和死信队列 (v3)
   - Registry 支持健康检查和自动恢复
@@ -21,7 +25,6 @@ from .circuit_breaker import CircuitBreakerRegistry, backoff_with_jitter
 from .config import ConfigCenter
 from .cost_tracker import CostTracker, calc_cost, estimate_tokens, get_cost_tracker
 from .dag_executor import DAGExecutor
-from .document_enhancer import DocumentEnhancer
 from .event_hook import EventHookManager, emit_event, get_hook_manager
 from .executor_factory import SmartExecutor, create_executor, is_process_executor
 from .llm_router import LLMRouter, get_router, reset_router
@@ -65,7 +68,6 @@ __all__ = [
     "StreamEvent", "StreamCallback", "StreamMetrics",
     "register_callback", "get_callback", "unregister_callback",
     "create_executor", "is_process_executor", "SmartExecutor",
-    "DocumentEnhancer",
     "run_startup_check", "quick_check", "StartupReport",
     "EventHookManager", "get_hook_manager", "emit_event",
     "VersionManager", "VersionEntry", "get_version_manager",

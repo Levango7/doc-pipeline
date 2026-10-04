@@ -8,7 +8,7 @@ DocumentEnhancer - 已有文档增强模块
   - 格式转换导出（HTML/Word）
 
 用法：
-  from pipeline_core.document_enhancer import DocumentEnhancer
+  from docpipeline.document_enhancer import DocumentEnhancer
   enhancer = DocumentEnhancer()
   result = enhancer.enhance("input.md", output_dir="output/")
 """

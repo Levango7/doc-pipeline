@@ -524,7 +524,7 @@ class TestMainBranches:
                                 "--enhance-output", "out", "--no-search",
                                 "--fix-ascii", "--export", "html"]), \
                 patch("pipeline_core.bootstrap.quick_check", return_value=True), \
-                patch("pipeline_core.document_enhancer.DocumentEnhancer") as cls, \
+                patch("docpipeline.document_enhancer.DocumentEnhancer") as cls, \
                 patch.object(run, "_run_ascii_fix") as fix, \
                 patch.object(run, "_run_export") as exp:
             cls.return_value.enhance.return_value = result

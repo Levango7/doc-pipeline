@@ -44,6 +44,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （`DOC_PIPELINE_STATE_DIR` / `DOC_PIPELINE_VERSIONS_DIR`）。
 - **edges 一致性校验**（`scheduler.py`）：`topology.edges` 与 agent.dependencies
   双向比对；七条流水线全部补齐 lockfile（此前只有 2 条受漂移护栏保护）。
+- **分层拆包：文档领域层独立成 `docpipeline/`**（Phase 1 收口）。
+  `renderer.py` / `ingest.py` / `document_enhancer.py` 从 `pipeline_core/` 移出，
+  `pipeline_core` 不再导出 `DocumentEnhancer`。这三个模块此前不依赖任何领域无关
+  引擎能力（`ingest`/`renderer` 根本不 import `pipeline_core`，只在函数内惰性加载
+  可选后端 docx/reportlab/pymupdf/paddleocr/mineru；`document_enhancer` 只用到
+  `llm_router` + `search_engines`），是 engine 里仅剩的文档域代码。
+  依赖方向钉成单向 `agents → docpipeline → pipeline_core`，由
+  `tests/test_layering.py` 用 AST 扫描当门禁（含函数体内的惰性 import 与
+  `importlib.import_module("…")` 字面量）。四条判据都做过注入式正例验证：
+  往 core 塞一句 `from docpipeline import renderer`、往 ingest 塞 `import numpy`、
+  把 `python-docx` 从 requirements 注释掉、往 renderer 加 `import scripts…`——
+  各自转红，确认"0 违规"是结论而不是空转。
+  docpipeline 的非标准库依赖改为显式登记制（`pipeline_core` / `scripts` /
+  已声明的 docx·reportlab·pymupdf / 有意不进 requirements 的 paddleocr·mineru），
+  新增外部依赖必须先在登记表认领；其中 `docpipeline → scripts`
+  是钉住的历史耦合，只允许 `document_enhancer` 一处。
+  `docpipeline/__init__.py` 不做顶层 re-export，避免同一函数出现两个打桩入口。
+  CI 的 py_compile/mypy/bandit 口径与 pyproject `packages`/coverage `include`
+  同步纳入 `docpipeline/`，否则搬出去的代码会静默脱离门禁。
 
 ### Fixed（2026-10-05）
 

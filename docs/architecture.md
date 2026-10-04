@@ -43,6 +43,36 @@
          alert_manager.py / quality_feedback.py / version_manager.py
 ```
 
+### 1.1 包级分层与依赖方向
+
+上面是运行时层次；源码按**包**分成了两层，方向必须单向：
+
+```
+    agents/            插件层：具体能力，由 agent_loader 按目录发现
+        │  可以 import ↓，两边都不许反过来硬编码 import
+    docpipeline/       文档领域层：renderer / ingest / document_enhancer
+        │  可以 import ↓
+    pipeline_core/     引擎层：DAG、总线、重试/熔断/限流、检查点、Schema
+```
+
+约束与理由：
+
+| 规则 | 理由 |
+|------|------|
+| `pipeline_core` 不得 import `docpipeline` | 引擎不认识具体领域。一旦反向引用，非文档类工作流就得改引擎 |
+| `pipeline_core` 不得 import `agents` | Agent 靠目录发现 + AST 沙箱加载，硬编码会让新增 Agent 必须改引擎 |
+| `docpipeline` 不得 import `agents` | 插件调用领域层是正方向，反向成环 |
+| `docpipeline/__init__.py` 不做顶层 re-export | 保留唯一模块路径，避免 `docpipeline.render` 与 `docpipeline.renderer.render` 两个打桩入口造成的假绿 |
+| `docpipeline` 的外部依赖需逐条登记 | 新增非标准库 import 必须先在 `tests/test_layering.py` 的登记表认领；`docpipeline → scripts` 是钉住的历史耦合，只允许 `document_enhancer` 一处 |
+
+以上由 `tests/test_layering.py` 用 AST 静态扫描当门禁——覆盖函数体内的惰性
+import 和 `importlib.import_module("...")` 字面量，而不只是文件头部那几行。
+四条判据都做过注入式正例验证（往 core 塞一句 `from docpipeline import renderer`
+即转红），否则"0 违规"只是扫描器空转，不算结论。
+
+> `docpipeline` 只依赖 `pipeline_core` 的 `llm_router` / `search_engines`
+> （`document_enhancer` 用到），这两个仍是引擎级横切组件，没有跟着搬。
+
 ## 2. 核心概念
 
 | 概念 | 定义位置 | 说明 |

@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pipeline_core import ingest  # noqa: E402
+from docpipeline import ingest  # noqa: E402
 
 print("可用后端:", ingest.available_backends())
 print("OCR 后端:", ingest.ocr_backend() or "无")

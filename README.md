@@ -211,10 +211,11 @@ python run.py test_input.md --dashboard
 | `pipeline_core/mcp_server.py` | MCP Server（JSON-RPC 2.0 over stdio，5 tools） |
 | `pipeline_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
 | `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
-| `pipeline_core/renderer.py` | 渲染层：Markdown → docx（OOXML）/ pdf（ReportLab），双后端可选依赖 |
+| `docpipeline/renderer.py` | 渲染层：Markdown → docx（OOXML）/ pdf（ReportLab），双后端可选依赖 |
 | `pipeline_core/selectolax_compat.py` | HTML 解析内核兼容层（modest/lexbor 按可用性选，降级显式记录） |
 | `pipeline_core/state_paths.py` | 运行态路径解析（`DOC_PIPELINE_STATE_DIR` / `DOC_PIPELINE_VERSIONS_DIR`），测试与真实运行不再共用一份幂等键历史 |
-| `pipeline_core/ingest.py` | 摄入层：PDF/图片/文本 → 结构化 Markdown（PDF 按字号推断标题层级） |
+| `docpipeline/ingest.py` | 摄入层：PDF/图片/文本 → 结构化 Markdown（PDF 按字号推断标题层级） |
+| `docpipeline/document_enhancer.py` | 文档增强：对已有 Markdown 逐章节 LLM 深化 + ASCII 图修复 + 导出 |
 | `pipeline_core/knowledge_base.py` | 知识库：切块 → 向量化 → SQLite 持久化 → 向量检索 |
 | `pipeline_core/embeddings.py` | 嵌入层：可插拔后端（hash 内置 / local 模型 / API），auto 自动回落 |
 | `agents/` | 12 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/fact_checker/layout/safe_writer/requirements_analyzer/renderer/ingest/knowledge_base） |
@@ -521,7 +522,7 @@ docx/pdf，把失败伪装成成功（`tests/test_fidelity_gate.py` 锁住该回
 ```
 doc-pipeline/
 ├── agents/              # 12 个 Agent 实现
-├── pipeline_core/       # 核心编排框架（38 个模块）
+├── pipeline_core/       # 引擎层：领域无关的编排框架（不 import 文档层）
 │   ├── pipeline.py      # Orchestrator（统一节点模型）
 │   ├── dag_executor.py  # DAG 构建 + 节点调度
 │   ├── scheduler.py     # YAML → ExecutionPlan + Schema + Lockfile
@@ -545,6 +546,10 @@ doc-pipeline/
 │   ├── agent_loader.py  # Agent 安全加载（沙箱）
 │   ├── streaming.py     # SSE 流式输出
 │   └── ...              # 更多模块
+├── docpipeline/         # 文档领域层（只依赖 pipeline_core，方向单向）
+│   ├── renderer.py      # Markdown → docx / pdf
+│   ├── ingest.py        # PDF / 图片 / 文本 → 结构化 Markdown
+│   └── document_enhancer.py # 已有文档逐章节 LLM 增强
 ├── pipelines/           # Pipeline 定义 + Quality Profile
 │   ├── docgen.yaml      # 默认文档生成流水线
 │   ├── docgen-render.yaml # 追加 renderer 节点，产出 docx/pdf

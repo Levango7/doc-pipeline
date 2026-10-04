@@ -41,7 +41,7 @@ all = [
 doc-pipeline = "run:main"
 
 [tool.setuptools]
-packages = ["pipeline_core", "agents", "scripts"]
+packages = ["pipeline_core", "docpipeline", "agents", "scripts"]
 py-modules = ["run"]
 
 [tool.pytest.ini_options]
@@ -56,7 +56,7 @@ markers = [
 # 覆盖率只计产品源码：tests/scripts/benchmark 不入门禁
 # （--cov=. 会把 tests/ 自身的近 100% 计入，虚高到 ~79%，无门禁价值）
 relative_files = true
-include = ["pipeline_core/*", "agents/*", "run.py"]
+include = ["pipeline_core/*", "docpipeline/*", "agents/*", "run.py"]
 omit = ["tests/*", "scripts/*", "benchmark.py"]
 
 [tool.coverage.report]

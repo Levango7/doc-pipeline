@@ -248,7 +248,7 @@ class TestIngestComposition:
 
     def test_image_without_ocr_reports_hint(self, tmp_path, monkeypatch):
         """图片需 OCR 时必须如实回报，不能静默跳过。"""
-        from pipeline_core import ingest as ing
+        from docpipeline import ingest as ing
         monkeypatch.setattr(ing, "ocr_backend", lambda: None)
         img = tmp_path / "scan.png"
         img.write_bytes(b"\x89PNG\r\n")

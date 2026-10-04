@@ -3,6 +3,17 @@
 本文说明如何为 doc-pipeline 编写自定义 Agent。所有内容以当前代码为准：
 契约定义见 `pipeline_core/base_agent.py`，加载与沙箱见 `pipeline_core/agent_loader.py`。
 
+**新代码放哪一层**（依赖方向单向，由 `tests/test_layering.py` 当门禁）：
+
+| 位置 | 放什么 | 约束 |
+|------|--------|------|
+| `agents/` | 一个可被流水线订阅的能力（Agent） | 由加载器按目录发现，不得被 `pipeline_core` 硬编码 import |
+| `docpipeline/` | 文档领域的纯函数/类：渲染、摄入、增强 | 只能依赖 `pipeline_core`；Agent 薄壳调用它 |
+| `pipeline_core/` | 换一种任务类型仍然成立的引擎原语 | 不得 import `docpipeline` / `agents`，不得出现领域名词 |
+
+判据：如果去掉"文档"这个场景，这段代码还有用，它属于 `pipeline_core`；
+否则它是领域层或 Agent。
+
 ---
 
 ## 1. Agent 模块契约

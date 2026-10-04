@@ -17,8 +17,8 @@
 """
 from pathlib import Path
 
+from docpipeline import ingest as ingest_core
 from pipeline_core import embeddings as emb_core
-from pipeline_core import ingest as ingest_core
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 from pipeline_core.knowledge_base import KnowledgeBase
 

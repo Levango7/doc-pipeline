@@ -562,7 +562,7 @@ def main():
 
     # ─── 文档增强模式 ──────────────────────────
     if args.enhance:
-        from pipeline_core.document_enhancer import DocumentEnhancer
+        from docpipeline.document_enhancer import DocumentEnhancer
         output_dir = args.enhance_output or "output"
         with_search = not args.no_search
         print(f"\n[enhance] 开始增强文档: {args.input}")
