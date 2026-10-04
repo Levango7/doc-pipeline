@@ -39,6 +39,11 @@ REGENERATION_TARGET = "writer"
 REGENERATION_RECHECK = "quality_gate"
 AGENT_TAGS = ["quality", "gate"]
 
+# 产出保真底线（先于评分维度判定）
+DEFAULT_MIN_OUTPUT_CHARS = 120
+# 已知的"没内容"标志语：writer 缺素材时的占位
+PLACEHOLDER_MARKERS = ("未采集到可整合的搜索结果", "无待整合内容")
+
 # 默认配置文件路径
 QUALITY_DIR = Path(__file__).parent.parent / "pipelines" / "quality"
 DEFAULT_PROFILE = "technical-doc.yaml"
@@ -198,6 +203,32 @@ class QualityGateAgent(BaseAgent):
             self._profile_cache.setdefault(profile_key, (profile, style_rules))
         return profile, style_rules
 
+    def _fidelity_violations(self, content: str, run_config: dict) -> list[str]:
+        """产出保真底线判据：内容量 + 已知占位语。
+
+        与评分维度的分工：评分量的是"写得好不好"，可以被风格/引用扣分
+        拉低后仍放行；底线量的是"有没有真实产出"，命中即判失败，
+        不重做也不 accepted_with_warnings。
+        """
+        text = (content or "").strip()
+        violations: list[str] = []
+        try:
+            min_chars = int(run_config.get("min_output_chars",
+                                           DEFAULT_MIN_OUTPUT_CHARS))
+        except (TypeError, ValueError):
+            self.log_warning(f"config.min_output_chars 无效: "
+                             f"{run_config.get('min_output_chars')!r}，用默认值")
+            min_chars = DEFAULT_MIN_OUTPUT_CHARS
+        if len(text) < min_chars:
+            violations.append(f"内容过短（{len(text)} < {min_chars} 字符）")
+        markers = run_config.get("placeholder_markers")
+        if not isinstance(markers, list):
+            markers = list(PLACEHOLDER_MARKERS)
+        for marker in markers:
+            if marker and str(marker) in text:
+                violations.append(f"产出为占位内容（命中“{marker}”）")
+        return violations
+
     def _resolve_run_cfg(self, run_config: dict) -> _RunCfg:
         """解析本次请求的运行配置：profile（run_config 指定，否则沿用初始化 profile）+ 覆盖项。
 
@@ -242,6 +273,31 @@ class QualityGateAgent(BaseAgent):
         # 支持从流水线配置覆盖 Quality Profile（按请求解析，不修改共享实例状态）
         run_config = payload.get("config", {})
         cfg = self._resolve_run_cfg(run_config)
+
+        # ── 产出保真底线（先于评分）──
+        # 评分维度回答"写得好不好"，底线回答"到底有没有内容"。
+        # 此前无底线：writer 缺素材时写的占位文档（"未采集到可整合的搜索结果"，
+        # 实测 99 字节）能一路走到落盘并把整条流水线报成成功。
+        violations = self._fidelity_violations(content, run_config)
+        if violations:
+            hard_fail = {
+                "status": "fail",
+                "task_id": task_id,
+                "hard_floor": True,
+                "overall_score": 0,
+                "violations": violations,
+                "profile": cfg.profile_name,
+                "needs_regenerate": False,
+                "can_regenerate": False,
+                "generation_count": generation_count,
+            }
+            self.log_error(
+                f"产出未过保真底线，判定失败（不重做、不放行）: {'；'.join(violations)}")
+            self.publish("quality_gate.failed", hard_fail)
+            # 底线失败也要进反馈闭环与事件钩子：跳过记录会让"没产出"这种
+            # 最需要学习的样本从历史统计里消失（且下游契约依赖这两次调用）。
+            self._notify_feedback(task_id, cfg, {}, 0.0, False, False, generation_count)
+            return hard_fail
 
         # 多维度评分（按 cfg weights）
         queries = payload.get("queries", []) or []
@@ -292,21 +348,28 @@ class QualityGateAgent(BaseAgent):
 
         self.publish("quality_gate.done" if not needs_regenerate else "quality_gate.failed", result)
 
+        self._notify_feedback(task_id, cfg, scores, overall,
+                              needs_regenerate, can_regenerate, generation_count)
+
+        return result
+
+    def _notify_feedback(self, task_id: str, cfg: _RunCfg, scores: dict,
+                         overall: float, needs_regenerate: bool,
+                         can_regenerate: bool, generation_count: int) -> None:
+        """质量结果进反馈闭环 + 事件钩子（两条判定路径共用，语义必须一致）。"""
         with contextlib.suppress(Exception):
             from pipeline_core.quality_feedback import record_quality
             record_quality(task_id=task_id, scores={k: round(v, 1) for k, v in scores.items()},
                            pipeline=cfg.profile_name)
 
-        # ── 事件钩子 ──
         with contextlib.suppress(Exception):
             from pipeline_core.event_hook import emit_event
             emit_event("quality_gate.evaluated", {"task_id": task_id, "score": round(overall, 1),
-                       "threshold": cfg.threshold, "passed": not needs_regenerate, "profile": cfg.profile_name})
+                       "threshold": cfg.threshold, "passed": not needs_regenerate,
+                       "profile": cfg.profile_name})
             if needs_regenerate and can_regenerate:
                 emit_event("quality_gate.regenerate", {"task_id": task_id, "score": round(overall, 1),
                            "generation_count": generation_count, "target": "writer"})
-
-        return result
 
     # ── 多维度评分 ─────────────────────
 

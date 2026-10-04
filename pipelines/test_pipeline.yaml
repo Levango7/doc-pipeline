@@ -41,6 +41,11 @@ agents:
     config:
       quality_profile: technical-doc
       threshold: 70
+      # 本文件是**编排接线夹具**（mock 引擎 → writer 产出占位内容），
+      # 不是内容门禁的验收对象；产出保真底线在这里两条判据都显式关闭，
+      # 真实流水线的底线行为见 tests/test_fidelity_gate.py。
+      min_output_chars: 0
+      placeholder_markers: []
       max_regenerations: 3
       weights:
         completeness: 0.25

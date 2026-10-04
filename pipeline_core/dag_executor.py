@@ -15,6 +15,10 @@ from .circuit_breaker import backoff_with_jitter
 
 # ─── 模块级函数：支持 ProcessPoolExecutor pickle ──────────────────
 
+# 产出保真底线失败的前缀标记：错误串经重试路径只剩文本，用前把"硬失败"
+# 与可容忍的软失败区分开，使 fail_fast=false 也不能把它兑成 done
+_HARD_FLOOR_PREFIX = "HARD_FLOOR:"
+
 # 子进程上下文缓存（每个 worker 进程仅重建一次；Windows spawn 下模块级状态按进程隔离）
 _CHILD_CONTEXT_LOCK = threading.Lock()
 _CHILD_CONTEXT = None
@@ -363,6 +367,21 @@ class DAGExecutor:
                 idempotency_key=idempotency_key,
             )
 
+            # 幂等键命中历史 → 订阅者根本没被触达，不能算执行成功
+            if isinstance(result, dict) and \
+                    result.get("error") == "duplicate_idempotency_key":
+                raise RuntimeError(
+                    f"节点 {node.agent_name} 未执行：幂等键 "
+                    f"{result.get('idempotency_key')} 已存在于消息库历史中。"
+                    f"常见原因是复用了历史 task_id，而 bus_data/ 的幂等记录"
+                    f"按 checkout 绝对路径共享（message_store.py:28）；"
+                    f"换新 task_id 或确认这是 --resume 场景")
+
+            if result is None:
+                self._log("warning",
+                          f"节点 {node.agent_name} 返回空响应（订阅者返回 None 或超时）",
+                          task_id=task.id, node=node.agent_name)
+
             # ── QualityGate 自动重做循环（外提为独立方法）──
             meta = self.registry.get_meta(node.agent_name)
             if getattr(meta, "supports_regeneration", False) and isinstance(result, dict):
@@ -372,6 +391,13 @@ class DAGExecutor:
                     recheck_agent=getattr(meta, "regeneration_recheck", "quality_gate"),
                     max_gen=node.agent_config.config.get("max_regenerations", 3),
                 )
+
+            # 产出保真底线是"硬"失败：不允许因为 fail_fast=false 而被当成
+            # 可容忍的软失败继续下发（历史上占位文档正是这样带着 done + exit 0 出厂的）
+            if isinstance(result, dict) and result.get("hard_floor"):
+                violations = "；".join(str(v) for v in result.get("violations", []))
+                raise RuntimeError(
+                    f"{_HARD_FLOOR_PREFIX} 产出未过保真底线: {violations}")
 
             self.registry.set_status(base_agent, AgentStatus.STOPPED)
             return result or {}
@@ -436,7 +462,19 @@ class DAGExecutor:
                 if result:
                     self._set_task_output(task, recheck_agent, result)
 
-            final_status = "accepted_with_warnings" if result.get("needs_regenerate") else "pass"
+            # 状态改写纪律：只有"重做后仍低于阈值"这一种情况可以软化。
+            # 原实现在此无条件写回，把 needs_regenerate 为假的分叉全当成通过——
+            # 于是 quality_gate 的 {"status":"error","message":"内容为空"}
+            # 与保真底线失败都被洗成 pass/accepted_with_warnings（静默绿）。
+            incoming = result.get("status")
+            if incoming in ("error", "blocked", "fail") and not result.get("needs_regenerate"):
+                final_status = "fail" if result.get("hard_floor") else incoming
+                self._log("error", "质量门控判定失败，不做软化放行",
+                          incoming=incoming, task_id=task.id,
+                          violations=result.get("violations", []))
+            else:
+                final_status = ("accepted_with_warnings"
+                                if result.get("needs_regenerate") else "pass")
             result["status"] = final_status
             if result.get("needs_regenerate"):
                 self._log("warning", "质量分仍不达标",
@@ -480,7 +518,13 @@ class DAGExecutor:
         elif isinstance(retry_result, dict):
             sem_status = retry_result.get("status")
             if sem_status in ("blocked", "fail"):
-                raw = retry_result.get("message", retry_result.get("error", f"Agent returned {sem_status}"))
+                # 原实现只填了 retry_err 却没把 retry_ok 置假：重试拿到业务失败的
+                # 结果仍被当成"重试成功"，节点于是带着一份失败产出被判 success
+                # （quality_gate 的 fail 就是这样在重试后照样下发的）。
+                retry_ok = False
+                raw = retry_result.get("message",
+                                       retry_result.get("error",
+                                                        f"Agent returned {sem_status}"))
                 retry_err = "" if raw is None else str(raw)
         return retry_ok, retry_err
 
@@ -785,7 +829,7 @@ class DAGExecutor:
                         break
 
                     fail_fast = getattr(plan, "fail_fast", True)
-                    if fail_fast:
+                    if fail_fast or (last_error or "").startswith(_HARD_FLOOR_PREFIX):
                         if task.status is not TaskStatus.CANCELLED:
                             task.status = TaskStatus.FAILED
                         # 修复 P0：同上，设置 stop_event 软中断已运行节点。
@@ -890,7 +934,7 @@ class DAGExecutor:
                         break
 
                     fail_fast = getattr(plan, "fail_fast", True)
-                    if fail_fast:
+                    if fail_fast or (last_error or "").startswith(_HARD_FLOOR_PREFIX):
                         # 对齐线程版：CANCELLED 不得被覆写为 FAILED（终态守卫）
                         if task.status is not TaskStatus.CANCELLED:
                             task.status = TaskStatus.FAILED

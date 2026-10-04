@@ -164,7 +164,18 @@ class MessageBus:
         # 无订阅者/投递失败的路径不残留标记，同 key 重试可正常送达
         store = self._get_store()
         if idempotency_key and store and store.is_idempotent(idempotency_key):
-            return None  # 已存在，重复请求
+            # 去重命中必须让调用方区分"节点没跑"和"节点跑了但没返回值"。
+            # 此前这里返回 None，dag_executor 用 `result or {}` 兜底，
+            # 于是历史 task_id + 跨进程共享的幂等库会让整条流水线的节点
+            # 全部静默空转、却逐个记为 success（实测复现）。
+            # 返回体与"订阅者抛异常"的既有约定同形。
+            return {
+                "status": "error",
+                "error": "duplicate_idempotency_key",
+                "idempotency_key": idempotency_key,
+                "topic": topic,
+                "message": "同幂等键已成功投递过，本次请求未触达订阅者",
+            }
 
         msg = Message(
             topic=topic,

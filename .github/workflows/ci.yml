@@ -99,6 +99,19 @@ jobs:
           set -e
           python run.py test_input.md --pipeline docgen --output /tmp/out_ci.md
           test -f /tmp/out_ci.md && echo "PIPELINE SMOKE OK"
+          # 空/占位产物不得算通过：实测曾有 99 字节的"未采集到可整合的搜索结果"
+          # 一路 exit 0、9 步全绿并落盘 docx/pdf
+          size=$(wc -c < /tmp/out_ci.md)
+          if [ "$size" -lt 800 ]; then
+            echo "::error::产出仅 $size 字节，疑似空/占位文档（门禁下限 800）"
+            sed -n '1,20p' /tmp/out_ci.md
+            exit 1
+          fi
+          if grep -q "未采集到可整合的搜索结果" /tmp/out_ci.md; then
+            echo "::error::产出是占位文档（命中“未采集到可整合的搜索结果”）"
+            exit 1
+          fi
+          echo "OUTPUT FIDELITY OK ($size bytes)"
 
   docker:
     runs-on: ubuntu-latest

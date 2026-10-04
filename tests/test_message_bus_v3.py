@@ -252,7 +252,7 @@ class TestMessageBusRequestRobustness:
         assert len(got) == 1
 
     def test_idempotency_key_marked_after_successful_delivery(self, bus):
-        """投递成功后幂等键生效：同 key 重复请求被去重秒回 None"""
+        """投递成功后幂等键生效：同 key 重复请求被去重并如实报告未触达"""
         calls = []
         bus.subscribe("idem.ok", lambda m: calls.append(m) or {"ok": True})
 
@@ -261,7 +261,11 @@ class TestMessageBusRequestRobustness:
         assert r1 == {"ok": True}
         r2 = bus.request("idem.ok", "t", "a", {}, timeout=5,
                          idempotency_key="idem-ok-001")
-        assert r2 is None, "成功投递后同 key 应被去重返回 None"
+        # 不得返回 None：调用方要能区分"节点没跑"与"跑了但没返回值"。
+        # 此前返回 None，dag_executor 的 `result or {}` 把空转记成 success。
+        assert isinstance(r2, dict) and \
+            r2.get("error") == "duplicate_idempotency_key", f"实际响应: {r2}"
+        assert r2.get("idempotency_key") == "idem-ok-001"
         assert len(calls) == 1, "重复请求不应再次触达订阅者"
 
     def test_failed_delivery_does_not_mark_idempotency_key(self, bus):

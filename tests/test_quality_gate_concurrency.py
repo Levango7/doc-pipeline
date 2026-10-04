@@ -16,8 +16,16 @@ from agents.quality_gate import QualityGateAgent  # noqa: E402
 from pipeline_core.base_agent import AgentMeta  # noqa: E402
 from pipeline_core.message_bus_v3 import Message, MessageType  # noqa: E402
 
-# 非完美文档（缺目录/参考资料等必需章节，completeness 必然 < 100）
-_CONTENT = "# 标题\n\n这是一段正文内容，长度足够通过基础检查，但结构并不完整。\n"
+# 非完美文档（缺目录/参考资料等必需章节，completeness 必然 < 100）。
+# 长度需超过 quality_gate 的产出保真底线 min_output_chars（默认 120），
+# 否则会被底线判成"没有产出"而绕过评分，本文件测的就是评分隔离了。
+_CONTENT = (
+    "# 标题\n\n这是一段正文内容，长度足够通过基础检查，但结构并不完整。\n\n"
+    "## 说明\n\n文档缺少目录与参考资料章节，因此 completeness 维度必然低于满分；"
+    "这里关注的是并发请求之间配置快照互不污染，而不是产出是否为空。"
+    "所以本段刻意写得啰嗦一些，确保越过 min_output_chars 的产出保真底线，"
+    "让判定落在评分维度上而不是底线上。\n"
+)
 
 
 def _make_gate(tmp_path: Path) -> QualityGateAgent:
