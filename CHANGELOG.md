@@ -53,8 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `f"{agent}.input"` 做 RPC topic，缺订阅时请求静默空转；新增总线寻址护栏。
 - **节点 config 不生效**：知识库的 `embedder/db_path/top_k` 与 checker 的
   `block_on_p1` 现在在 handle 期应用（Agent 经 registry 加载时构造期 config 为空）。
-- **`embedder: auto` 触发模型下载**：huggingface.co 不可达时卡死数分钟；
-  auto 改为离线探测，未缓存即快速回落 hash 并记录可操作原因。
+- **`embedder: auto` 触发模型下载**：huggingface.co 不可达时按 1/2/4/8/16s 退避
+  重试 5 次，CLI 跑 kb-docgen 表现为挂死（实测 >240s 未结束）。
+  第一版只设 `HF_HUB_OFFLINE` 不够——sentence-transformers 仍会去查 Hub 的
+  revision；现在 auto 先用 `model_is_cached()` 判本地缓存，没缓存**根本不构造**，
+  有缓存才套离线环境。修完 kb-docgen CLI 实测 28.8s 跑完并产出接地文档。
 - **ingest 初始化实例化 OCR 后端**：为一条日志付 84 秒（本机实测），改为按需探测。
 - **运行态污染**：测试与真实运行共用 `<checkout>/bus_data`（幂等记录积 1116 条）
   与 `versions/`（260+ 死条目，使 `/api/versions/stats` 慢到 4.9s）；测试状态

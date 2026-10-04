@@ -174,6 +174,8 @@ class TestGetEmbedder:
     def test_auto_falls_back_when_candidate_construction_fails(self, monkeypatch):
         """候选"库装着但建不起来"时必须回落，而不是把异常抛给调用方。"""
         monkeypatch.setattr(E, "available_embedders", lambda: ["hash", "local"])
+        # 本例测的是"构造失败"这条路径，先跨过"未缓存就不构造"的前置闸门
+        monkeypatch.setattr(E, "model_is_cached", lambda model="": True)
 
         def _boom(*a, **kw):
             raise ValueError("本地嵌入模型加载失败: 网络不可达")

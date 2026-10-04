@@ -251,6 +251,33 @@ def auto_fallback_reasons() -> dict[str, str]:
     return dict(_AUTO_FALLBACK_REASONS)
 
 
+DEFAULT_LOCAL_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+
+
+def model_is_cached(model: str = DEFAULT_LOCAL_MODEL) -> bool | None:
+    """本地是否已有模型权重：True 有 / False 没有 / None 判不了。
+
+    auto 探测**必须先问这一步再决定是否构造**：`HF_HUB_OFFLINE=1` 并不足以
+    拦住网络（实测 sentence-transformers 仍会去查 Hub 的 revision，
+    huggingface.co 不可达时按 1/2/4/8/16s 退避重试 5 次，一个嵌入器探测
+    就能吃掉数分钟，流水线节点表现为挂死）。
+    """
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:
+        return None
+    try:
+        probe = try_to_load_from_cache(model, "config.json")
+    except Exception:
+        return None
+    if probe is None:
+        return False
+    # _CACHED_NO_EXIST 是哨兵对象：明确"问过且没缓存"
+    if isinstance(probe, str):
+        return True
+    return getattr(probe, "name", str(probe)) != "CACHED_NO_EXIST"
+
+
 @contextlib.contextmanager
 def _offline_probe_env():
     """auto 探测 local 后端期间禁止联网下载模型权重。
@@ -291,6 +318,14 @@ def get_embedder(name: str = "auto", **kwargs) -> Embedder:
         _AUTO_FALLBACK_REASONS.clear()
         for candidate in _AUTO_ORDER:
             if candidate not in available_embedders():
+                continue
+            if candidate == "local" and model_is_cached(
+                    str(kwargs.get("model") or DEFAULT_LOCAL_MODEL)) is False:
+                # 连缓存都没有就别去问 Hub：那次询问在断网机器上要退避重试 5 次
+                _AUTO_FALLBACK_REASONS[candidate] = (
+                    f"本地未缓存模型 {DEFAULT_LOCAL_MODEL}"
+                    "（auto 不下载权重；需要语义嵌入请先联网下载一次模型，"
+                    "或显式设 embedder: local / api）")
                 continue
             try:
                 if candidate == "local":

@@ -365,32 +365,54 @@ class TestKbPipelineOfflineE2E:
 
 class TestEmbedderAutoProbeIsOffline:
     """实测缺陷：`embedder: auto` 触发 SentenceTransformer 构造，
-    huggingface.co 不可达时会重试数分钟——CLI 跑 kb-docgen 直接卡死。
-    auto 探测 local 必须在离线模式下进行，失败即回落 hash。
+    huggingface.co 不可达时按 1/2/4/8/16s 退避重试 5 次，CLI 跑 kb-docgen
+    直接表现为挂死。修法分两层：先看本地有没有缓存（没缓存就根本不构造），
+    真要保证构造也不联网则套上离线环境。
     """
 
-    def test_local_probe_runs_with_hf_offline(self, monkeypatch):
+    def test_uncached_model_skips_construction_entirely(self, monkeypatch):
+        """离线模式不足以止血：ST 仍会查 Hub revision，断网时退避重试数分钟。
+
+        所以 auto 必须先看"本地有没有缓存"，没有就**根本不构造**，
+        而不是把希望寄托在 HF_HUB_OFFLINE 上。
+        """
         from pipeline_core import embeddings as emb
 
-        observed = {}
+        calls = {"constructed": 0}
+
+        class _NeverBuild:
+            def __init__(self, model=""):
+                calls["constructed"] += 1
+                raise ValueError("模拟断网重试")
+
+        monkeypatch.setattr(emb, "LocalEmbedder", _NeverBuild)
+        monkeypatch.setattr(emb, "available_embedders", lambda: ["hash", "local"])
+        monkeypatch.setattr(emb, "model_is_cached", lambda model="": False)
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+
+        e = emb.get_embedder("auto")
+        assert e.name.startswith("hash")
+        assert calls["constructed"] == 0, "未缓存时不该尝试构造（那次构造会联网重试）"
+        assert "未缓存" in emb.auto_fallback_reasons().get("local", "")
+
+    def test_cached_model_still_probes_under_offline_env(self, monkeypatch):
+        from pipeline_core import embeddings as emb
+
+        seen = {}
 
         class _FakeLocal:
             def __init__(self, model=""):
-                observed["offline"] = os.environ.get("HF_HUB_OFFLINE")
-                raise ValueError("模拟：模型未缓存且不可下载")
+                seen["offline"] = os.environ.get("HF_HUB_OFFLINE")
+                raise ValueError("构造失败")
 
         monkeypatch.setattr(emb, "LocalEmbedder", _FakeLocal)
         monkeypatch.setattr(emb, "available_embedders", lambda: ["hash", "local"])
+        monkeypatch.setattr(emb, "model_is_cached", lambda model="": True)
         monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
-        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
 
-        e = emb.get_embedder("auto")
-        assert e.name.startswith("hash"), f"应回落 hash，实际 {e.name}"
-        assert observed.get("offline") == "1", "探测 local 时未启用离线模式"
-        # 环境变量不得泄漏到调用方进程
-        assert "HF_HUB_OFFLINE" not in os.environ
-        reasons = emb.auto_fallback_reasons()
-        assert "local" in reasons and "不下载模型权重" in reasons["local"]
+        assert emb.get_embedder("auto").name.startswith("hash")
+        assert seen.get("offline") == "1"
+        assert "HF_HUB_OFFLINE" not in os.environ, "探测不得把离线环境变量泄漏给调用方"
 
     def test_explicit_local_stays_online(self, monkeypatch):
         """显式 embedder: local 是用户的选择，允许联网下载。"""
