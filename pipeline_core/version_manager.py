@@ -33,6 +33,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from . import state_paths
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,8 +102,9 @@ class VersionManager:
         max_versions: 每个文件最大保留版本数（超出后清理最旧的）
     """
 
-    def __init__(self, versions_dir: str = "versions", max_versions: int = 50):
-        self._root = Path(versions_dir)
+    def __init__(self, versions_dir: str = "", max_versions: int = 50):
+        # 空串 → 按 DOC_PIPELINE_VERSIONS_DIR / 默认 "versions" 解析（见 state_paths）
+        self._root = Path(versions_dir or state_paths.versions_root())
         self._root.mkdir(parents=True, exist_ok=True)
         self._max_versions = max_versions
         self._lock = threading.RLock()
@@ -367,7 +370,7 @@ _vm_instance: VersionManager | None = None
 _vm_lock = threading.Lock()
 
 
-def get_version_manager(versions_dir: str = "versions") -> VersionManager:
+def get_version_manager(versions_dir: str = "") -> VersionManager:
     """获取全局 VersionManager 单例"""
     global _vm_instance
     if _vm_instance is None:

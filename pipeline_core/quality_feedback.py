@@ -20,6 +20,8 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+from . import state_paths
+
 logger = logging.getLogger(__name__)
 _DEFAULT_DB = os.path.join(Path(__file__).parent.parent.absolute(), "bus_data", "quality.db")
 
@@ -29,7 +31,8 @@ WEAK_THRESHOLD = 70  # 低于此分视为弱项
 class QualityFeedback:
     """质量评分历史（SQLite 持久化）"""
 
-    def __init__(self, db_path: str = _DEFAULT_DB):
+    def __init__(self, db_path: str = ""):
+        db_path = db_path or state_paths.store_path("quality.db")
         self._db_path = db_path
         self._lock = threading.Lock()
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)

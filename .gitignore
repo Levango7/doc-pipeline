@@ -71,6 +71,9 @@ context/
 # Pytest local temp
 .pytest_tmp/
 
+# 测试会话的运行态隔离目录（见 tests/conftest.py 的状态隔离段）
+.test_state/
+
 # Windows null device artifact
 nul
 

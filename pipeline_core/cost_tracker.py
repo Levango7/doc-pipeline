@@ -26,6 +26,8 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+from . import state_paths
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DB = os.path.join(Path(__file__).parent.parent.absolute(), "bus_data", "cost.db")
@@ -81,7 +83,8 @@ def calc_cost(provider: str, prompt_tokens: int, completion_tokens: int) -> floa
 class CostTracker:
     """LLM 成本追踪器（线程安全，SQLite 持久化）"""
 
-    def __init__(self, db_path: str = _DEFAULT_DB):
+    def __init__(self, db_path: str = ""):
+        db_path = db_path or state_paths.store_path("cost.db")
         self._db_path = db_path
         self._lock = threading.Lock()
         self._budget: float = 0  # 0 = 无限制

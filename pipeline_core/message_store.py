@@ -20,11 +20,14 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 
+from . import state_paths
 from .fast_json import dumps as _fast_dumps
 from .fast_json import loads as _fast_loads
 
 # ─── 常量 ─────────────────────────────────────
 
+# 兼容旧引用：仅表示"未设置 DOC_PIPELINE_STATE_DIR 时的默认位置"，
+# 真实解析走 state_paths.store_path（调用期解析，见该模块 docstring）
 DEFAULT_DB_PATH = os.path.join(Path(__file__).parent.parent.absolute(), "bus_data", "message_bus.db")
 MAX_PROCESSED_KEYS = 50000
 
@@ -146,7 +149,7 @@ class PersistentStore:
     """SQLite-backed 消息持久化"""
 
     def __init__(self, db_path: str = ""):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = db_path or state_paths.store_path("message_bus.db")
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         # thread-local 连接随线程死亡只能靠 GC 回收，close() 只能关当前线程的连接。

@@ -26,6 +26,7 @@ import time
 import weakref
 from pathlib import Path
 
+from . import state_paths
 from .fast_json import dumps as _fast_dumps
 from .fast_json import loads as _fast_loads
 
@@ -78,7 +79,8 @@ def _pid_alive(pid: int) -> bool:
 class TaskQueue:
     """SQLite 持久化任务队列（线程安全，WAL 模式）"""
 
-    def __init__(self, db_path: str = _DEFAULT_DB):
+    def __init__(self, db_path: str = ""):
+        db_path = db_path or state_paths.store_path("tasks.db")
         self._db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
