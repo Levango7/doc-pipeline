@@ -11,6 +11,7 @@
 | **主打** | 文档生成 | `python run.py <input> --pipeline docgen` | 完整 7 Agent 流水线，生产可用 |
 | **主打** | 文档生成 + 事实核查 | `--pipeline docgen-verified` | 增加 fact_checker 节点，数字类声明交叉验证 |
 | **主打** | **文档生成 + 多格式渲染** | `--pipeline docgen-render` | 追加 renderer 节点，产出 **docx / pdf**（可编辑 Word / 可打印归档） |
+| **主打** | **本地资料 → 知识库接地文档** | `--pipeline kb-docgen` | 摄入自己的 PDF/图片/文本 → 切块向量入库 → 检索命中驱动写作；离线可跑（无 LLM 时如实产出抽取式草稿） |
 | **实验性** | 需求分析 | `--pipeline docreq` | requirements_analyzer 输出结构化 DocumentSpec |
 | **实验性** | 文档增强 | `--enhance <input>` | 逐章节 LLM 深化 + 搜索补充 |
 | **实验性** | MCP Server | `--mcp` | JSON-RPC 2.0 over stdio，供外部 Agent 调度 |
@@ -39,6 +40,14 @@
 
 资料进入**知识库**后持久化，可反复按语义检索：
 
+```bash
+# 一条命令跑完：摄入 → 建库检索 → 接地写作 → 质检 → 排版 → 落盘
+# 输入 Markdown 里第一行写主题，其余行写资料路径（相对/绝对皆可）
+python run.py input.md --pipeline kb-docgen -o output/kb_doc.md
+```
+
+也可以只用库和检索这两层的能力：
+
 ```python
 from pipeline_core.knowledge_base import KnowledgeBase
 
@@ -63,7 +72,7 @@ kb.search("本季度营收增长多少", top_k=3)        # 向量检索
 | **检索** | Bocha + Tavily + Serper + Metaso + Bing + Sogou + 360 等 10 引擎、LRU+TTL 跨任务缓存 |
 | **抓取** | Async I/O（aiohttp 并发）/ 同步线程池降级、内容质量识别 |
 | **写作** | TF-IDF 向量语义匹配、骨架生成、LLM 润色、质量反馈闭环 |
-| **质量** | QualityGate v2（Profile 模板）、Style Enforcer、Citation Verifier、评分历史学习、**fact_checker 事实核查**（数字类声明 vs 检索源一致性，`--pipeline docgen-verified`） |
+| **质量** | QualityGate v2（Profile 模板）、**产出保真底线**（空/占位文档直接判失败，不再 done+exit 0）、Style Enforcer、Citation Verifier、评分历史学习、**fact_checker 事实核查**（数字类声明 vs 检索源一致性，`--pipeline docgen-verified`） |
 | **弹性** | 熔断器、限流器、Agent Pool、背压、自动重生成、告警机制 |
 | **可观测** | 结构化日志（轮转）、Prometheus Metrics、Admin REST API、Dashboard、日志查询 |
 | **成本** | LLM 调用成本追踪（16 供应商定价表）、预算熔断、`GET /api/cost` |
@@ -137,6 +146,8 @@ python run.py test_input.md --dashboard
 | `--config, -c` | 自定义配置文件 |
 | `--json-output` | 输出 JSON 结果（供 wrapper 解析） |
 | `--legacy` | （已冻结，仅兜底）按 Agent 注册元数据执行，不经 Scheduler/YAML；生产请用默认 DAG 模式 |
+| `--write-lock` | 为当前流水线生成/刷新 `pipelines/*.lock`（配置变更需显式重写锁，运行时比对 config_hash + 拓扑指纹） |
+| `--check` | 启动自检后退出：如实报告 HTML 解析内核、LLM 供应商、依赖与目录结构 |
 
 > **执行路径说明**：默认走声明式 DAG（`pipelines/*.yaml` + Scheduler，含 lockfile 校验与 per-node 配置）。
 > `--legacy` 是历史兜底路径，已冻结不再演进，两条路径的一致性由 `tests/test_dual_path_parity.py` 护栏。
@@ -201,6 +212,8 @@ python run.py test_input.md --dashboard
 | `pipeline_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
 | `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
 | `pipeline_core/renderer.py` | 渲染层：Markdown → docx（OOXML）/ pdf（ReportLab），双后端可选依赖 |
+| `pipeline_core/selectolax_compat.py` | HTML 解析内核兼容层（modest/lexbor 按可用性选，降级显式记录） |
+| `pipeline_core/state_paths.py` | 运行态路径解析（`DOC_PIPELINE_STATE_DIR` / `DOC_PIPELINE_VERSIONS_DIR`），测试与真实运行不再共用一份幂等键历史 |
 | `pipeline_core/ingest.py` | 摄入层：PDF/图片/文本 → 结构化 Markdown（PDF 按字号推断标题层级） |
 | `pipeline_core/knowledge_base.py` | 知识库：切块 → 向量化 → SQLite 持久化 → 向量检索 |
 | `pipeline_core/embeddings.py` | 嵌入层：可插拔后端（hash 内置 / local 模型 / API），auto 自动回落 |
@@ -244,7 +257,7 @@ topology:
     - [quality_gate]
     - [checker]
     - [layout]
-    - [safewriter]
+    - [safe_writer]
   edges:
     - [researcher, fetcher]
     - [fetcher, writer]
@@ -448,7 +461,18 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**1400+ 个测试全部通过**（另有若干 e2e 测试默认跳过），覆盖：Scheduler 解析、Schema 校验、Lockfile、消息总线、熔断器、限流器（含集成）、QualityGate、Agent 集成、容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱 + 配置热更新。
+**1854 个测试本机全绿**（`1854 passed, 2 skipped`；CI 每个 Python 版本
+`1772 passed, 12 skipped`，coverage 86.5% / 门禁 83%），覆盖：Scheduler 解析、
+Schema 校验、Lockfile 与 edges 一致性、消息总线（含幂等去重的显式回报）、
+熔断器、限流器（含集成）、QualityGate（含产出保真底线）、Agent 集成、
+容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、
+成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱、
+配置热更新、kb-docgen 离线端到端、运行态路径隔离。
+
+> `python -m pytest tests/ -m e2e` 需要真实网络与 LLM Key；CI 未配 Secret 时
+> 这些用例会**全部 skip**（历史上 E2E Nightly 因此"绿而未跑"），
+> 离线端到端能力由 `tests/test_kb_pipeline_wiring.py` 与
+> `tests/test_e2e_mock.py` 承担。
 
 ```bash
 # 运行真实端到端测试（需要网络 + LLM API Key）
@@ -462,11 +486,22 @@ python -m pytest tests/ -m e2e -v
 `QualityGate v2` 按 Profile 权重评分：
 
 ```
+产出保真底线（先于评分）：内容非空 且 ≥ min_output_chars（默认 120）
+                     且 不含已知占位语（"未采集到可整合的搜索结果"等）
+                     → 违反即 status=fail + hard_floor=true，
+                       不重做、不因 pipeline.fail_fast=false 而放行，整条流水线 exit 1
+
 总分 = Σ(维度得分 × 权重) − 风格扣分 − 引用扣分
 阈值 = profile.threshold (默认 70)
 
 不达标 → 自动重生成 (最多 max_regenerations=3 次)
+重做后仍不达标 → accepted_with_warnings（放行但如实标注）
 ```
+
+底线与评分的分工：评分量的是"写得好不好"，可以被扣分拉低后仍放行；
+底线量的是"到底有没有内容"。**历史上没有底线**——无检索结果时 writer
+会写一份 99 字节的占位文档，一路 9 步全绿、`done` + `exit 0` 并落盘
+docx/pdf，把失败伪装成成功（`tests/test_fidelity_gate.py` 锁住该回归）。
 
 ### 维度
 
@@ -485,8 +520,8 @@ python -m pytest tests/ -m e2e -v
 
 ```
 doc-pipeline/
-├── agents/              # 9 个 Agent 实现
-├── pipeline_core/       # 核心编排框架（34 个模块）
+├── agents/              # 12 个 Agent 实现
+├── pipeline_core/       # 核心编排框架（38 个模块）
 │   ├── pipeline.py      # Orchestrator（统一节点模型）
 │   ├── dag_executor.py  # DAG 构建 + 节点调度
 │   ├── scheduler.py     # YAML → ExecutionPlan + Schema + Lockfile
@@ -514,8 +549,10 @@ doc-pipeline/
 │   ├── docgen.yaml      # 默认文档生成流水线
 │   ├── docgen-render.yaml # 追加 renderer 节点，产出 docx/pdf
 │   ├── docgen-verified.yaml
+│   ├── kb-docgen.yaml   # 本地资料 → 知识库接地（ingest/kb/writer 已接线）
 │   ├── three_pass.yaml  # 三阶段流水线（DAG 版）
 │   ├── test_pipeline.yaml
+│   └── *.lock           # 版本锁定：config_hash + 拓扑指纹，漂移即拒绝执行
 │   └── quality/
 │       ├── technical-doc.yaml
 │       └── tutorial.yaml

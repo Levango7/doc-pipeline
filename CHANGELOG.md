@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-05，未发版）
+
+- **kb-docgen 流水线**：把此前未被任何流水线引用的摄入层 / 向量知识库接进编排，
+  实现"本地资料 → 建库检索 → 知识库接地写作"。离线（无 LLM Key）也能交付
+  抽取式草稿，`tests/test_kb_pipeline_wiring.py` 覆盖 21 例（含整条 DAG 离线跑通）。
+- **产出保真底线**（`agents/quality_gate.py`）：内容长度与已知占位语两条判据，
+  命中即 `hard_floor` 失败，不重做、不因 `fail_fast=false` 放行，流水线 exit 1。
+- **`pipeline_core/selectolax_compat.py`**：HTML 解析内核兼容层（modest/lexbor），
+  按真实可导入性选内核，降级计入 `_parser_fallbacks` 并首次告警。
+- **`pipeline_core/state_paths.py`**：运行态路径可重定向
+  （`DOC_PIPELINE_STATE_DIR` / `DOC_PIPELINE_VERSIONS_DIR`）。
+- **edges 一致性校验**（`scheduler.py`）：`topology.edges` 与 agent.dependencies
+  双向比对；七条流水线全部补齐 lockfile（此前只有 2 条受漂移护栏保护）。
+
+### Fixed（2026-10-05）
+
+- **默认流水线跑错定义文件**：`--pipeline docgen` 因 `glob("docgen*.yaml")` 前缀
+  匹配 + 首个成功即返回，实际一直在跑 `docgen-render.yaml`；改为精确同名优先、
+  多义显式报错（`run.py`）。
+- **正文提取静默降级**：selectolax 1.0 起 `selectolax.parser` 在导入期主动报错，
+  生产安装（CI 实测 selectolax-1.0.0）恒久退化为正则启发式，而 `--check` 只探测
+  顶层包仍报 OK；现在走兼容层并让 `--check`/CI 冒烟如实报告所用内核。
+- **四类"静默绿"**：幂等键命中历史返回 None 被记成 success；重试结果的业务失败
+  未置 `retry_ok=False`；重做循环末尾无条件把 `status=error` 洗成 `pass`；
+  checker 把"检出 P1"表达成 `status=fail` 从而跳过下游。
+- **KnowledgeBaseAgent 未订阅 `knowledge_base.input`**：DAG 用
+  `f"{agent}.input"` 做 RPC topic，缺订阅时请求静默空转；新增总线寻址护栏。
+- **节点 config 不生效**：知识库的 `embedder/db_path/top_k` 与 checker 的
+  `block_on_p1` 现在在 handle 期应用（Agent 经 registry 加载时构造期 config 为空）。
+- **`embedder: auto` 触发模型下载**：huggingface.co 不可达时卡死数分钟；
+  auto 改为离线探测，未缓存即快速回落 hash 并记录可操作原因。
+- **ingest 初始化实例化 OCR 后端**：为一条日志付 84 秒（本机实测），改为按需探测。
+- **运行态污染**：测试与真实运行共用 `<checkout>/bus_data`（幂等记录积 1116 条）
+  与 `versions/`（260+ 死条目，使 `/api/versions/stats` 慢到 4.9s）；测试状态
+  隔离到 `.test_state/`。
+- **E2E Nightly 假绿**：未配 Secret 时 6 skipped / 1674 deselected 仍报 success；
+  现在无 Secret 或实际执行 0 用例一律失败。
+
+### Docs（2026-10-05）
+
+- README 数据校准：测试数（本机 1854 passed / 2 skipped，CI 1772 passed）、
+  Agent 与模块计数、场景表补 kb-docgen、CLI 参数补 `--write-lock` / `--check`、
+  示例 YAML 的 `safewriter` 拼错修正，并新增保真底线一节说明其与评分维度的分工。
+
 ## [3.9.1] - 2026-08-30
 
 ### Fixed

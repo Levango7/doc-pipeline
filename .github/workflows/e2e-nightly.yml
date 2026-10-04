@@ -9,7 +9,8 @@ name: E2E Nightly
 #   E2E_BOCHA_API_KEY / E2E_TAVILY_API_KEY             —— 搜索（激活搜索用例，至少其一）
 #   E2E_SERPER_API_KEY / E2E_FIRECRAWL_API_KEY         —— 备选搜索/抓取（可选）
 # 用例自带 skipif 护栏（tests/test_e2e_real.py::_has_env/_has_llm）：
-# .env 无真实 key 时跳过，因此未配置 Secrets 的 fork 上本工作流恒为绿。
+# .env 无真实 key 时跳过。**没有 Secret 时本工作流现在直接失败**，
+# 不再以"6 skipped 却全绿"的形态存在——夜间回归要么真的跑，要么显式红。
 
 on:
   schedule:
@@ -65,5 +66,19 @@ jobs:
 
       - name: Run e2e tests
         run: |
-          # 显式 -m e2e 覆盖 pyproject addopts 里的 "-m 'not e2e'"
-          python -m pytest tests/ -m e2e -v --tb=short
+          # 历史状态：未配 Secrets 时这里 6 skipped / 1674 deselected，
+          # 工作流却报 success —— 一个从不执行的夜间回归比红更危险。
+          # 现在要求：必须有 Secret，且必须真的执行到用例。
+          if ! grep -qE '^(LLM_API_KEY|BOCHA_API_KEY|TAVILY_API_KEY|SERPER_API_KEY)=' .env; then
+            echo "::error::未配置任何 E2E_* Secret，真实端到端会 0 执行。请配置 Secret，或停用本工作流并在 README 注明。"
+            exit 1
+          fi
+          set +e
+          python -m pytest tests/ -m e2e -v --tb=short | tee /tmp/e2e.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if ! grep -qE "[1-9][0-9]* passed" /tmp/e2e.log; then
+            echo "::error::E2E 实际执行 0 个用例（全部 skip/deselect），拒绝以绿色通过"
+            exit 1
+          fi
+          exit $rc
