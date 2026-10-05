@@ -487,6 +487,7 @@ class TestBusAddressing:
 
     def test_every_pipeline_node_listens_on_its_input_topic(self):
         from pipeline_core import PipelineOrchestrator
+        from pipeline_core.naming import agent_of
         from pipeline_core.scheduler import Scheduler
         orch = PipelineOrchestrator(agents_dir=self._agents_dir(),
                                     checkpoint_dir=str(Path(".pytest_tmp") / "addr"))
@@ -497,11 +498,14 @@ class TestBusAddressing:
                 plan = Scheduler().parse_file(str(yaml_path), verify_lock=False)
                 for level in plan.levels:
                     for node in level:
-                        base = node.agent_name.split("_pool_")[0]
+                        # 必须走 naming.agent_of：内联片段带来的节点叫
+                        # `quality_gate__quality_tail`，只剥 `_pool_` 的话这条护栏
+                        # 会在每次抽取时全线误报——而误报的护栏下一步就是被删。
+                        base = agent_of(node.agent_name)
                         meta = orch.registry.get_meta(base)
                         topics = list(getattr(meta, "input_topics", []) or [])
                         if f"{base}.input" not in topics:
-                            missing.append((yaml_path.name, base, topics))
+                            missing.append((yaml_path.name, node.agent_name, topics))
             assert not missing, (
                 "以下流水线节点的 Agent 未订阅 <agent>.input，RPC 会静默空转: "
                 f"{missing}")

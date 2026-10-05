@@ -340,6 +340,25 @@ class TestRenderTaskResult:
         assert "2 个章节内容不足" in err
         assert "质量门控" in err and "3 轮重做" in err
 
+    def test_degraded_and_quality_warnings_survive_inlined_node_names(self, capsys):
+        """同样的警告，结果键换成内联后的别名也必须照出。
+
+        docgen 系列现在 call 质量尾片段，task.result 的键是
+        `quality_gate__quality_tail`。报表若还用 .get("quality_gate")，警告会
+        静默消失——低分文档只剩一句"执行完成"。
+        """
+        task = _done_task(result={
+            "writer__draft": {"stats": {"empty_sections": ["简介"]}},
+            "quality_gate__quality_tail": {"status": "accepted_with_warnings",
+                                           "generation_count": 3, "overall_score": 55,
+                                           "scores": {"depth": 50}},
+        })
+        args = _args(["x.md"])
+        _run_module()._render_task_result(args, task, "t1")
+        err = capsys.readouterr().err
+        assert "1 个章节内容不足" in err, err
+        assert "质量门控" in err and "3 轮重做" in err, err
+
     def test_report_file_notice(self, capsys):
         # report 文件位于 <项目根>/checkpoints/
         run = _run_module()

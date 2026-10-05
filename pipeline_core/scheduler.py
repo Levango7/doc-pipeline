@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from .conditions import ConditionError
+from .conditions import ConditionError, input_refs, unsatisfied_inputs
 from .conditions import validate as validate_condition
 from .naming import agent_of, node_id, pool_index_of
 
@@ -32,6 +32,19 @@ class LockfileMismatchError(Exception):
         super().__init__(
             f"[{pipeline_name}] lockfile 校验失败（{len(self.issues)} 项不一致）:\n{detail}"
         )
+
+
+def _as_inputs(value: object, who: str = "") -> dict:
+    """`inputs` 只接受映射，且键必须是可点号寻址的名字。"""
+    label = f"[{who}] " if who else ""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{label}inputs 必须是映射（参数名→值），实际: {value!r}")
+    dotted = sorted(str(k) for k in value if "." in str(k))
+    if dotted:
+        raise ValueError(f"{label}inputs 的键不能含点号（when 用点号路径取值）: {dotted}")
+    return dict(value)
 
 
 @dataclass
@@ -53,6 +66,9 @@ class AgentConfig:
     #: 引用另一条流水线（子流水线内联）。非空时本节点不是 Agent，
     #: 展开后会被替换成被引流水线的全部节点，节点身份加 `__{本节点名}` 别名。
     call: str = ""
+    #: 子流水线参数。写在 `call` 节点上 = 这次调用传的实参；写在普通节点上 = 该节点
+    #: 自己的默认值，仅当它的 `when` 读到 `inputs.*` 才允许（配了没人读就是幻觉）。
+    inputs: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.pool_size < 1:
@@ -79,6 +95,8 @@ class ExecutionNode:
     initial_delay: float = 1.0
     #: 执行条件（从 AgentConfig.when 复制，便于锁文件与执行器都只看节点）
     when: dict | None = None
+    #: 本节点可见的子流水线参数：自己的默认值 + 调用方实参中它 `when` 确实会读的那些
+    inputs: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -188,11 +206,22 @@ class Scheduler:
     # 借 f"{name}.yaml" 拼拼接读取 pipeline_dir 之外的任意 yaml
     _PIPELINE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-    def load(self, pipeline_name: str) -> dict:
+    def _pipeline_path(self, pipeline_name: str,
+                       base_dir: str | Path | None = None) -> Path:
+        """按名字定位 YAML。`base_dir` 是"引用方所在目录"，用于子流水线片段。
+
+        片段必须跟着调用它的流水线走：`--pipeline-file /tmp/x.yaml` 在别的路径下
+        也能找到同目录的 `_quality-tail.yaml`，而不是回头看进程 cwd。
+        """
         if not self._PIPELINE_NAME_RE.match(pipeline_name or ""):
             raise ValueError(
                 f"pipeline 名称非法: {pipeline_name!r}（仅允许字母/数字/下划线/连字符）")
-        path = self.pipeline_dir / f"{pipeline_name}.yaml"
+        root = Path(base_dir) if base_dir else self.pipeline_dir
+        return root / f"{pipeline_name}.yaml"
+
+    def load(self, pipeline_name: str,
+             base_dir: str | Path | None = None) -> dict:
+        path = self._pipeline_path(pipeline_name, base_dir)
         if not path.exists():
             raise FileNotFoundError(f"pipeline 未找到: {path}")
         with open(path, encoding="utf-8") as f:
@@ -215,7 +244,8 @@ class Scheduler:
         with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         pipeline_name = path.stem
-        plan = self._build_plan(raw, pipeline_name)
+        # 片段按引用方目录解析：filepath 在哪，它 call 的片段就在哪找
+        plan = self._build_plan(raw, pipeline_name, base_dir=path.parent)
         if verify_lock:
             self._verify_lock_after_parse(plan)
         return plan
@@ -244,7 +274,9 @@ class Scheduler:
         return result
 
     def _build_plan(self, raw: dict, pipeline_name: str,
-                    _stack: tuple[str, ...] = ()) -> ExecutionPlan:
+                    _stack: tuple[str, ...] = (),
+                    caller_inputs: dict | None = None,
+                    base_dir: str | Path | None = None) -> ExecutionPlan:
         # 深度检查放在入口而不是展开点：叶子流水线不含 call，只在展开点查会漏算
         # 最后一层，"上限 3"就变成了实际允许 4。
         chain = _stack + (pipeline_name,)
@@ -276,8 +308,16 @@ class Scheduler:
                 logger.warning(f"[{merged.get('name', 'unknown')}] timeout 值无效: {timeout_val!r}, 使用默认值 300")
                 timeout = 300.0
 
+            raw_name = merged.get("name", "unknown")
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                # YAML 1.1 把 on/off/yes/no/y/n 解析成布尔值：`- name: on` 会安静地
+                # 变成 True，然后在几千行之外炸成 'bool' object has no attribute 'split'。
+                raise ValueError(
+                    f"agents[].name 必须是非空字符串，实际: {raw_name!r}"
+                    "（YAML 会把 on/off/yes/no 当成布尔值，请改名或加引号）")
+
             cfg = AgentConfig(
-                name=merged.get("name", "unknown"),
+                name=raw_name,
                 version=str(merged.get("version", "1.0")),
                 parallelism=merged.get("parallelism", {}),
                 config=merged.get("config", {}),
@@ -289,6 +329,7 @@ class Scheduler:
                 rate_limit=merged.get("rate_limit", {}),
                 when=merged.get("when"),
                 call=str(merged.get("call", "") or "").strip(),
+                inputs=_as_inputs(merged.get("inputs"), str(merged.get("name", "unknown"))),
             )
             # 条件写法非法要在解析期炸掉：放到运行时才发现，节点会被静默跳过，
             # 流水线照样 done —— 那正是本项目一路在关的静默绿。
@@ -306,6 +347,14 @@ class Scheduler:
                     raise ValueError(
                         f"[{cfg.name}] 是 call 节点（子流水线 {cfg.call!r}），"
                         f"不接受 {blocked}；请把配置写进被引用的流水线里")
+            elif cfg.inputs:
+                # 普通节点上的 inputs 是"默认实参"，只有自己的 when 读到它才有意义；
+                # 没人读还写，就是配了不生效的那类静默坑。
+                readers = {r for r in input_refs(cfg.when) if r != "inputs"}
+                if not readers:
+                    raise ValueError(
+                        f"[{cfg.name}] 不是 call 节点，inputs 只能作为 when 里 "
+                        f"inputs.* 的默认值使用；本节点的 when 没有读到任何 inputs.*")
             agent_map[cfg.name] = cfg
 
         # ── Schema 校验 ──
@@ -358,6 +407,12 @@ class Scheduler:
                             deps.append(d)
 
                 # 展开 pooling
+                # 只把"本节点的 when 确实会读"的那部分实参落到节点上。整段 tail 的
+                # 每个节点都背一份用不到的实参，会有两个坏处：lockfile 里记满没意义
+                # 的条目（为什么 quality_gate 的 inputs 有 fact_check？），以及外层
+                # 参数被灌进内层作用域。
+                reads = {ref.split(".")[1] for ref in input_refs(cfg.when) if "." in ref}
+                scoped = {k: v for k, v in (caller_inputs or {}).items() if k in reads}
                 for pool_idx in range(cfg.pool_size):
                     pool_name = f"{name}_pool_{pool_idx}" if cfg.pool_size > 1 else name
                     nodes.append(ExecutionNode(
@@ -369,13 +424,21 @@ class Scheduler:
                         backoff=cfg.retry.get("backoff", "exponential"),
                         initial_delay=cfg.retry.get("initial_delay", 1.0),
                         when=cfg.when,
+                        # call 节点的 inputs 是"这次调用传给子流程的实参"，属于它自己；
+                        # 普通节点的 inputs 是自己的默认值，被内联时由调用方覆盖。
+                        inputs=(cfg.inputs if cfg.call else {**cfg.inputs, **scoped}),
                     ))
                 appeared.add(name)
 
             levels.append(nodes)
 
         # ── 3.1 内联子流水线（call）──
-        levels = self._expand_calls(levels, pipeline_name, _stack)
+        # 先查"传了却没人读"：此刻 levels 里还只有本流水线自己声明的节点，
+        # 内层 call 的参数要等展开后才混进来，那时就分不清是谁传的了。
+        if caller_inputs:
+            self._check_inputs_are_read(levels, caller_inputs, pipeline_name)
+        levels = self._expand_calls(levels, pipeline_name, _stack, base_dir)
+        self._check_required_inputs(levels)
 
         # ── 4. 构建 ExecutionPlan ──
         node_count = sum(len(level) for level in levels)
@@ -392,7 +455,8 @@ class Scheduler:
     # ── 子流水线内联（call） ───────────────────
 
     def _expand_calls(self, levels: list[list[ExecutionNode]], pipeline_name: str,
-                      _stack: tuple[str, ...]) -> list[list[ExecutionNode]]:
+                      _stack: tuple[str, ...],
+                      base_dir: str | Path | None = None) -> list[list[ExecutionNode]]:
         """把 `call: 另一条流水线` 展开成该流水线的全部节点（内联）。
 
         为什么在计划层展开而不是新增一种"子流程节点"执行语义：展开后执行的仍是
@@ -416,7 +480,7 @@ class Scheduler:
                 if not target:
                     flat.append(node)
                     continue
-                cloned, entries, exits = self._inline_call(node, target, stack)
+                cloned, entries, exits = self._inline_call(node, target, stack, base_dir)
                 for sub in cloned:
                     if sub.agent_name in entries:
                         # 父图的前置搬到子图入口
@@ -437,7 +501,9 @@ class Scheduler:
         return self._levels_from_deps(flat)
 
     def _inline_call(self, call_node: ExecutionNode, target: str,
-                     stack: tuple[str, ...]) -> tuple[list[ExecutionNode], list[str], list[str]]:
+                     stack: tuple[str, ...],
+                     base_dir: str | Path | None = None,
+                     ) -> tuple[list[ExecutionNode], list[str], list[str]]:
         """展开一个 call 节点，返回（带别名的子节点, 子图入口, 子图出口）。"""
         alias = call_node.agent_name
         # 环要按"流水线名"判，不是按 call 节点名：两条不同名字的节点引用同一个
@@ -445,11 +511,14 @@ class Scheduler:
         if target in stack:
             raise ValueError(f"子流水线循环引用: {' → '.join(stack)} → {target}")
         try:
-            sub_raw = self.load(target)
+            sub_raw = self.load(target, base_dir)
         except FileNotFoundError as e:
             raise ValueError(
-                f"[{alias}] call 指向的流水线不存在: {target!r}（{e}）") from e
-        sub_plan = self._build_plan(sub_raw, target, _stack=stack)
+                f"[{alias}] call 指向的流水线不存在: {target!r}（{e}）"
+                "；片段要与引用它的流水线放在同一个 pipelines/ 目录里") from e
+        sub_plan = self._build_plan(sub_raw, target, _stack=stack,
+                                    caller_inputs=call_node.inputs,
+                                    base_dir=self._pipeline_path(target, base_dir).parent)
 
         renamed: dict[str, str] = {}
         cloned: list[ExecutionNode] = []
@@ -464,19 +533,71 @@ class Scheduler:
                     timeout=n.timeout, max_retries=n.max_retries,
                     backoff=n.backoff, initial_delay=n.initial_delay,
                     when=n.when,
+                    # 实参在 _build_plan(caller_inputs=...) 里就已经落到本层的普通
+                    # 节点上了（节点默认值被调用方覆盖）。这里再并一次会把外层的键
+                    # 灌进内层作用域——内层没声明的参数不该凭空出现。
+                    inputs=dict(n.inputs),
                 ))
         # 第二遍：子图内部依赖在改名后才齐备
         for n in cloned:
             n.dependencies = [renamed.get(d, d) for d in n.dependencies]
 
+        # 入口 = 子图内部没有前驱的节点。判据必须拿"改名之后"的身份集合来比：
+        # n.dependencies 此刻已经是别名名了，而 `renamed` 的键是改名前的名字，
+        # 用 `d in renamed` 会恒为假——于是每个节点都被当成入口，父图的前置被
+        # 接到整条子流水线上（docgen 的 writer 会变成 fact_checker/layout 的依赖，
+        # 层级、并发窗口和"依赖未成功就跳过"的判定全跟着错）。
+        internal = set(renamed.values())
         entries = [n.agent_name for n in cloned
-                   if not [d for d in n.dependencies if d in renamed]]
+                   if not [d for d in n.dependencies if d in internal]]
         depended_on = {d for n in cloned for d in n.dependencies}
         exits = [n.agent_name for n in cloned if n.agent_name not in depended_on]
         if not entries or not exits:
             raise ValueError(
                 f"子流水线 {target!r} 无法内联：入口 {entries} / 出口 {exits} 为空")
         return cloned, entries, exits
+
+    @staticmethod
+    def _check_required_inputs(levels: list[list[ExecutionNode]]) -> None:
+        """子流水线引用的 inputs，调用方必须真的传了。
+
+        运行期也会查，但那时任务已失败；更要紧的是 `all:` 短路——左值先不成立时
+        那条引用根本不被求值，缺参数会被静默绕过，等于"传漏了也一样跑"。
+        """
+        problems = []
+        for lvl in levels:
+            for node in lvl:
+                if node.when is None:
+                    continue
+                missing = unsatisfied_inputs(node.when, node.inputs)
+                if missing:
+                    problems.append(f"[{node.agent_name}] 缺 {', '.join(missing)}")
+        if problems:
+            raise ValueError(
+                "when 引用了 inputs.* 但没有对应的值：" + "；".join(problems) +
+                "（call 节点用 inputs: {…} 传参）")
+
+    @staticmethod
+    def _check_inputs_are_read(levels: list[list[ExecutionNode]],
+                               caller_inputs: dict, pipeline_name: str) -> None:
+        """调用方传了、子流水线里没有任何 when 读到的参数——通常是键名写错。
+
+        反向判据和缺参一样重要：`min_scor: 70` 传进去没人读，节点就会拿默认值
+        60 继续跑，结果与作者意图不同却一声不响。
+        """
+        read: set[str] = set()
+        for lvl in levels:
+            for node in lvl:
+                for ref in input_refs(node.when):
+                    parts = ref.split(".")
+                    if len(parts) > 1:
+                        read.add(parts[1])
+        unread = sorted(set(caller_inputs) - read)
+        if unread:
+            raise ValueError(
+                f"传入子流水线 {pipeline_name!r} 的参数没有人读到: {unread}"
+                f"（它的 when 里没有引用 {['inputs.' + k for k in unread]}；"
+                "键名写错或这条分支已不需要该参数）")
 
     @staticmethod
     def _alias_id(node_name: str, alias: str) -> str:
@@ -596,9 +717,10 @@ class Scheduler:
     def _topology_hash(plan: ExecutionPlan) -> str:
         """拓扑指纹（W4）：锁定连线条目（node→dep 有序集合），防改 YAML 连线绕过校验
 
-        节点上挂的 `when` 条件也算拓扑：给某节点加/改条件，执行行为就变了，
-        锁文件必须察觉。没有 when 的节点不贡献条目，因此既有 7 条流水线的
-        lockfile 指纹保持不变。
+        节点上挂的 `when` 与调用方传的 `inputs` 也算拓扑：改了条件或实参，执行的
+        就是不同分支，锁必须察觉。两者都为空的节点不贡献条目，所以不用条件/片段
+        的流水线（docreq、three_pass、kb-docgen、test_pipeline）指纹依旧不变；
+        用上它们的流水线在引入那天重锁一次，此后一字不改。
         """
         edges = sorted(
             f"{node.agent_name}->{dep}"
@@ -611,6 +733,14 @@ class Scheduler:
             for level in plan.levels
             for node in level
             if getattr(node, "when", None) is not None
+        )
+        # 调用方传入的 inputs 也算拓扑：换了实参（阈值、开关）走的就是不同分支，
+        # 父流水线锁必须察觉，否则改 inputs 不用重锁，锁就失去了意义。
+        edges += sorted(
+            f"{node.agent_name}={json.dumps(node.inputs, ensure_ascii=False, sort_keys=True)}"
+            for level in plan.levels
+            for node in level
+            if getattr(node, "inputs", None)
         )
         return hashlib.sha256(
             json.dumps(edges, ensure_ascii=False).encode()
@@ -703,7 +833,10 @@ class Scheduler:
             return issues
 
         for node in [n for level in plan.levels for n in level]:
-            agent_name = node.agent_name.replace("-", "_")
+            # 内联/池化后的节点身份是 `quality_gate__tail`、`writer_pool_0` 这种，
+            # 文件名要还原成 Agent 名，否则每条用了 call 或 pool 的流水线都会报
+            # "Agent 文件不存在"。
+            agent_name = agent_of(node.agent_name).replace("-", "_")
             candidates = [
                 agents_path / f"{agent_name}.py",
                 agents_path / f"{agent_name}_agent.py",

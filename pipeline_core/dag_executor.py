@@ -291,6 +291,16 @@ class DAGExecutor:
         dep_results_raw = {
             dep: task.dag_nodes[dep].result for dep in node.dependencies if dep in task.dag_nodes
         }
+        # 再按 Agent 名补一份：Agent 里普遍写着 `dependencies_results.get("ingest")`
+        # 这种按名取上游的写法，而内联（子流水线）会把节点名变成 `ingest__tail`。
+        # 只在"该 Agent 在本节点上游只出现一次"时补名——出现两次就不猜，
+        # 让按名字取的代码拿到空，而不是拿到错的那一份。
+        groups: dict[str, list[str]] = {}
+        for dep in dep_results_raw:
+            groups.setdefault(agent_of(dep), []).append(dep)
+        for agent, deps in groups.items():
+            if len(deps) == 1 and agent not in dep_results_raw:
+                dep_results_raw[agent] = dep_results_raw[deps[0]]
         artifacts = self._collect_upstream_artifacts(task, node, plan)
 
         ctor_config = getattr(meta, "config", None) or {}
@@ -468,10 +478,16 @@ class DAGExecutor:
                           task_id=task.id, node=node.agent_name)
 
             # ── 质量重做循环（外提为独立方法）──
-            meta = self.registry.get_meta(node.agent_name)
+            # 必须按 Agent 名取 meta：内联进来的节点叫 `quality_gate__tail`，
+            # 拿它查注册表会得到 None，于是 supports_regeneration / writes_output
+            # 一起失效——质量门不再重做、交付契约认为没有产物，且一声不响。
+            meta = self.registry.get_meta(base_agent)
             if getattr(meta, "supports_regeneration", False) and isinstance(result, dict):
                 target = getattr(meta, "regeneration_target", "")
-                recheck = getattr(meta, "regeneration_recheck", "") or node.agent_name
+                # 复检目标也要还原成 Agent 名：topic 与 RPC 目标都按 base 寻址，
+                # 内联节点的 `quality_gate__tail` 没有任何订阅者。
+                recheck = agent_of(getattr(meta, "regeneration_recheck", "")
+                                    or node.agent_name)
                 if not target:
                     raise RuntimeError(
                         f"节点 {node.agent_name} 声明 supports_regeneration 却没给出 "
@@ -681,12 +697,24 @@ class DAGExecutor:
         for name in self._upstream_closure(task, node):
             if name in dag_nodes and name not in upstream:
                 upstream[name] = getattr(dag_nodes[name], "result", None)
+        # 内联进来的节点带着别名（quality_gate__tail），子流水线里写条件的人并不
+        # 知道自己被叫什么，只能按 Agent 名引用。于是补一份"去别名"的键：
+        # 仅当该 Agent 在上游只出现一次时才补——出现两次还补就是猜，宁可让条件
+        # 抛"路径取不到"，也不要读错那份结果（静默串台比失败更难查）。
+        by_agent: dict[str, list[str]] = {}
+        for name in upstream:
+            by_agent.setdefault(agent_of(str(name)), []).append(str(name))
+        for agent, names in by_agent.items():
+            if len(names) == 1 and agent not in upstream:
+                upstream[agent] = upstream[names[0]]
         return {
             # 上游按声明合并后的产物：artifacts.content / artifacts.results ...
             "artifacts": self._collect_upstream_artifacts(task, node, plan),
             # 某个具体上游节点的原始结果：upstream.quality_gate.overall_score
             "upstream": upstream,
             "config": dict(getattr(node.agent_config, "config", None) or {}),
+            # call 传进来的参数：子流水线用 inputs.xxx 当阈值/开关，不必抄死数值
+            "inputs": dict(getattr(node, "inputs", None) or {}),
             "pipeline": getattr(plan, "pipeline_name", ""),
             "task": {"id": getattr(task, "id", ""),
                      "input_file": getattr(task, "input_file", "")},

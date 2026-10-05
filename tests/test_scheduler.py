@@ -218,3 +218,38 @@ class TestResolvePipelineName:
         monkeypatch.chdir(tmp_path)
         assert "docgen" in installed_pipelines()
         assert installed_pipelines(tmp_path) == []
+
+
+class TestYamlNameTrap:
+    """`- name: on` 会被 YAML 1.1 解析成布尔 True（on/off/yes/no/y/n 都是）。
+
+    不加这道判据时，报错发生在几千行之外的 `agent_of()`：
+    'bool' object has no attribute 'split'——既看不出是名字写错，也看不出为什么。
+    """
+
+    def _build(self, name_value):
+        from pipeline_core.scheduler import Scheduler
+
+        sched = Scheduler(pipeline_dir="pipelines")
+        raw = {
+            "agents": [{"name": name_value, "dependencies": []}],
+            "topology": {"levels": [[name_value]]},
+        }
+        return sched._build_plan(raw, "trap")
+
+    def test_boolean_name_is_rejected_with_a_readable_reason(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="YAML 会把 on/off"):
+            self._build(True)
+
+    def test_missing_or_blank_name_is_rejected(self):
+        import pytest
+
+        for bad in ("", "  ", None):
+            with pytest.raises(ValueError):
+                self._build(bad)
+
+    def test_quoted_on_still_works(self):
+        """加了引号就是字符串，不该被误拦。"""
+        assert self._build("checked").node_count == 1

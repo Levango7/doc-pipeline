@@ -164,6 +164,61 @@ class TestComposition:
             validate({"any": [{"all": [{"path": "doc.format", "op": "exists"}]}]})
 
 
+class TestValueFrom:
+    """右值可以来自上下文另一条路径（value_from），而不只是字面量。
+
+    这是子流水线参数化的前提：tail 里写 `value_from: inputs.min_score`，
+    阈值由调用方传，否则每个调用方都得复制一份 tail。
+    """
+
+    VCTX = {
+        "inputs": {"min_score": 70, "label": "docx", "flag": True},
+        "quality_gate": {"overall_score": 82},
+        "doc": {"format": "docx"},
+    }
+
+    @pytest.mark.parametrize(("path", "op", "src", "expected"), [
+        ("quality_gate.overall_score", ">=", "inputs.min_score", True),
+        ("quality_gate.overall_score", "<", "inputs.min_score", False),
+        ("doc.format", "==", "inputs.label", True),
+        ("doc.format", "!=", "inputs.label", False),
+    ])
+    def test_right_value_resolved_from_context(self, path, op, src, expected):
+        spec = {"path": path, "op": op, "value_from": src}
+        validate(spec)
+        assert evaluate(spec, self.VCTX) is expected
+
+    def test_missing_value_from_path_raises_not_silent_false(self):
+        """取不到右值必须炸：静默判"不满足"= 节点静默跳过 = 本项目一路在关的洞。"""
+        with pytest.raises(ConditionError, match="value_from"):
+            evaluate({"path": "doc.format", "op": "==", "value_from": "inputs.nope"}, self.VCTX)
+
+    def test_value_from_must_be_a_path_string(self):
+        with pytest.raises(ConditionError):
+            validate({"path": "doc.format", "op": "==", "value_from": 70})
+
+    @pytest.mark.parametrize("spec", [
+        {"path": "doc.format", "op": "=="},                       # 两者都不给
+        {"path": "doc.format", "op": "==", "value": "docx", "value_from": "inputs.label"},
+        {"path": "doc.format", "op": "exists", "value_from": "inputs.label"},
+    ])
+    def test_bad_value_combos_rejected(self, spec):
+        with pytest.raises(ConditionError):
+            validate(spec)
+
+    def test_value_from_type_errors_still_checked(self):
+        """右值来自上下文后，类型守卫不能因此失效：bool 与数字仍要分开。"""
+        with pytest.raises(ConditionError, match="类型不一致"):
+            evaluate({"path": "quality_gate.overall_score", "op": "==",
+                      "value_from": "inputs.flag"}, self.VCTX)
+
+    def test_composition_supports_value_from(self):
+        assert evaluate({"all": [
+            {"path": "quality_gate.overall_score", "op": ">=", "value_from": "inputs.min_score"},
+            {"path": "doc.format", "op": "==", "value": "docx"},
+        ]}, self.VCTX) is True
+
+
 class TestPurity:
     def test_context_is_not_mutated(self):
         import copy

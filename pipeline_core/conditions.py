@@ -10,11 +10,23 @@
           op: ">="
           value: 70
 
+    # 右值也能来自上下文（子流水线拿调用方传的阈值，不把数值抄死在共享 tail 里）
+    when:
+      path: upstream.quality_gate.overall_score
+      op: ">="
+      value_from: inputs.min_score
+
     # 组合（只嵌套一层，避免又长成一个小表达式语言）
     when:
       all:
         - {path: doc.format, op: "==", value: docx}
         - {path: layout.warnings, op: "not in", value: [missing_image]}
+
+    # 右值也能来自上下文（子流水线参数化的关键：阈值由调用方传）
+    when:
+      path: upstream.quality_gate.overall_score
+      op: ">="
+      value_from: inputs.min_score
 
 判据设计上有三条硬规矩：
 
@@ -96,14 +108,73 @@ def validate(spec: Any) -> None:
         raise ConditionError(
             f"when.op 非法: {op!r}（可用: {', '.join(OPS)}）")
     if op in PRESENCE_OPS:
-        if "value" in spec:
-            raise ConditionError(f"when.op={op} 不接受 value 键")
+        if "value" in spec or "value_from" in spec:
+            raise ConditionError(f"when.op={op} 不接受 value / value_from 键")
     else:
-        if "value" not in spec:
-            raise ConditionError(f"when.op={op} 必须给出 value 键")
-    extra = set(spec) - {"path", "op", "value"}
+        has_value = "value" in spec
+        has_from = "value_from" in spec
+        if has_value == has_from:
+            raise ConditionError(
+                f"when.op={op} 必须恰好给出 value 或 value_from 之一"
+                f"（给了两个或都没给: {spec!r}）")
+        if has_from and not isinstance(spec["value_from"], str):
+            raise ConditionError(f"when.value_from 必须是路径字符串，实际: {spec['value_from']!r}")
+    extra = set(spec) - {"path", "op", "value", "value_from"}
     if extra:
         raise ConditionError(f"when 含未知键: {sorted(extra)}")
+
+
+def _expected(spec: dict, ctx: dict) -> Any:
+    """取比较的右值：字面量 value，或从上下文再取一条路径的 value_from。
+
+    value_from 让子流水线能"拿调用方传进来的参数当阈值"，而不必把数值抄死在
+    子流水线里——抄死就等于每个调用方各复制一份 tail，抽取就白做了。
+    """
+    if "value" in spec:
+        return spec["value"]
+    src = spec.get("value_from")
+    if src is None:
+        return None
+    got = resolve(src, ctx)
+    if got is _UNRESOLVED:
+        raise ConditionError(
+            f"when.value_from={src!r} 在上下文里取不到值。"
+            f" 可用顶层键: {sorted(k for k in ctx if isinstance(k, str))}")
+    return got
+
+
+def input_refs(spec: Any) -> set[str]:
+    """收集这条 when 里以 `inputs.` 开头的路径（左值与右值都算）。
+
+    给解析期用：子流水线读 `inputs.min_score`，调用方忘了传就应当现在报错，
+    而不是等运行时抛"路径取不到"——那时任务已经失败，而且 `all:` 的短路
+    还可能让这条分支被静默跳过。
+    """
+    refs: set[str] = set()
+    if not isinstance(spec, dict):
+        return refs
+    for key in ("all", "any"):
+        for item in spec.get(key) or []:
+            refs |= input_refs(item)
+    if "path" in spec:
+        for field_name in ("path", "value_from"):
+            val = spec.get(field_name)
+            if isinstance(val, str) and val.split(".")[0] == "inputs":
+                refs.add(val)
+    return refs
+
+
+def unsatisfied_inputs(spec: Any, inputs: dict) -> list[str]:
+    """列出 when 引用了、但调用方没提供的 `inputs.*` 路径（解析期用）。
+
+    缺参数在运行期也会抛，但那时任务已经失败；更要紧的是 `all:` 会短路——
+    左值先不成立时那条引用根本不被求值，缺的参数就被静默绕过了。
+    """
+    missing = []
+    for ref in sorted(input_refs(spec)):
+        if resolve(ref, {"inputs": dict(inputs or {})}) is _UNRESOLVED:
+            missing.append(ref)
+    return missing
 
 
 def resolve(path: str, ctx: dict) -> Any:
@@ -141,7 +212,7 @@ def evaluate(spec: Any, ctx: dict) -> bool:
             f"when.path={path!r} 在上下文里取不到值（op={op} 不允许缺失路径）。"
             f" 可用顶层键: {sorted(k for k in ctx if isinstance(k, str))}")
 
-    want = spec.get("value")
+    want = _expected(spec, ctx)
     allowed = _ops_for(got, want)
     if op not in allowed:
         raise ConditionError(

@@ -149,7 +149,11 @@ def _available_pipeline_names() -> list[str]:
     if not pipelines_dir.exists():
         _PIPELINE_NAMES_CACHE = []
         return []
-    _PIPELINE_NAMES_CACHE = sorted(p.stem for p in pipelines_dir.glob("*.yaml"))
+    # `_` 前缀是内部片段（子流水线 tail），只能被 call 引用：它们的输入是上游
+    # 节点的产物，单独跑没有意义，所以不进候选清单。口径与
+    # scheduler.installed_pipelines / Scheduler.list_pipelines 保持一致。
+    _PIPELINE_NAMES_CACHE = sorted(p.stem for p in pipelines_dir.glob("*.yaml")
+                                   if not p.name.startswith("_"))
     return list(_PIPELINE_NAMES_CACHE)
 
 
@@ -268,6 +272,23 @@ def _poll_task_progress(orch: PipelineOrchestrator, args_args: argparse.Namespac
     return True
 
 
+def _result_for(task, agent: str) -> dict:
+    """按 Agent 名取节点结果，兼容内联别名（`quality_gate__tail`）。
+
+    报表里的告警是按 Agent 语义找的；写死节点名会在子流水线内联后静默失效
+    ——质量分不达标的警告就此消失，用户只看到"执行完成"。
+    同名出现多次时不猜：返回空，宁可缺警告也不报另一个实例的分数。
+    """
+    from pipeline_core.naming import agent_of
+
+    results = getattr(task, "result", None) or {}
+    if isinstance(results.get(agent), dict):
+        return results[agent]
+    matches = [v for k, v in results.items() if agent_of(str(k)) == agent
+               and isinstance(v, dict)]
+    return matches[0] if len(matches) == 1 else {}
+
+
 def _collect_steps(task) -> list[dict]:
     """将 StepResult 列表转为可 JSON 序列化的 dict 列表"""
     steps = []
@@ -324,7 +345,7 @@ def _render_task_result(args_args: argparse.Namespace, task, task_id: str) -> No
         print(f"\n错误: {task.error}")
 
     # 降级警告：writer 报告了内容不足的章节时，stderr 显式提示
-    writer_result = (task.result or {}).get("writer") or {}
+    writer_result = _result_for(task, "writer")
     empty_sections = (writer_result.get("stats") or {}).get("empty_sections") or []
     if empty_sections:
         print(f"\n⚠️ WARNING: {len(empty_sections)} 个章节内容不足（降级占位）："
@@ -333,7 +354,9 @@ def _render_task_result(args_args: argparse.Namespace, task, task_id: str) -> No
 
     # 质量门控警告：重做耗尽仍不达标时任务仍为 DONE，必须在此显式呈现，
     # 否则用户拿到低分文档却只看到"执行完成"（此前仅存在于日志）
-    qg_result = (task.result or {}).get("quality_gate") or {}
+    # 取法与 writer 同理走 _result_for：docgen 系列的 gate 现在在片段里，
+    # 结果键是 `quality_gate__quality_tail`，直接 .get("quality_gate") 会静默拿空。
+    qg_result = _result_for(task, "quality_gate")
     if isinstance(qg_result, dict) and qg_result.get("status") == "accepted_with_warnings":
         print(f"\n⚠️ WARNING: 质量门控经 {qg_result.get('generation_count', '?')} 轮重做后仍未达标"
               f"（得分 {qg_result.get('overall_score', '?')}，低于阈值），"
