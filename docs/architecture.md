@@ -117,6 +117,45 @@ run 仍 done 并留 warning；因依赖失败没跑 → 仍然 failed。
 判据：分组类一律 `family_of`，查 Agent 类一律 `agent_of`，两侧各有测试
 （`TestRuntimeIdentity` / `TestPoolMergeIsAliasAware`），且都做过变异回退验证会转红。
 
+同一条规则还管**Agent 声明的能力**。`registry.get_meta(name)` 是精确查表，拿别名名去查
+得到的是 `None`——`None` 不抛错，只是那项能力没了。docgen 改用质量尾片段后真机撞上两处：
+
+| 位置 | 别名名查 meta 的后果 |
+|------|--------------------|
+| `_record_task_output` | `WRITES_OUTPUT` 失效 → `task.output_path` 不记 → 交付契约反过来说"没有交付物"，文件明明写着 |
+| 质量重做分支 | `SUPPORTS_REGENERATION` 失效 → 内联的 quality_gate 不再触发重做，质量门降级成一次性打分 |
+
+判据：`TestInlinedNodesKeepAgentCapabilities` 两条都跑真 executor，且把 `get_meta(base_agent)`
+改回 `get_meta(node.agent_name)` 会双双转红。复检目标（`REGENERATION_RECHECK` 缺省时取
+本节点名）同样要还原成 base 名——topic 是按 Agent 寻址的，`quality_gate__tail.input`
+没有任何订阅者。
+
+### 1.5 子流水线片段与参数作用域
+
+`pipelines/_quality-tail.yaml` 是四条 docgen 流水线的共享质量尾。抽取前逐字节比对过四份
+尾巴：`quality_gate/checker/layout/safe_writer` 的 version/timeout/config 完全一致，只差
+fact_checker 在不在、什么条件下跑。所以差异收敛成两个参数（`fact_check` / `min_score`），
+由调用方在 `call` 节点的 `inputs:` 里传。
+
+参数作用域三条规则：
+
+1. **片段节点可写 `inputs` 当默认值**，前提是它自己的 `when` 读到 `inputs.*`——否则是
+   "配了没人读"的死配置，解析期拒绝。有了默认值，片段自身也能被解析/lint（不必假装只有
+   被调用时才存在）。
+2. **只把该节点确实会读的键落到节点上**。整段 tail 的每个节点都背一份用不到的实参，
+   lockfile 就会记满没意义的条目，外层参数还会灌进内层作用域。
+3. **嵌套 `call` 各用各的实参**：内层 `call` 节点的参数在它自己的子计划里生效，外层同名
+   键不会覆盖它（`test_outer_args_do_not_leak_into_inner_scope`，对旧的"合并外层"写法会红）。
+
+片段不进用户可见清单：`installed_pipelines` / `Scheduler.list_pipelines` / run.py 的候选名
+一律过滤 `_` 前缀，但 `load()` 仍按名字取得到（`call` 需要）。片段与引用它的 YAML 必须
+同目录——`parse_file` 把引用方目录传给内联逻辑，于是 `--pipeline-file /tmp/x.yaml` 也能
+在 `/tmp` 找到它的片段，而不是回头看进程 cwd。
+
+版本锁定的覆盖面：片段的节点、连线、配置哈希、以及**调用方传的实参**都进了父流水线的
+`topology_hash`/`config_hash`，所以改片段或改 `inputs` 都会让父锁报漂移；片段自己那份锁
+记录的是它单独展开的形状。
+
 ## 2. 核心概念
 
 | 概念 | 定义位置 | 说明 |

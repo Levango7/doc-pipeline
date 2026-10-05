@@ -1,6 +1,7 @@
 """Lockfile 版本锁定：generate/verify 往返、配置漂移、parse 自动校验、--write-lock 接线"""
 import argparse
 import copy
+import shutil
 from pathlib import Path
 
 import pytest
@@ -154,7 +155,8 @@ class TestWriteLockWiring:
         assert lock_file.exists()
         content = lock_file.read_text(encoding="utf-8")
         assert "config_hash" in content
-        assert "safe_writer" in content
+        # 质量尾是内联进来的节点，锁里记的是带别名的身份（改片段会让父锁漂移）
+        assert "safe_writer__quality_tail" in content
 
     def test_drift_blocks_execution_with_clear_error(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -162,6 +164,10 @@ class TestWriteLockWiring:
         drifted = src.replace("prompt_profile: generic-tech", "prompt_profile: drifted-tech")
         target = tmp_path / "drift.yaml"
         target.write_text(drifted, encoding="utf-8")
+        # docgen 现在 call 了 _quality-tail：片段必须和引用它的 yaml 同目录，
+        # 只复制主文件会让解析停在"片段不存在"上，测不到漂移这条路径。
+        shutil.copy(PROJECT / "pipelines" / "_quality-tail.yaml",
+                    tmp_path / "_quality-tail.yaml")
 
         from pipeline_core.scheduler import Scheduler
         stale_sched = Scheduler()

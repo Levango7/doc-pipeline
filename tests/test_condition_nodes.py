@@ -15,6 +15,7 @@ import pytest
 
 from pipeline_core.conditions import ConditionError
 from pipeline_core.dag_executor import DAGExecutor
+from pipeline_core.naming import agent_of
 from pipeline_core.pipeline import PipelineTask, StepResult, TaskNode, TaskStatus
 from pipeline_core.registry import AgentMeta
 from pipeline_core.scheduler import (
@@ -151,6 +152,19 @@ class TestEvaluationErrorsFailLoud:
         with pytest.raises(ConditionError, match="取不到值"):
             ex._submit_level_futures(task, [render], "in.md", plan, MagicMock())
 
+    def test_context_exposes_inputs(self):
+        """`inputs.*` 是 when 的一等上下文：子流水线的阈值从这里来。"""
+        a = _node("quality_gate")
+        b = _node("fact_checker", deps=["quality_gate"])
+        b.inputs = {"min_score": 70}
+        task = _task({"quality_gate": {"overall_score": 82}, "fact_checker": None},
+                     {"quality_gate": a, "fact_checker": b})
+        metas = {"quality_gate": META_GATE,
+                 "fact_checker": AgentMeta(name="fact_checker", produces={"verdict": "last"})}
+        ex = _executor(metas)
+        plan = ExecutionPlan(pipeline_name="p", levels=[[a], [b]], raw={})
+        assert ex._condition_context(task, b, plan)["inputs"] == {"min_score": 70}
+
     def test_context_exposes_artifacts_config_and_pipeline(self):
         a = _node("quality_gate")
         b = _node("renderer", deps=["quality_gate"], config={"format": "docx"})
@@ -166,6 +180,45 @@ class TestEvaluationErrorsFailLoud:
         assert ctx["config"]["format"] == "docx"
         assert ctx["pipeline"] == "p"
         assert ctx["task"]["id"] == "t-cond"
+
+    def _aliased_ctx(self, upstream_names):
+        """上游串成一条链（都带别名），取回下游节点 when 的求值上下文。"""
+        from pipeline_core.naming import agent_of
+
+        chain: list[ExecutionNode] = []
+        prev = None
+        for name in upstream_names:
+            node = _node(name, deps=[prev] if prev else [])
+            chain.append(node)
+            prev = name
+        target = _node("layout__tail", deps=[prev])
+        results = {n.agent_name: {"overall_score": 82, "content": "正文"} for n in chain}
+        results[target.agent_name] = None
+        node_objs = {n.agent_name: n for n in chain + [target]}
+        task = _task(results, node_objs)
+        metas = {"quality_gate": META_GATE, "writer": META_GATE,
+                 "layout": AgentMeta(name="layout", produces={"content": "last"})}
+        ex = DAGExecutor(MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        # 注册表按 Agent 名寻址（与真实 executor 一致），别名名要还原后再查
+        ex.registry.get_meta.side_effect = lambda name: metas.get(agent_of(name))
+        plan = ExecutionPlan(pipeline_name="p", levels=[chain, [target]], raw={})
+        return ex._condition_context(task, target, plan)
+
+    def test_unique_aliased_upstream_is_addressable_by_agent_name(self):
+        """片段里写 `upstream.quality_gate.*` 的人不知道自己被改名叫什么。
+
+        docgen-verified 实跑能过就是靠这条：闭包键是 quality_gate__quality_tail，
+        条件路径却是 upstream.quality_gate.overall_score。
+        """
+        ctx = self._aliased_ctx(["writer", "quality_gate__quality_tail"])
+        assert ctx["upstream"]["quality_gate"]["overall_score"] == 82
+        assert ctx["upstream"]["quality_gate__quality_tail"]["overall_score"] == 82
+
+    def test_ambiguous_aliased_upstream_gets_no_agent_key(self):
+        """同一个 Agent 出现两次时不补名：宁可让条件抛"取不到值"，也不猜一份结果。"""
+        ctx = self._aliased_ctx(["quality_gate__a", "quality_gate__b"])
+        assert "quality_gate" not in ctx["upstream"], sorted(ctx["upstream"])
+        assert ctx["upstream"]["quality_gate__a"]["overall_score"] == 82
 
 
 class TestSchedulerPlanning:
@@ -283,19 +336,28 @@ class TestDeliveryContractWithConditions:
 
 
 class TestShippedConsumer:
-    """`when` 在出厂流水线里有真实消费者：docgen-lean 的 fact_checker。
+    """`when` 在出厂流水线里有真实消费者：质量尾片段的 fact_checker（docgen-lean 引用）。
 
     写这一组的理由是本项目反复踩过的同一类错——"实现正确但没被接线"。
     语言与接线都测过之后，如果没有任何出厂配置用它，能力就等于零。
+
+    抽取之后节点身份带别名（fact_checker__quality_tail），所以这里一律按
+    Agent 名查，不断言字面节点名——否则每次改调用方名字都要来动行为测试。
     """
 
-    def _plan(self):
+    def _plan(self, name="docgen-lean"):
         return Scheduler(agents_dir=str(PROJECT / "agents"),
                          pipeline_dir=str(PROJECT / "pipelines")).parse(
-            "docgen-lean", verify_lock=True)
+            name, verify_lock=True)
+
+    def _find(self, plan, agent: str):
+        hits = [n for level in plan.levels for n in level
+                if agent_of(n.agent_name) == agent]
+        assert len(hits) == 1, f"{agent} 在计划里出现 {len(hits)} 次: {[n.agent_name for n in hits]}"
+        return hits[0]
 
     def _task_for(self, plan, score: float) -> PipelineTask:
-        task = PipelineTask(id="t-lean", pipeline_name="docgen-lean",
+        task = PipelineTask(id="t-lean", pipeline_name=plan.pipeline_name,
                             input_file="in.md", config={})
         for level in plan.levels:
             for node in level:
@@ -303,19 +365,25 @@ class TestShippedConsumer:
                               dependencies=list(node.dependencies))
                 dn.status = "pending"
                 task.dag_nodes[node.agent_name] = dn
-        gate = task.dag_nodes["quality_gate"]
-        gate.status = "success"
-        gate.result = {"overall_score": score, "status": "pass"}
+        gate = self._find(plan, "quality_gate")
+        gate_node = task.dag_nodes[gate.agent_name]
+        gate_node.status = "success"
+        gate_node.result = {"overall_score": score, "status": "pass"}
+        checker = task.dag_nodes[self._find(plan, "checker").agent_name]
+        checker.status = "success"
+        checker.result = {"issues": []}
         return task
-
-    def _find(self, plan, name):
-        return [n for level in plan.levels for n in level if n.agent_name == name][0]
 
     def test_shipped_plan_carries_the_condition(self):
         plan = self._plan()
         fc = self._find(plan, "fact_checker")
-        assert fc.when == {"path": "upstream.quality_gate.overall_score",
-                           "op": ">=", "value": 70}
+        assert fc.when == {"all": [
+            {"path": "inputs.fact_check", "op": "==", "value": True},
+            {"path": "upstream.quality_gate.overall_score", "op": ">=",
+             "value_from": "inputs.min_score"},
+        ]}, "出厂消费者的条件形态变了，判据要跟着改（这条断言就是为了逼我改）"
+        # 阈值来自调用方实参，不再抄死在条件里
+        assert fc.inputs["min_score"] == 70, fc.inputs
 
     def test_low_score_skips_fact_checker_but_layout_still_runs(self):
         plan = self._plan()
@@ -326,10 +394,8 @@ class TestShippedConsumer:
         ex = _executor(metas)
 
         assert ex._submit_level_futures(task, [fc], "in.md", plan, MagicMock()) == {}
-        assert task.dag_nodes["fact_checker"].skip_reason == "condition"
+        assert task.dag_nodes[fc.agent_name].skip_reason == "condition"
 
-        task.dag_nodes["checker"].status = "success"
-        task.dag_nodes["checker"].result = {"issues": []}
         futures = ex._submit_level_futures(task, [layout], "in.md", plan, MagicMock())
         assert len(futures) == 1, "被条件跳过的可选分支不该让下游停摆"
 
@@ -337,9 +403,31 @@ class TestShippedConsumer:
         plan = self._plan()
         fc = self._find(plan, "fact_checker")
         task = self._task_for(plan, score=85.0)
-        task.dag_nodes["checker"].status = "success"
         ex = _executor({"fact_checker": AgentMeta(name="fact_checker", produces={"verdict": "last"})})
         assert len(ex._submit_level_futures(task, [fc], "in.md", plan, MagicMock())) == 1
+
+    def test_threshold_actually_comes_from_the_caller(self):
+        """同一份片段，调用方把 min_score 改成 90，85 分就不该核查。
+
+        这条是"参数化生效"的直接判据：把 docgen-verified（min_score: 0）拿来跑
+        同一个 85 分，结论必须相反。
+        """
+        plan = self._plan("docgen-verified")
+        fc = self._find(plan, "fact_checker")
+        assert fc.inputs["min_score"] == 0, fc.inputs
+        task = self._task_for(plan, score=85.0)
+        ex = _executor({"fact_checker": AgentMeta(name="fact_checker", produces={"verdict": "last"})})
+        assert len(ex._submit_level_futures(task, [fc], "in.md", plan, MagicMock())) == 1
+
+    def test_fact_check_false_short_circuits_the_branch(self):
+        """docgen 只要质量尾、不要核查：fact_check=false 时分数再高也不跑。"""
+        plan = self._plan("docgen")
+        fc = self._find(plan, "fact_checker")
+        assert fc.inputs["fact_check"] is False, fc.inputs
+        task = self._task_for(plan, score=99.0)
+        ex = _executor({"fact_checker": AgentMeta(name="fact_checker", produces={"verdict": "last"})})
+        assert ex._submit_level_futures(task, [fc], "in.md", plan, MagicMock()) == {}
+        assert task.dag_nodes[fc.agent_name].skip_reason == "condition"
 
 
 class TestStepResultCompatibility:

@@ -294,6 +294,7 @@ agents:
 | `artifacts.*` | 上游按 `PRODUCES` 合并后的产物 | `artifacts.content` |
 | `upstream.*` | 某个具体上游节点的原始结果 | `upstream.quality_gate.overall_score` |
 | `config.*` | 本节点的节点级配置 | `config.format` |
+| `inputs.*` | 调用方传给本子流水线的参数 | `inputs.min_score` |
 | `pipeline` / `task.*` | 流水线名 / 任务 id 与输入文件 | `task.input_file` |
 
 算子：`==` `!=` `<` `<=` `>` `>=` `in` `not in` `exists` `truthy` `falsy`。三条硬规矩：
@@ -305,6 +306,18 @@ agents:
 
 `when` 参与 `topology_hash`：给节点加条件会让既有 lockfile 报拓扑漂移，必须 `--write-lock`。
 不写 `when` 的节点行为与之前完全一致（各内置流水线的 lockfile 指纹实测未变，`tests/test_condition_nodes.py` 逐条校验）。
+
+右值也能从上下文取，这是子流水线参数化的前提：
+
+```yaml
+when:
+  path: upstream.quality_gate.overall_score
+  op: ">="
+  value_from: inputs.min_score        # 阈值由调用方传，不抄死在片段里
+```
+
+`value` 与 `value_from` 必须恰好给一个。`inputs.*` 若没人提供，解析期就报错而不是等运行期：
+`all:` 会短路，缺的参数可能还没被求值到就已经绕过了。
 
 ### 子流水线（`call`）
 

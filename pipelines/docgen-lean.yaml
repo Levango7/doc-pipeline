@@ -1,11 +1,13 @@
 # Doc-Pipeline 声明式流水线配置 — 成本分级版事实核查
-# 与 docgen-verified 的唯一差别：fact_checker 挂了 when 条件。
+# 质量尾（quality_gate → checker → fact_checker → layout → safe_writer）来自
+# 共享片段 _quality-tail.yaml，与 docgen / docgen-render / docgen-verified 同一段流程。
+# 这条流水线的选择是：核查只花在已经达标的草稿上（min_score: 70）。
 # 理由（成本，不是质量取舍）：质量门控没过的稿子迟早要重做，为它花一轮
-# LLM 事实核查是浪费；核查只花在已经达标的草稿上。
-# ⚠ 需要"无条件核查"请用 docgen-verified —— 这条流水线的核查是可选升级。
+# LLM 事实核查是浪费。
+# ⚠ 需要"无条件核查"请用 docgen-verified —— 这条流水线的核查是达标后的升级。
 # 用法: python run.py input.md --pipeline docgen-lean
 _name: docgen-lean
-_version: "1.0"
+_version: "1.1"
 description: 文档生成流水线，事实核查按质量分升级触发（quality_gate 达标才核查）
 
 defaults:
@@ -48,73 +50,31 @@ agents:
     config:
       prompt_profile: generic-tech
 
-  - name: quality_gate
-    version: "2.0"
-    timeout: 300
+  # 质量尾整段来自共享片段：这一段的行为（含 fact_checker 的条件）定义在
+  # pipelines/_quality-tail.yaml，这里只声明"这条流水线要什么样的核查"。
+  # min_score=70 与 quality_gate 的达标线一致：不达标的稿子不付核查成本。
+  - name: quality_tail
+    call: _quality-tail
     dependencies: ["writer"]
-    config:
-      quality_profile: technical-doc
-      threshold: 70
-      max_regenerations: 3
-
-  - name: checker
-    version: "1.1"
-    timeout: 300
-    dependencies: ["quality_gate"]
-    config:
-      fail_fast: false
-
-  - name: fact_checker
-    version: "1.0"
-    timeout: 180
-    dependencies: ["checker"]
-    # 只对质量达标的草稿付核查成本；不达标时本节点被跳过，layout / safe_writer
-    # 照常执行（条件跳过不阻塞下游，见 docs/architecture.md §1.2）。
-    # 阈值取自 quality_gate.config.threshold，这里写死 70 与上面保持一致。
-    when:
-      path: upstream.quality_gate.overall_score
-      op: ">="
-      value: 70
-    config:
-      max_claims: 30
-      llm_timeout: 30
-
-  - name: layout
-    version: "2.0"
-    timeout: 300
-    dependencies: ["fact_checker"]
-    config:
-      style: markdown
-
-  - name: safe_writer
-    version: "2.0"
-    timeout: 300
-    dependencies: ["layout"]
-    config:
-      backup_dir: backups
-      atomic: true
+    inputs:
+      fact_check: true
+      min_score: 70
 
 # ── DAG 拓扑 ──────────────────────────────
+# levels 只写到 call 节点为止：展开（内联片段、将依赖接到片段的出口）后层级由引擎
+# 按依赖重算，手写的层级不再描述这张图。见 docs/architecture.md 的子流水线一节。
 topology:
   type: dag
   levels:
     - [researcher]
     - [fetcher]
     - [writer]
-    - [quality_gate]
-    - [checker]
-    - [fact_checker]
-    - [layout]
-    - [safe_writer]
+    - [quality_tail]
 
   edges:
     - [researcher, fetcher]
     - [fetcher, writer]
-    - [writer, quality_gate]
-    - [quality_gate, checker]
-    - [checker, fact_checker]
-    - [fact_checker, layout]
-    - [layout, safe_writer]
+    - [writer, quality_tail]
 
 # ── 流水线全局策略 ──────────────────────────
 pipeline:

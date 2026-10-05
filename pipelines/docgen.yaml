@@ -1,7 +1,9 @@
 # Doc-Pipeline 声明式流水线配置示例 (v4 with Fetcher + Multi-Engine)
+# 质量尾（QualityGate → Checker → Layout → SafeWriter）来自共享片段
+# pipelines/_quality-tail.yaml；本文件只负责"检索→抓取→成稿"和"这段流程要不要核查"。
 _name: docgen
-_version: "4.0"
-description: 自动文档生成流水线（ Researcher → Fetcher → Writer → QualityGate → Checker → Layout → SafeWriter ）
+_version: "4.1"
+description: 自动文档生成流水线（ Researcher → Fetcher → Writer → 质量尾片段 ）
 
 defaults:
   parallelism:
@@ -43,58 +45,29 @@ agents:
     config:
       prompt_profile: generic-tech
 
-  - name: quality_gate
-    version: "2.0"
-    timeout: 300
+  # 质量尾（含 fact_checker 这一档）来自共享片段 _quality-tail.yaml。
+  # 这条流水线是基线配置：不做事实核查（fact_check: false）。
+  # 要核查用 docgen-verified（无条件）或 docgen-lean（达标才查）。
+  - name: quality_tail
+    call: _quality-tail
     dependencies: ["writer"]
-    config:
-      quality_profile: technical-doc
-      threshold: 70
-      max_regenerations: 3
-      # 权重统一由 pipelines/quality/technical-doc.yaml 提供，此处不再内嵌 weights
-      # （内嵌会按键覆盖 profile，稀释 substance/topic_relevance 并造成双源漂移）
-
-  - name: checker
-    version: "1.1"
-    timeout: 300
-    dependencies: ["quality_gate"]
-    config:
-      fail_fast: false
-
-  - name: layout
-    version: "2.0"
-    timeout: 300
-    dependencies: ["checker"]
-    config:
-      style: markdown
-
-  - name: safe_writer
-    version: "2.0"
-    timeout: 300
-    dependencies: ["layout"]
-    config:
-      backup_dir: backups
-      atomic: true
+    inputs:
+      fact_check: false
 
 # ── DAG 拓扑 ──────────────────────────────
+# levels 到 call 节点为止；片段的节点在解析期内联进来，层级由引擎按依赖重算。
 topology:
   type: dag
   levels:
     - [researcher]
     - [fetcher]
     - [writer]
-    - [quality_gate]
-    - [checker]
-    - [layout]
-    - [safe_writer]
+    - [quality_tail]
 
   edges:
     - [researcher, fetcher]
     - [fetcher, writer]
-    - [writer, quality_gate]
-    - [quality_gate, checker]
-    - [checker, layout]
-    - [layout, safe_writer]
+    - [writer, quality_tail]
 
 # ── 流水线全局策略 ──────────────────────────
 pipeline:

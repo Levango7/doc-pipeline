@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-06，未发版）
+
+- **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，
+  片段节点的 `when` 用 `inputs.*` 读（左值 `path` 与右值 `value_from` 都支持）。
+  - `value` / `value_from` 必须恰好给一个；`inputs` 的键不得含点号（点号是路径分隔符）。
+  - 作用域三条：普通节点上的 `inputs` 是**默认值**且必须被自己的 `when` 读到；内联时
+    只把该节点会读的键落到节点上；嵌套 `call` 各用各的实参，外层不覆盖内层。
+  - 解析期双向查参数：引用了没人传 → 报错（`all:` 的短路会让缺参静默绕过）；传了没人读
+    → 报错（`min_scor: 70` 这类拼写错误原本会静默走默认值）。
+  - `inputs` 参与 `topology_hash`：改实参会让调用方 lockfile 报漂移。
+- **出厂片段 `pipelines/_quality-tail.yaml`**：质量尾（quality_gate → checker →
+  可选 fact_checker → layout → safe_writer）。四条 docgen 流水线的这一段逐字节比对后
+  只差 fact_checker 的有无与门槛，于是差异收敛成 `fact_check` / `min_score` 两个参数：
+  docgen 与 docgen-render 传 `fact_check: false`，docgen-verified 传
+  `fact_check: true, min_score: 0`（无条件核查），docgen-lean 传 `min_score: 70`
+  （达标才核查，取代原先写死在条件里的 70）。
+- **片段的目录解析**：`parse_file` 把引用方所在目录传给内联逻辑，于是
+  `--pipeline-file /tmp/x.yaml` 能在 `/tmp` 找到它的片段，而不是回头看进程 cwd。
+  `_` 前缀的片段不进 `--pipeline` 候选清单（`installed_pipelines` /
+  `list_pipelines` / run.py 三处口径一致），但仍可被 `call` 加载。
+
+### Fixed（2026-10-06）
+
+- **内联展开把父图前置接到子流水线的每个节点**：入口判据写成 `d in renamed`，而那时
+  `dependencies` 已经是改名**之后**的身份（`renamed` 的键是改名前的名字），于是恒不命中、
+  每个内联节点都被当成入口。实测后果：docgen 的 `writer` 成了 fact_checker / layout
+  的依赖，层级与并发窗口跟着错，`when` 求值也会因"依赖未成功"被误跳过。
+  判据改用改名后的身份集合（`test_parent_edges_move_to_sub_boundary` 现在同时断言
+  "非入口不得带父图前置"）。
+- **内联节点的 Agent 能力整段失效**：`registry.get_meta(node.agent_name)` 用别名名查表
+  得到 `None`，`None` 不抛错，只是能力没了。两处真机撞出来：
+  `WRITES_OUTPUT` 失效 → `task.output_path` 不记 → 交付契约反过来说"声明了落盘节点却没有
+  交付物"（文件 24 KB 明明在）；`SUPPORTS_REGENERATION` 失效 → 内联的 quality_gate
+  不再触发重做，质量门降级成一次性打分。改为按 `agent_of` 后的 base 名查，
+  复检目标（`REGENERATION_RECHECK` 缺省取本节点名）也还原成 base 名，否则 RPC topic
+  `quality_gate__tail.input` 没有订阅者。判据：`TestInlinedNodesKeepAgentCapabilities`
+  两条，把修复回退会双双转红。
+- **报表里质量门控警告静默消失**：`run.py` 还用 `(task.result or {}).get("quality_gate")`，
+  内联后键名是 `quality_gate__quality_tail` → 拿空 → 低分文档只剩"执行完成"。
+  与 writer 一样改走 `_result_for`（同名多处出现时不猜）。
+- **`Scheduler.validate()` 查不到内联/池化节点的 Agent 文件**：它用原始节点名拼
+  `agents/<name>.py`，`writer_pool_0` 早就拼错（该方法目前无调用方，见待办）。
+  改为先 `agent_of()` 还原。（附带记录：`validate()` 全仓零调用方，
+  `config_schema.py` 注释里"语法坏掉的 Agent 文件由 validate() 另行报告"因此落空。）
+- **YAML 布尔名字陷阱**：`- name: on` 被 YAML 1.1 解析成 `True`，报错落在几千行之外的
+  `'bool' object has no attribute 'split'`。解析期加判据并点名这个陷阱。
+
+### Docs（2026-10-06）
+
+- README：`value_from`、`call.inputs` 与默认值/作用域表、`_quality-tail` 片段说明；
+  求值上下文表加 `inputs.*` 一行。
+- docs/architecture.md：§1.4 补"能力也按 Agent 名解析"两处教训；新增 §1.5
+  片段与参数作用域（含锁定覆盖面、`_` 前缀约定、同目录要求）。
+
+### 拓扑与锁文件差异（2026-10-06，四条流水线 + 新片段）
+
+| 流水线 | node_count | topology_hash | 锁里节点名变化 |
+|---|---|---|---|
+| docgen | 8 → 9 | `6f706b933bce` → `1c3199450b61` | 去 `checker/layout/quality_gate/safe_writer`；加同名 `__quality_tail` 五个（多出 `fact_checker__quality_tail`，`fact_check: false` 时被条件跳过） |
+| docgen-render | 9 → 10 | `23d5d9b92290` → `3a28a72ff2e2` | 同上；`renderer` 的依赖由 `safe_writer` 改接到 `safe_writer__quality_tail` |
+| docgen-verified | 9 → 9 | `34a01b8c2d1b` → `697f95b94353` | 五个尾巴节点全部换成 `__quality_tail` 身份；`fact_checker` 从"无条件"变成"`fact_check: true, min_score: 0`" |
+| docgen-lean | 9 → 9 | `94e9b0597cc8` → `a6b8de38ebd4` | 同上；阈值 70 从写死在 `when.value` 变成调用方 `inputs.min_score` |
+| _quality-tail（新） | — → 5 | 新 `f88f21d8a323` | 片段的默认展开：`fact_checker` 带默认值 `{fact_check: true, min_score: 0}`，因此片段自身也能解析/加锁 |
+
+四条都重新 `--write-lock`；存活名字之间 `config_hash` 无一漂移（配置逐字节照抄，只换了归属文件）。
+三条 smoke 实跑：docgen `done`/exit 0（fact_checker ⏭️ 条件跳过）、docgen-verified `done`
+（fact_checker 实跑）、docgen-render `done`（renderer 因 python-docx 对占位稿报 XML 控制字符
+错误而 ❌，与本次抽取无关，另立待办）。
+
 ### Added（2026-10-05，未发版）
 
 - **Phase 1 解耦——产物契约**（`pipeline_core/artifacts.py` + `config_schema.py`）：

@@ -1,0 +1,108 @@
+_name: _quality-tail
+_version: "1.0"
+description: 质量尾片段（quality_gate → checker → 可选 fact_checker → layout → safe_writer），供 docgen 系流水线 call
+
+# ── 为什么存在 ──────────────────────────────
+# docgen / docgen-render / docgen-verified / docgen-lean 这四条流水线的尾巴，
+# 逐字节比下来只差一件事：fact_checker 在不在、什么条件下才跑。其余节点的
+# version/timeout/config 完全相同。重复的不是"几行 YAML"，而是"四份会各自漂移的
+# 质量流程定义"——以前改 threshold 要记得改四处，漏一处就出现同一套 Agent
+# 在不同流水线里 behaving 不一致。
+#
+# 抽成片段后差异全部收敛成两个参数，由调用方传：
+#   fact_check: 这一段要不要做事实核查（默认 true）
+#   min_score : 分数达到多少才做核查（默认 0 = 无条件做）
+# 参数只在节点的 when 里被读到（inputs.*），所以本文件也带着默认值——
+# 有默认值它才能被单独解析、单独 lint。
+#
+# ⚠ 这是内部片段：文件名前缀 `_` 让它不出现在 `--pipeline` 候选里。
+#   它的输入是上游 writer 的正文，单独跑没有意义。
+#   版本锁定靠调用方的 lockfile：片段的节点、配置、连线都进了父图的
+#   topology_hash / config_hash，改这里会让父流水线报"漂移"（见
+#   tests/test_subpipeline.py::TestCallerLockFollowsCallee）。
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+# ── Agent 定义 ──────────────────────────────
+agents:
+  - name: quality_gate
+    version: "2.0"
+    timeout: 300
+    dependencies: []
+    config:
+      quality_profile: technical-doc
+      threshold: 70
+      max_regenerations: 3
+      # 权重统一由 pipelines/quality/technical-doc.yaml 提供，此处不再内嵌 weights
+      # （内嵌会按键覆盖 profile，稀释 substance/topic_relevance 并造成双源漂移）
+
+  - name: checker
+    version: "1.1"
+    timeout: 300
+    dependencies: [quality_gate]
+    config:
+      fail_fast: false
+
+  # 唯一按调用方要求分叉的节点。两个条件都成立才核查：
+  #   fact_check 为真 —— 调用方要不要这一段
+  #   分数 >= min_score —— 成本考虑：没达标的稿子迟早重做，为它花一轮 LLM 核查是浪费
+  # 用 all 而不是把两个值合成一个表达式：这门条件语言只支持一层组合，
+  # 短路顺序也从左到右，读得完。
+  - name: fact_checker
+    version: "1.0"
+    timeout: 180
+    dependencies: [checker]
+    inputs:
+      fact_check: true
+      min_score: 0
+    when:
+      all:
+        - {path: inputs.fact_check, op: "==", value: true}
+        - {path: upstream.quality_gate.overall_score, op: ">=", value_from: inputs.min_score}
+    config:
+      max_claims: 30
+      llm_timeout: 30
+
+  - name: layout
+    version: "2.0"
+    timeout: 300
+    dependencies: [fact_checker]
+    config:
+      style: markdown
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: [layout]
+    config:
+      backup_dir: backups
+      atomic: true
+
+# ── DAG 拓扑 ────────────────────────────────
+# fact_checker 被条件跳过时 layout 不受影响：引擎按 skip_reason=="condition"
+# 区分"作者这轮不要这段"和"上游挂了所以不能跑"，前者不级联跳过。
+topology:
+  type: dag
+  levels:
+    - [quality_gate]
+    - [checker]
+    - [fact_checker]
+    - [layout]
+    - [safe_writer]
+
+  edges:
+    - [quality_gate, checker]
+    - [checker, fact_checker]
+    - [fact_checker, layout]
+    - [layout, safe_writer]
+
+pipeline:
+  timeout: 600
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

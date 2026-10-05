@@ -49,36 +49,13 @@ agents:
     config:
       prompt_profile: generic-tech
 
-  - name: quality_gate
-    version: "2.0"
-    timeout: 300
+  # 质量尾来自共享片段 _quality-tail.yaml：与 docgen 完全同一段流程、同一份配置，
+  # 这里同样不做事实核查。
+  - name: quality_tail
+    call: _quality-tail
     dependencies: ["writer"]
-    config:
-      quality_profile: technical-doc
-      threshold: 70
-      max_regenerations: 3
-
-  - name: checker
-    version: "1.1"
-    timeout: 300
-    dependencies: ["quality_gate"]
-    config:
-      fail_fast: false
-
-  - name: layout
-    version: "2.0"
-    timeout: 300
-    dependencies: ["checker"]
-    config:
-      style: markdown
-
-  - name: safe_writer
-    version: "2.0"
-    timeout: 300
-    dependencies: ["layout"]
-    config:
-      backup_dir: backups
-      atomic: true
+    inputs:
+      fact_check: false
 
   # 渲染节点：Markdown → docx / pdf
   # 后端（python-docx / reportlab）为可选依赖，缺失时该节点如实回报跳过原因，
@@ -86,7 +63,7 @@ agents:
   - name: renderer
     version: "1.0"
     timeout: 120
-    dependencies: ["safe_writer"]
+    dependencies: ["quality_tail"]     # 展开后自动接到片段的出口（safe_writer）
     config:
       formats: ["docx", "pdf"]
       output_dir: output
@@ -98,19 +75,13 @@ topology:
     - [researcher]
     - [fetcher]
     - [writer]
-    - [quality_gate]
-    - [checker]
-    - [layout]
-    - [safe_writer]
+    - [quality_tail]
     - [renderer]             # 渲染依赖落盘完成，确保 Markdown 已定稿
   edges:
     - [researcher, fetcher]
     - [fetcher, writer]
-    - [writer, quality_gate]
-    - [quality_gate, checker]
-    - [checker, layout]
-    - [layout, safe_writer]
-    - [safe_writer, renderer]
+    - [writer, quality_tail]
+    - [quality_tail, renderer]
 
 # ── 流水线全局策略 ──────────────────────────
 pipeline:
