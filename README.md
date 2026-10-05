@@ -306,6 +306,30 @@ agents:
 `when` 参与 `topology_hash`：给节点加条件会让既有 lockfile 报拓扑漂移，必须 `--write-lock`。
 不写 `when` 的节点行为与之前完全一致（各内置流水线的 lockfile 指纹实测未变，`tests/test_condition_nodes.py` 逐条校验）。
 
+### 子流水线（`call`）
+
+一个节点可以引用另一条流水线，解析期把它**内联展开**成普通节点，因此幂等键、检查点、
+重试、熔断、`when`、产物契约一律照旧生效：
+
+```yaml
+agents:
+  - name: writer
+    dependencies: []
+  - name: review                 # 节点身份，不是 Agent 名
+    call: docgen-verified        # 被引用的流水线（pipelines/docgen-verified.yaml）
+    dependencies: [writer]
+  - name: publish
+    dependencies: [review]       # 自动接到子流水线的出口节点
+```
+
+- 内联进来的节点带别名：`checker` → `checker__review`，所以**同一个 Agent 可以在一张
+  图里出现多次**而互不覆盖；`agent_of()` 仍还原成 `checker` 去查注册表。
+- 环与深度在解析期拒绝：`a → b → a` 报"循环引用"，超过 3 层（含叶子）报"嵌套超过上限"。
+- `call` 节点不接受 `config` / `when` / `pool_size` / `rate_limit` —— 配置属于子流水线，
+  父子各写一份会变成两处真相。
+- **被引子流水线改了，调用方的 lockfile 会报拓扑漂移**（指纹按展开后的图算），
+  换掉一段复用的子流程不可能绕过版本锁定。
+
 ### Quality Profile（`pipelines/quality/`）
 
 ```yaml

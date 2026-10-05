@@ -101,6 +101,22 @@ run 仍 done 并留 warning；因依赖失败没跑 → 仍然 failed。
 必须 `task.output_path` 指向的文件真的存在（或有非空内联内容）才算 done。
 起因是实测 kb-docgen 报 `done` + exit 0 却没有任何产物文件。
 
+### 1.4 节点身份：一个名字同时是"图里的谁"和"谁来执行"
+
+节点名格式 `agent[_pool_i][__alias…]`，两种解析**必须分开用**（`pipeline_core/naming.py`）：
+
+| 函数 | 用途 | `writer_pool_0__review` 的结果 |
+|------|------|-------------------------------|
+| `agent_of()` | 查注册表元信息、RPC 目标、熔断器键 | `writer` |
+| `family_of()` | 归并池兄弟、上游闭包分组、结果读回退 | `writer__review` |
+
+混用的后果是实测到的，不是推演：内联展开后我一度把闭包分组也写成 `agent_of`，
+于是 `layout__review` 从 `layout__audit` 的上游闭包里掉出去，第三个节点拿到的是
+两跳之前的正文——没有任何报错，产物只是悄悄变了。同理 `_merge_pooled_results`
+按 Agent 归并会把两段不同子流程的池结果混成一团。
+判据：分组类一律 `family_of`，查 Agent 类一律 `agent_of`，两侧各有测试
+（`TestRuntimeIdentity` / `TestPoolMergeIsAliasAware`），且都做过变异回退验证会转红。
+
 ## 2. 核心概念
 
 | 概念 | 定义位置 | 说明 |

@@ -7,7 +7,7 @@
 """
 import pytest
 
-from pipeline_core.naming import ALIAS_SEP, POOL_SEP, agent_of, alias_of, node_id, pool_index_of
+from pipeline_core.naming import ALIAS_SEP, POOL_SEP, agent_of, alias_of, family_of, node_id, pool_index_of
 
 
 class TestAgentOf:
@@ -60,6 +60,34 @@ class TestPoolAndAlias:
     ])
     def test_alias(self, name, alias):
         assert alias_of(name) == alias
+
+
+class TestFamilyOf:
+    """family_of 与 agent_of 必须并存：分组按家族，查注册表按 Agent。
+
+    只用 agent_of 做分组的后果是实测到的（不是推演）：链式 call 里
+    `layout__review` 掉出上游闭包，第三个节点拿到两跳之前的正文。
+    """
+
+    @pytest.mark.parametrize(("name", "family"), [
+        ("writer", "writer"),
+        ("writer_pool_0", "writer"),
+        ("writer_pool_11", "writer"),
+        ("writer__review", "writer__review"),
+        ("writer_pool_2__review", "writer__review"),
+        ("checker__b__via_nest", "checker__b__via_nest"),   # 嵌套内联保持自身
+    ])
+    def test_family_keeps_alias_drops_pool(self, name, family):
+        assert family_of(name) == family
+
+    def test_family_groups_pool_siblings_of_one_inlined_node(self):
+        a, b = "writer_pool_0__review", "writer_pool_1__review"
+        assert family_of(a) == family_of(b) == "writer__review"
+        assert family_of(a) != family_of("writer_pool_0"), "父图同名节点不能被并进来"
+
+    def test_agent_of_would_have_collided_the_two(self):
+        """反证：旧写法为什么会掉节点——它把 review 与父图 writer 视为同一个。"""
+        assert agent_of("writer_pool_0__review") == agent_of("writer_pool_0") == "writer"
 
 
 class TestNodeIdRoundTrip:

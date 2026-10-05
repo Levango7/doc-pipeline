@@ -37,6 +37,22 @@ def pool_index_of(node_name: str) -> int | None:
         return None
 
 
+def family_of(node_name: str) -> str:
+    """去掉池下标后的"同一逻辑节点"标识——内联别名必须原样保留。
+
+    `writer_pool_0` / `writer` → `writer`；`writer_pool_0__review` → `writer__review`；
+    嵌套内联 `checker__b__via_nest` 保持自身不变。
+
+    为什么需要它与 `agent_of` 并存：分组"同一节点的池兄弟"要按**家族**归并，
+    而查注册表元信息要按 **Agent** 查。只留一个就会出错——只用 agent_of 做分组，
+    内联进来的节点会掉出上游闭包（实测过：链式 call 的下游拿到的是两跳之前的
+    内容，中间那跳被静默丢了）。
+    """
+    head, _, rest = node_name.partition(ALIAS_SEP)
+    head = head.split(POOL_SEP)[0]
+    return f"{head}{ALIAS_SEP}{rest}" if rest else head
+
+
 def alias_of(node_name: str) -> str:
     """内联别名（子流水线展开时用来保证节点身份唯一）；无别名返回空串。
 

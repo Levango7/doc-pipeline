@@ -100,6 +100,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   新增 `tests/test_naming.py` 23 例，其中一例遍历 `agents/` 的 `AGENT_NAME`，
   保证没有真实 Agent 名会被这层解析削掉一段。
 
+- **阶段 2-3：子流水线 `call`（解析期内联展开）**。一条流水线此前只能是一张扁平
+  DAG，没有"把另一段流程当节点"的能力。
+  - 做法是**计划层展开**而非新增执行语义：`_expand_calls` 把被引流水线的节点带别名
+    内联进调用方图（`checker` → `checker__review`），call 节点的前置接到子图入口、
+    依赖它的节点改接子图出口，然后按依赖重算层级。于是幂等键、检查点、重试、熔断、
+    `when`、产物契约全部照旧，不需要在引擎里再维护一套子流程语义。
+  - 同一 Agent 因此可以在一张图里出现多次而互不覆盖（父子都写 checker →
+    `checker` 与 `checker__review`）。
+  - 解析期拒绝：环引用（按**被引流水线名**判，两条节点复用同一子流程是合法复用）、
+    嵌套超过 3 层、被引流水线不存在（报可用清单）、call 节点自带
+    config/when/pool_size/rate_limit（配置属于子流水线，两处真相不可读）。
+  - 拓扑指纹按**展开后**的图计算：只改子流水线一个字节，调用方 lockfile 就报漂移
+    （含"节点数不变、只换 Agent"这种靠 node_count 抓不住的情形）。
+  - **揪出我自己刚引入的回归**：命名收敛那一步把闭包分组、池归并、结果读回退
+    一并改成了 `agent_of`，别名被剥掉 → `layout__review` 掉出上游闭包、
+    两段内联池结果互相串台。补 `family_of()`（保留别名、只去池下标）并把三类用法
+    分开；`TestRuntimeIdentity`（链式 call 拿到的是上一跳出口内容）与
+    `TestPoolMergeIsAliasAware` 各做过变异回退验证会转红。
+  - 测试：`tests/test_subpipeline.py` 19 例（展开/边界接线/层级重算/复用不撞名/
+    池化下标保留/环·深度·配置拒绝/锁漂移/运行期身份隔离）+
+    `tests/test_naming.py` 增至 31 例。README「子流水线」与 architecture §1.4 记录约定。
+
 - **阶段 2-1：条件节点 `when`——拓扑第一次能表达"看结果决定"**。
   此前 `topology.levels` 是手写静态层级，全仓 `condition/branch/loop/foreach/sub_pipeline`
   零命中，DAG 一旦确定就照跑。新增 `pipeline_core/conditions.py`（受限声明式，

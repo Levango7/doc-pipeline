@@ -15,7 +15,7 @@ from .artifacts import collect_artifacts, normalize_declaration, output_artifact
 from .cache_manager import CacheManager
 from .circuit_breaker import backoff_with_jitter
 from .conditions import evaluate as _evaluate_condition
-from .naming import agent_of
+from .naming import agent_of, family_of
 
 # ─── 模块级函数：支持 ProcessPoolExecutor pickle ──────────────────
 
@@ -366,13 +366,14 @@ class DAGExecutor:
         while frontier:
             nxt: list[str] = []
             for name in frontier:
-                base = agent_of(name)
+                # 按"家族"归并，不是按 Agent：内联进来的 writer__review 与父图里的
+                # writer 是两个逻辑节点，用 agent_of 归组会让前者从闭包里掉出去。
+                base = family_of(name)
                 if base in seen:
                     continue
                 seen.add(base)
                 # 池化兄弟实例一起纳入（同层并行，产物都是有效素材）
-                for sibling in [k for k in dag_nodes
-                                if k == base or k.startswith(base + "_pool_")]:
+                for sibling in [k for k in dag_nodes if family_of(k) == base]:
                     if sibling not in closure:
                         closure.append(sibling)
                 dep_node = dag_nodes.get(name) or dag_nodes.get(base)
@@ -391,8 +392,8 @@ class DAGExecutor:
         def depth(name: str) -> int:
             if name in level_of:
                 return level_of[name]
-            base = agent_of(name)
-            return level_of.get(base, -1)
+            # 同样按家族回退：内联节点的层级不等于同名 Agent 的层级
+            return level_of.get(family_of(name), -1)
 
         # 远 → 近 遍历：`last` 因此在最近产出者处收尾（谁离得近谁说了算），
         # `first` 因此在最远产出者处定格。方向只在这里定义一次。
@@ -1167,8 +1168,12 @@ class DAGExecutor:
 
     def _get_task_output(self, task, key: str, default=None):
         """统一读取 task 输出（同时查 dag_nodes 和 result，加锁）。
-        支持池化节点名（如 researcher_pool_0）自动解析为 base name。"""
-        base = agent_of(key)
+        支持池化节点名（如 researcher_pool_0）自动解析为其家族基名。
+
+        回退用 `family_of` 而不是 `agent_of`：`researcher_pool_0__review` 回退到
+        "researcher" 会读到父图那份合并结果，两段内联子流程的产物就此互相串台。
+        """
+        base = family_of(key)
         lock = getattr(task, "result_lock", None)
         def _read():
             for lookup in (key, base):
@@ -1190,7 +1195,9 @@ class DAGExecutor:
     def _set_task_output(self, task, key: str, value, dag_node: bool = True):
         """统一写入 task 输出（同时写 dag_nodes 和 result，加锁）。"""
         lock = getattr(task, "result_lock", None)
-        base = agent_of(key)
+        # 回退按家族：把内联池的合并结果写回 "researcher" 会覆写父图 researcher 节点
+        # 的结果与状态（agent_of 剥别名，这里正是要保留别名）。
+        base = family_of(key)
         def _write():
             if hasattr(task, "result"):
                 task.result[key] = value

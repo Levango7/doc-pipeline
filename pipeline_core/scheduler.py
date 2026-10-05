@@ -19,7 +19,7 @@ import yaml
 
 from .conditions import ConditionError
 from .conditions import validate as validate_condition
-from .naming import agent_of
+from .naming import agent_of, node_id, pool_index_of
 
 
 class LockfileMismatchError(Exception):
@@ -50,6 +50,9 @@ class AgentConfig:
     #: 可选的执行条件（受限声明式，见 pipeline_core/conditions.py）。
     #: None = 无条件，永远执行 —— 不写 when 的老流水线行为完全不变。
     when: dict | None = None
+    #: 引用另一条流水线（子流水线内联）。非空时本节点不是 Agent，
+    #: 展开后会被替换成被引流水线的全部节点，节点身份加 `__{本节点名}` 别名。
+    call: str = ""
 
     def __post_init__(self):
         if self.pool_size < 1:
@@ -142,6 +145,14 @@ def resolve_pipeline_name(requested: str, available: list[str],
     return name, ""
 
 
+#: 子流水线内联的最大深度：`a → b → c` 是 3。写死上限是因为递归展开一旦成环
+#: 会把解析过程挂住，而深度 3 已经覆盖"复用一段核查/发布子流程"的真实用法。
+MAX_CALL_DEPTH = 3
+
+#: 内联别名分隔符（见 pipeline_core/naming.py）
+_ALIAS_SEP = "__"
+
+
 class Scheduler:
     """读取 pipeline.yaml 并生成可执行计划"""
 
@@ -232,7 +243,14 @@ class Scheduler:
                 result[key] = value
         return result
 
-    def _build_plan(self, raw: dict, pipeline_name: str) -> ExecutionPlan:
+    def _build_plan(self, raw: dict, pipeline_name: str,
+                    _stack: tuple[str, ...] = ()) -> ExecutionPlan:
+        # 深度检查放在入口而不是展开点：叶子流水线不含 call，只在展开点查会漏算
+        # 最后一层，"上限 3"就变成了实际允许 4。
+        chain = _stack + (pipeline_name,)
+        if len(chain) > MAX_CALL_DEPTH:
+            raise ValueError(
+                f"子流水线嵌套超过上限 {MAX_CALL_DEPTH}：{' → '.join(chain)}")
         import logging
         import uuid
         logger = logging.getLogger(__name__)
@@ -270,6 +288,7 @@ class Scheduler:
                 pool_size=pool_size,
                 rate_limit=merged.get("rate_limit", {}),
                 when=merged.get("when"),
+                call=str(merged.get("call", "") or "").strip(),
             )
             # 条件写法非法要在解析期炸掉：放到运行时才发现，节点会被静默跳过，
             # 流水线照样 done —— 那正是本项目一路在关的静默绿。
@@ -278,6 +297,15 @@ class Scheduler:
                     validate_condition(cfg.when)
                 except ConditionError as e:
                     raise ValueError(f"[{cfg.name}] when 条件非法: {e}") from e
+            if cfg.call:
+                # 子流水线节点只负责"引谁"，配置属于子流水线自己。
+                # 允许 config/when 会让父子两处各有一份真相，展开后行为难以推断。
+                blocked = [k for k in ("config", "when", "pool_size", "rate_limit")
+                           if merged.get(k)]
+                if blocked:
+                    raise ValueError(
+                        f"[{cfg.name}] 是 call 节点（子流水线 {cfg.call!r}），"
+                        f"不接受 {blocked}；请把配置写进被引用的流水线里")
             agent_map[cfg.name] = cfg
 
         # ── Schema 校验 ──
@@ -346,6 +374,9 @@ class Scheduler:
 
             levels.append(nodes)
 
+        # ── 3.1 内联子流水线（call）──
+        levels = self._expand_calls(levels, pipeline_name, _stack)
+
         # ── 4. 构建 ExecutionPlan ──
         node_count = sum(len(level) for level in levels)
         return ExecutionPlan(
@@ -357,6 +388,137 @@ class Scheduler:
             fail_fast=raw.get("pipeline", {}).get("fail_fast", False),
             checkpoint=raw.get("pipeline", {}).get("checkpoint", {}),
         )
+
+    # ── 子流水线内联（call） ───────────────────
+
+    def _expand_calls(self, levels: list[list[ExecutionNode]], pipeline_name: str,
+                      _stack: tuple[str, ...]) -> list[list[ExecutionNode]]:
+        """把 `call: 另一条流水线` 展开成该流水线的全部节点（内联）。
+
+        为什么在计划层展开而不是新增一种"子流程节点"执行语义：展开后执行的仍是
+        普通节点，幂等键、检查点、重试、熔断、when、产物契约一律照旧生效，不必在
+        引擎里再维护一套并行语义。代价是图变大——换来的是行为可预测。
+
+        节点身份规则：内联进来的节点加别名 `__{call 节点名}`，于是同一个 Agent
+        可以在一张图里出现多次而互不覆盖（`writer` 与 `writer__review`），
+        `agent_of()` 仍还原成 `writer`。
+        """
+        if not any(n.agent_config.call for lvl in levels for n in lvl):
+            return levels        # 绝大多数流水线走这条路：一字不改
+
+        stack = _stack + (pipeline_name,)
+
+        flat: list[ExecutionNode] = []
+        exits_of: dict[str, list[str]] = {}     # call 节点名 → 子图出口节点名
+        for lvl in levels:
+            for node in lvl:
+                target = node.agent_config.call
+                if not target:
+                    flat.append(node)
+                    continue
+                cloned, entries, exits = self._inline_call(node, target, stack)
+                for sub in cloned:
+                    if sub.agent_name in entries:
+                        # 父图的前置搬到子图入口
+                        sub.dependencies = sorted(set(sub.dependencies) | set(node.dependencies))
+                flat.extend(cloned)
+                exits_of[node.agent_name] = exits
+
+        # 原本依赖 call 节点的父节点，改为依赖子图出口
+        for node in flat:
+            if any(d in exits_of for d in node.dependencies):
+                rewritten: list[str] = []
+                for d in node.dependencies:
+                    rewritten.extend(exits_of.get(d, [d]))
+                node.dependencies = sorted(set(rewritten))
+
+        # 展开会引入新节点并改写依赖，层级必须按依赖重算（作者手写的 levels 已不再
+        # 描述这张图）。没有 call 时不走到这里，既有流水线层级保持原样。
+        return self._levels_from_deps(flat)
+
+    def _inline_call(self, call_node: ExecutionNode, target: str,
+                     stack: tuple[str, ...]) -> tuple[list[ExecutionNode], list[str], list[str]]:
+        """展开一个 call 节点，返回（带别名的子节点, 子图入口, 子图出口）。"""
+        alias = call_node.agent_name
+        # 环要按"流水线名"判，不是按 call 节点名：两条不同名字的节点引用同一个
+        # 被引方是合法复用，而 a→b→a 才是环。
+        if target in stack:
+            raise ValueError(f"子流水线循环引用: {' → '.join(stack)} → {target}")
+        try:
+            sub_raw = self.load(target)
+        except FileNotFoundError as e:
+            raise ValueError(
+                f"[{alias}] call 指向的流水线不存在: {target!r}（{e}）") from e
+        sub_plan = self._build_plan(sub_raw, target, _stack=stack)
+
+        renamed: dict[str, str] = {}
+        cloned: list[ExecutionNode] = []
+        for lvl in sub_plan.levels:
+            for n in lvl:
+                new_id = self._alias_id(n.agent_name, alias)
+                renamed[n.agent_name] = new_id
+                cloned.append(ExecutionNode(
+                    agent_name=new_id,
+                    agent_config=n.agent_config,
+                    dependencies=[renamed.get(d, d) for d in n.dependencies],
+                    timeout=n.timeout, max_retries=n.max_retries,
+                    backoff=n.backoff, initial_delay=n.initial_delay,
+                    when=n.when,
+                ))
+        # 第二遍：子图内部依赖在改名后才齐备
+        for n in cloned:
+            n.dependencies = [renamed.get(d, d) for d in n.dependencies]
+
+        entries = [n.agent_name for n in cloned
+                   if not [d for d in n.dependencies if d in renamed]]
+        depended_on = {d for n in cloned for d in n.dependencies}
+        exits = [n.agent_name for n in cloned if n.agent_name not in depended_on]
+        if not entries or not exits:
+            raise ValueError(
+                f"子流水线 {target!r} 无法内联：入口 {entries} / 出口 {exits} 为空")
+        return cloned, entries, exits
+
+    @staticmethod
+    def _alias_id(node_name: str, alias: str) -> str:
+        """给内联节点加别名，保留池下标：`writer_pool_0` → `writer_pool_0__review`。
+
+        嵌套 call 每层各占一个 `__` 段（`writer__sub__inner`），不能压成单段
+        `writer__sub_inner`：那样"名字叫 sub_inner 的一条子流水线"与"sub 里再调
+        inner"会得出同一个节点身份，dag_nodes 互相覆盖。`agent_of()` 取第一段，
+        多段别名不影响 Agent 还原。
+        """
+        return f"{node_name}{_ALIAS_SEP}{alias}" if _ALIAS_SEP in node_name \
+            else node_id(agent_of(node_name), pool_index_of(node_name), alias)
+
+    def _levels_from_deps(self, nodes: list[ExecutionNode]) -> list[list[ExecutionNode]]:
+        """按依赖重算层级（Kahn 分层）。同层并行，因此依赖不得落在同层。"""
+        by_name = {n.agent_name: n for n in nodes}
+        unknown = sorted({d for n in nodes for d in n.dependencies if d not in by_name})
+        if unknown:
+            raise ValueError(f"展开后存在未知依赖: {unknown}")
+        indeg = {n.agent_name: len(n.dependencies) for n in nodes}
+        children: dict[str, list[str]] = {n.agent_name: [] for n in nodes}
+        for n in nodes:
+            for d in n.dependencies:
+                children[d].append(n.agent_name)
+
+        levels: list[list[ExecutionNode]] = []
+        frontier = sorted(k for k, v in indeg.items() if v == 0)
+        placed: set[str] = set()
+        while frontier:
+            levels.append([by_name[k] for k in frontier])
+            placed.update(frontier)
+            nxt: set[str] = set()
+            for k in frontier:
+                for child in children[k]:
+                    indeg[child] -= 1
+                    if indeg[child] == 0:
+                        nxt.add(child)
+            frontier = sorted(nxt)
+        if len(placed) != len(nodes):
+            stuck = sorted(set(by_name) - placed)
+            raise ValueError(f"展开后 DAG 存在环，无法分层，涉及节点: {stuck}")
+        return levels
 
     # ── Schema 校验 ─────────────────────
 

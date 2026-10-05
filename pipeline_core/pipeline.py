@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 
 from .event_hook import emit_event
 from .executor_factory import create_executor
-from .naming import agent_of
+from .naming import agent_of, family_of
 from .observability import get_logger, get_metrics
 
 if TYPE_CHECKING:
@@ -625,21 +625,26 @@ class PipelineOrchestrator:
     # ─── 报告和回调 ─────────────────────────────
 
     def _merge_pooled_results(self, task: PipelineTask) -> None:
-        """池化节点结果合并：将 *_pool_* 实例键的结果按 agent 元信息聚合回基础名"""
+        """池化节点结果合并：将 *_pool_* 实例键的结果按节点家族聚合回基础名
+
+        分组按 `family_of`（保留内联别名）而不是 `agent_of`：内联进来的
+        `writer_pool_0__review` 与父图的 `writer_pool_0` 是两个不同节点，
+        按 Agent 归并会把两段不同子流程的结果混成一团。
+        """
         merged = set()
         for key in list(task.result.keys()):
             if "_pool_" in key:
-                base = agent_of(key)
+                base = family_of(key)
                 if base not in merged:
                     merged.add(base)
                     # 从所有 pool 实例合并结果
                     pooled_results = [
                         self._get_task_output(task, k) for k in task.result
-                        if k.startswith(f"{base}_pool_") and self._get_task_output(task, k)
+                        if family_of(k) == base and self._get_task_output(task, k)
                     ]
                     if pooled_results:
                         # 合并 researcher 的 results 列表
-                        meta = self.registry.get_meta(base)
+                        meta = self.registry.get_meta(agent_of(base))
                         if getattr(meta, "results_merge", "") == "extend":
                             combined: dict = {"status": "ok", "task_id": task.id,
                                               "total": 0, "results": [],
