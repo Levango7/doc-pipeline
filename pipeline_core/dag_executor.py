@@ -21,6 +21,12 @@ from .circuit_breaker import backoff_with_jitter
 # 与可容忍的软失败区分开，使 fail_fast=false 也不能把它兑成 done
 _HARD_FLOOR_PREFIX = "HARD_FLOOR:"
 
+# Agent 的业务失败语义。`status: "error"` 必须算失败：ingest 抢占
+# researcher.input 那次，回执是 {"status":"error","message":"未指定待摄入文件"}
+# ——没有 "error" 键，旧判据只看 blocked/fail 与 "error" 键，于是这份失败
+# 被当成功记进 dag_node.result，下游拿到一份"成功"的空产物。
+_BUSINESS_FAILURE_STATUSES = ("error", "blocked", "fail")
+
 # 子进程上下文缓存（每个 worker 进程仅重建一次；Windows spawn 下模块级状态按进程隔离）
 _CHILD_CONTEXT_LOCK = threading.Lock()
 _CHILD_CONTEXT = None
@@ -579,10 +585,10 @@ class DAGExecutor:
 
     @staticmethod
     def _business_failure(result) -> tuple[bool, str]:
-        """Agent 返回业务失败（status ∈ blocked/fail 或携带 error 键）时返回 (True, 错误消息)"""
+        """Agent 返回业务失败（语义失败状态或携带 error 键）时返回 (True, 错误消息)"""
         if isinstance(result, dict):
             sem_status = result.get("status")
-            if sem_status in ("blocked", "fail"):
+            if sem_status in _BUSINESS_FAILURE_STATUSES:
                 raw = result.get("message", result.get("error", f"Agent returned {sem_status}"))
                 return True, "" if raw is None else str(raw)
             if "error" in result:
@@ -601,7 +607,7 @@ class DAGExecutor:
             retry_err = "" if raw is None else str(raw)
         elif isinstance(retry_result, dict):
             sem_status = retry_result.get("status")
-            if sem_status in ("blocked", "fail"):
+            if sem_status in _BUSINESS_FAILURE_STATUSES:
                 # 原实现只填了 retry_err 却没把 retry_ok 置假：重试拿到业务失败的
                 # 结果仍被当成"重试成功"，节点于是带着一份失败产出被判 success
                 # （quality_gate 的 fail 就是这样在重试后照样下发的）。
@@ -613,12 +619,18 @@ class DAGExecutor:
         return retry_ok, retry_err
 
     def _apply_node_success(self, task, node, dag_node, step_result, result) -> None:
-        """节点成功：写入 dag_node/step_result/任务输出 + 熔断成功计数"""
+        """节点成功：写入 dag_node/step_result/任务输出 + 熔断成功计数
+
+        Agent 明说 `status: "skipped"`（无事可做）时，步骤如实记 skipped——
+        既不是失败，也不算交付；此前这类返回会被写成 success，报表上就看不出
+        这一格其实什么都没做。
+        """
+        skipped = isinstance(result, dict) and result.get("status") == "skipped"
         dag_node.result = result
         dag_node.status = "success"
         dag_node.finished_at = time.time()
         dag_node.error = ""
-        step_result.status = "success"
+        step_result.status = "skipped" if skipped else "success"
         step_result.result = result
         step_result.error = ""
         self._set_task_output(task, node.agent_name, result)
@@ -879,7 +891,8 @@ class DAGExecutor:
 
                 is_business_fail, biz_err = self._business_failure(result)
                 if is_business_fail:
-                    raise Exception(biz_err or "Agent returned failure status")
+                    raise Exception(f"节点 {node.agent_name} 业务失败: "
+                                    f"{biz_err or 'Agent returned failure status'}")
 
                 # 成功路径
                 self._apply_node_success(task, node, dag_node, step_result, result)
@@ -990,7 +1003,8 @@ class DAGExecutor:
 
                 is_business_fail, biz_err = self._business_failure(result)
                 if is_business_fail:
-                    raise Exception(biz_err or "Agent returned failure status")
+                    raise Exception(f"节点 {node.agent_name} 业务失败: "
+                                    f"{biz_err or 'Agent returned failure status'}")
 
                 self._apply_node_success(task, node, dag_node, step_result, result)
 

@@ -97,21 +97,39 @@ jobs:
             exit 1
           fi
           set -e
-          python run.py test_input.md --pipeline docgen --output /tmp/out_ci.md
-          test -f /tmp/out_ci.md && echo "PIPELINE SMOKE OK"
-          # 空/占位产物不得算通过：实测曾有 99 字节的"未采集到可整合的搜索结果"
-          # 一路 exit 0、9 步全绿并落盘 docx/pdf
-          size=$(wc -c < /tmp/out_ci.md)
-          if [ "$size" -lt 800 ]; then
-            echo "::error::产出仅 $size 字节，疑似空/占位文档（门禁下限 800）"
-            sed -n '1,20p' /tmp/out_ci.md
-            exit 1
+          # docgen 成文需要 LLM；常规 CI 作业没有模型 Secret。两种结果都可以接受，
+          # 但必须是"诚实的那两种"：要么真写出成文（≥800 字节且非占位），
+          # 要么被产出保真底线拦下并非零退出。历史上这里是 52 字节占位文档
+          # 一路 exit 0、9 步全绿还落盘 docx/pdf。
+          set +e
+          python run.py test_input.md --pipeline docgen --output /tmp/out_ci.md > /tmp/docgen_ci.log 2>&1
+          rc=$?
+          set -e
+          tail -25 /tmp/docgen_ci.log
+          if [ "$rc" -ne 0 ]; then
+            if grep -q "HARD_FLOOR" /tmp/docgen_ci.log; then
+              echo "SMOKE OK (keyless): docgen 被保真底线拦下，没有产出占位文档"
+            else
+              echo "::error::docgen 失败，且不是保真底线拦截（exit=$rc）"
+              exit 1
+            fi
+          else
+            if [ ! -f /tmp/out_ci.md ]; then
+              echo "::error::docgen exit 0 却没有写出交付物 /tmp/out_ci.md"
+              exit 1
+            fi
+            size=$(wc -c < /tmp/out_ci.md)
+            if [ "$size" -lt 800 ]; then
+              echo "::error::产出仅 $size 字节，疑似空/占位文档（门禁下限 800）"
+              sed -n '1,20p' /tmp/out_ci.md
+              exit 1
+            fi
+            if grep -q "未采集到可整合的搜索结果" /tmp/out_ci.md; then
+              echo "::error::产出是占位文档（命中“未采集到可整合的搜索结果”）"
+              exit 1
+            fi
+            echo "OUTPUT FIDELITY OK ($size bytes)"
           fi
-          if grep -q "未采集到可整合的搜索结果" /tmp/out_ci.md; then
-            echo "::error::产出是占位文档（命中“未采集到可整合的搜索结果”）"
-            exit 1
-          fi
-          echo "OUTPUT FIDELITY OK ($size bytes)"
 
   docker:
     runs-on: ubuntu-latest

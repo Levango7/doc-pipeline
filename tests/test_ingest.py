@@ -459,9 +459,17 @@ class TestIngestAgent:
         res = agent.handle(_msg(files=[str(p), str(p)]))
         assert res["succeeded"] == 1
 
-    def test_no_files_errors(self, tmp_path):
+    def test_no_files_is_a_honest_skip_not_success(self, tmp_path):
+        """没有语料 = 无事可做。
+
+        标 skipped 而不是 error：legacy `run()` 会给每个已注册 Agent 都发一次
+        RPC，摄入没有语料是常态而非错误；但也不能记成 success——报表必须看得出
+        这一格什么都没做。
+        """
         agent = _make_agent(tmp_path)
-        assert agent.handle(_msg())["status"] == "error"
+        res = agent.handle(_msg())
+        assert res["status"] == "skipped"
+        assert "未指定待摄入文件" in res["message"]
 
     def test_artifact_written(self, tmp_path):
         p = tmp_path / "a.md"

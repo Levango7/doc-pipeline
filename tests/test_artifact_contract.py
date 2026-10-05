@@ -181,6 +181,57 @@ class TestCollectUpstreamArtifacts:
             [SimpleNamespace(agent_name="sink")]], pipeline_name="p", raw={})
         assert sorted(ex._collect_upstream_artifacts(task, node, plan)["items"]) == [1, 2, 3]
 
+    def test_pooled_producer_artifacts_reach_the_downstream_payload(self, tmp_path):
+        """池化产物的接缝要一路通到 payload 顶层，不只是 collect 这一步。
+
+        实测缺陷：docgen 的 researcher 是 2 个池实例，fetcher 读的是
+        `payload["results"]`。`_collect_upstream_artifacts` 的单测只看合并结果，
+        没看 `_build_node_payload` 是否把声明的产物铺到顶层——两处都对，
+        Agent 才拿得到东西。缺任一环，下游就静默收到空列表。
+        """
+        results = [{"title": f"r{i}", "url": f"u{i}"} for i in range(10)]
+        metas = {
+            "researcher": AgentMeta(name="researcher", produces={"results": "list"}),
+            "fetcher": AgentMeta(name="fetcher", produces={"articles": "list"}, config={}),
+        }
+        ex = _ex_with(metas)
+        task = SimpleNamespace(id="t", dag_nodes=_dag(
+            researcher_pool_0=(0, {"status": "ok", "results": results[:5]}, []),
+            researcher_pool_1=(0, {"status": "ok", "results": results[5:6]}, []),
+        ))
+        node = SimpleNamespace(agent_name="fetcher",
+                               dependencies=["researcher_pool_0", "researcher_pool_1"],
+                               agent_config=SimpleNamespace(config={}))
+        plan = SimpleNamespace(pipeline_name="docgen", raw={}, levels=[
+            [SimpleNamespace(agent_name="researcher_pool_0"),
+             SimpleNamespace(agent_name="researcher_pool_1")],
+            [SimpleNamespace(agent_name="fetcher")]])
+
+        src = tmp_path / "in.md"
+        src.write_text("# 主题\n\n为什么要用向量检索？\n", encoding="utf-8")
+        payload = ex._build_node_payload(task, node, str(src), plan, "fetcher", 0, 1)
+        assert len(payload["results"]) == 6, (
+            f"下游 payload 没拿到池化上游声明的 results: {payload.get('results')!r}")
+        assert payload["upstream"].get("results") == payload["results"]
+
+    def test_error_envelope_is_not_collected_as_an_artifact(self):
+        """别的 Agent 抢答了 RPC 时，回执不能被当成上游产物合并进下游。
+
+        `{"status":"error","message":"未指定待摄入文件"}` 里没有声明的键，
+        契约层应当原样跳过——真正的失败判定在 `_business_failure`，
+        这里保证的是"失败回执不会污染下游载荷"。
+        """
+        metas = {"researcher": AgentMeta(name="researcher", produces={"results": "list"})}
+        ex = _ex_with(metas)
+        task = SimpleNamespace(dag_nodes=_dag(
+            researcher=(0, {"status": "error", "message": "未指定待摄入文件"}, []),
+        ))
+        node = SimpleNamespace(agent_name="fetcher", dependencies=["researcher"])
+        plan = SimpleNamespace(levels=[[SimpleNamespace(agent_name="researcher")],
+                                       [SimpleNamespace(agent_name="fetcher")]],
+                               pipeline_name="p", raw={})
+        assert ex._collect_upstream_artifacts(task, node, plan) == {}
+
     def test_artifacts_from_respects_declaration(self):
         ex = _ex_with({"gen": AgentMeta(name="gen", produces={"content": "last"})})
         got = ex._artifacts_from("gen", {"content": "x", "status": "ok", "stats": {}})

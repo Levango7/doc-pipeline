@@ -97,7 +97,11 @@ class KnowledgeBaseAgent(BaseAgent):
             self.publish("kb.done" if result.get("status") == "ok"
                          else "kb.failed", result)
         elif action == "search":
-            result = self._do_search(payload)
+            # DAG 节点拿到的是 `queries` 列表（引擎自有键），单条 `query` 只在
+            # 显式 RPC 时出现。此前这里一律走 _do_search，于是带 queries 的节点
+            # 被回以"未指定查询词"——旧引擎把 error 当成功吞了，改判失败后才暴露。
+            result = (self._do_search_multi(payload) if payload.get("queries")
+                      else self._do_search(payload))
             self.publish("kb.results" if result.get("status") == "ok"
                          else "kb.failed", result)
         elif action == "index":
@@ -150,7 +154,9 @@ class KnowledgeBaseAgent(BaseAgent):
         # 资料清单行（同一输入文件里既写主题也写语料路径）不是查询词
         queries = [q for q in queries if not self._is_material_line(q)]
         if not queries:
-            return {"status": "error", "message": "未指定查询词", "results": []}
+            # 作为 DAG 节点被调度却没有查询词 = 无事可做，不是检索失败；
+            # 显式 kb.search 请求缺 query 仍然算错误（见 _do_search）。
+            return {"status": "skipped", "message": "未指定查询词", "results": []}
 
         merged: dict[str, dict] = {}
         errors: list[str] = []

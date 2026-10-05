@@ -69,6 +69,45 @@ class TestBusinessFailure:
         ok, err = DAGExecutor._business_failure({"status": "ok", "content": "x"})
         assert not ok
 
+    def test_status_error_envelope_without_error_key(self):
+        """`{"status":"error","message":...}` 也是业务失败。
+
+        实测：ingest 抢订阅 `researcher.input` 后回了这份回执，旧判据只认
+        blocked/fail 与 "error" 键，于是节点被记成 success、下游拿到空结果，
+        整条 docgen 静默产出占位文档却 exit 0。
+        """
+        ok, err = DAGExecutor._business_failure(
+            {"status": "error", "task_id": "t", "message": "未指定待摄入文件"})
+        assert ok, "status=error 的回执不得被判成成功"
+        assert err == "未指定待摄入文件"
+
+    def test_skipped_is_not_a_failure(self):
+        """无事可做既不是失败也不算交付：status=skipped 不得让节点红。"""
+        ok, err = DAGExecutor._business_failure(
+            {"status": "skipped", "message": "未指定待摄入文件"})
+        assert not ok, f"skipped 不该被判业务失败: {err}"
+
+
+class TestApplyNodeSuccess:
+    def test_skipped_result_is_recorded_as_skipped_step(self):
+        ex = _make_executor()
+        task = MagicMock()
+        node = _make_node(name="ingest")
+        dag_node = MagicMock()
+        step = MagicMock()
+        ex._apply_node_success(task, node, dag_node, step,
+                               {"status": "skipped", "message": "未指定待摄入文件"})
+        assert step.status == "skipped", (
+            f"节点什么都没做却记成 {step.status!r}，报表里就看不出来这一格是空的")
+        assert dag_node.status == "success"
+
+    def test_normal_result_still_records_success(self):
+        ex = _make_executor()
+        dag_node, step = MagicMock(), MagicMock()
+        ex._apply_node_success(MagicMock(), _make_node(), dag_node, step,
+                               {"status": "ok", "content": "x"})
+        assert step.status == "success"
+
 
 class TestHandleRegeneration:
     def test_no_regenerate_when_not_needed(self):

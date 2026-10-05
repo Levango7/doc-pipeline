@@ -97,6 +97,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   隔离到 `.test_state/`。
 - **E2E Nightly 假绿**：未配 Secret 时 6 skipped / 1674 deselected 仍报 success；
   现在无 Secret 或实际执行 0 用例一律失败。
+- **docgen 默认流水线拿不到任何检索结果**（推送后 CI 才暴露，本机同样复现）：
+  接线 ingest 进流水线时给它多挂了一个 `researcher.input` 订阅，于是发给
+  researcher 的定向 RPC 被 ingest 接走，回了 `{"status":"error","message":"未指定待摄入文件"}`。
+  两层判据同时失守把它洗成了"成功"：`_business_failure` 只认 `blocked/fail` 与
+  `"error"` 键（这份回执两者都不满足），契约层则原样把空产物铺给下游——
+  researcher 记为 success、fetcher 收到空 results、writer 产出 52 字符占位文。
+  修复：ingest 只订阅自己的主题；`status: "error"` 归入业务失败状态
+  （`_BUSINESS_FAILURE_STATUSES`，与 `_record_task_output` 用同一套语义）；
+  业务失败异常带上节点名（原来只有裸 message，排查时认不出是谁报的）。
+  新增两条护栏——`TestBusAddressing` 禁止任何 Agent 订阅别人的 `<agent>.input`，
+  池化上游声明的产物必须出现在下游 payload 顶层（此前只测了合并这一步）。
+  修复后同一条命令实测：`状态: done`，产出 26473 字节（修复前 52 字节 exit 0）。
+- **error 判为失败之后揪出的两处真缺陷**：
+  - `knowledge_base` 的 `handle` 推断出 `action=search` 后一律走单条 `query` 的
+    `_do_search`，而 DAG 节点载荷给的是 `queries` 列表——带查询词的检索节点
+    其实一直在回"未指定查询词"。改为有 `queries` 就走 `_do_search_multi`，
+    并补 `test_inferred_search_uses_queries_not_only_single_query`。
+  - 引入 `status: "skipped"` 表达"无事可做"：ingest 没有语料、kb 没有查询词，
+    既不该判失败（legacy `run()` 会给每个已注册 Agent 都发一次 RPC），
+    更不该记成交付——`_apply_node_success` 现在把这类节点步骤写成 `skipped`。
+    显式 `kb.search` 请求缺 `query` 仍然算 error。
 
 ### Docs（2026-10-05）
 

@@ -37,7 +37,10 @@ AGENT_VERSION = "1.0"
 AGENT_DESC = "资料摄入 Agent - PDF/图片/文本 → 结构化 Markdown"
 AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 10
-INPUT_TOPICS = ["ingest.input", "ingest.files", "researcher.input"]
+# 只订阅自己的输入主题。历史上这里多挂了一个 `researcher.input`，
+# 于是发给 researcher 的定向 RPC 被本 Agent 接走并回了"未指定待摄入文件"，
+# docgen 因此全线拿到空 results（见 tests/test_kb_pipeline_wiring.py::TestBusAddressing）。
+INPUT_TOPICS = ["ingest.input", "ingest.files"]
 OUTPUT_TOPICS = ["ingest.done", "ingest.failed"]
 # 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：摄入产物由 knowledge_base 经 dependencies_results 读取
 PRODUCES: dict = {}
@@ -65,7 +68,10 @@ class IngestAgent(BaseAgent):
 
         files = self._collect_files(payload)
         if not files:
-            no_files: dict = {"status": "error", "task_id": task_id,
+            # 无事可做 ≠ 失败，也 ≠ 成功：如实标 skipped，引擎会把它记成
+            # skipped 步骤而不是"已交付"。（历史包袱：legacy run() 会给每个
+            # 已注册 Agent 都发一次 RPC，摄入没有语料是常态而非错误。）
+            no_files: dict = {"status": "skipped", "task_id": task_id,
                               "message": "未指定待摄入文件"}
             self.publish("ingest.failed", no_files)
             return no_files

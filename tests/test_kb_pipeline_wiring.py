@@ -124,13 +124,14 @@ class TestIngestCollectsMaterials:
             input_file=str(corpus["input"]), config={"files": chosen}))
         assert files == chosen
 
-    def test_missing_input_yields_no_files_and_reports_error(self, tmp_path):
+    def test_missing_input_yields_no_files_and_reports_skip(self, tmp_path):
         from agents.ingest_agent import IngestAgent
         agent = _make_agent(IngestAgent, {"output_dir": str(tmp_path / "out"),
                                           "ocr_enabled": False}, "ingest")
         res = agent.handle(_msg(_payload(input_file=str(tmp_path / "nope.md"),
                                          task_id="t-empty")))
-        assert res["status"] == "error"
+        # 没有语料是"无事可做"，不是失败；但也必须如实标出来，不能记成交付
+        assert res["status"] == "skipped"
         assert "未指定待摄入文件" in res["message"]
 
     def test_bad_input_dir_fails_loudly(self, tmp_path):
@@ -179,6 +180,19 @@ class TestKnowledgeBaseNode:
         # 命中必须能溯源到用户自己的文件，而不是中间产物
         sources = {Path(str(h.get("source", ""))).name for h in res["results"]}
         assert "kafka-quota.md" in sources, f"命中来源不可溯源: {sources}"
+
+    def test_inferred_search_uses_queries_not_only_single_query(self, kb_agent, corpus):
+        """DAG 节点载荷带的是 `queries`，没有单条 `query`。
+
+        实测缺陷：handle 推断出 action=search 后一律调 `_do_search(payload)`，
+        那里只读 `query` → 回 `{"status":"error","message":"未指定查询词"}`。
+        旧引擎把 error 当成功吞掉，改判业务失败后才把这条断链暴露出来。
+        """
+        res = kb_agent.handle(_msg(_payload(task_id="t-queries",
+                                           queries=[TOPIC])))
+        assert res.get("message") != "未指定查询词", (
+            f"带 queries 的检索请求被判成无词: {res}")
+        assert res["status"] == "ok", res
 
     def test_search_hits_relevant_chunk_first(self, kb_agent, corpus):
         dep = self._ingest_dep(kb_agent, corpus)
@@ -443,6 +457,33 @@ class TestBusAddressing:
 
     def _agents_dir(self):
         return str(PROJECT / "agents")
+
+    def test_no_agent_hijacks_another_agents_input_topic(self):
+        """反向的一半：A 不得订阅 `B.input`。
+
+        实测事故：ingest 的 INPUT_TOPICS 里多挂了一个 `researcher.input`，
+        于是 `bus.request(topic="researcher.input", to_a="researcher")` 被
+        ingest 接走并回了 `{"status":"error","message":"未指定待摄入文件"}`。
+        引擎把这份回执当成 researcher 的产物记录下来 → docgen 全线拿到空
+        results → writer 吐占位文。定向 RPC 的 topic 是排他的，多一个订阅者
+        就是改路由，必须由测试钉住。
+        """
+        from pipeline_core import PipelineOrchestrator
+        orch = PipelineOrchestrator(agents_dir=self._agents_dir(),
+                                    checkpoint_dir=str(Path(".pytest_tmp") / "addr2"))
+        try:
+            orch.register_agents()
+            names = {m["name"] for m in orch.registry.list()}
+            hijack = []
+            for m in orch.registry.list():
+                for topic in (m.get("input_topics") or []):
+                    if topic.endswith(".input"):
+                        owner = topic[: -len(".input")]
+                        if owner in names and owner != m["name"]:
+                            hijack.append(f"{m['name']} 订阅了 {topic}（属于 {owner}）")
+            assert hijack == [], "输入主题被跨 Agent 抢占:\n" + "\n".join(hijack)
+        finally:
+            orch.shutdown()
 
     def test_every_pipeline_node_listens_on_its_input_topic(self):
         from pipeline_core import PipelineOrchestrator
