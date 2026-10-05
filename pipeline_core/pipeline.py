@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from .event_hook import emit_event
 from .executor_factory import create_executor
+from .naming import agent_of
 from .observability import get_logger, get_metrics
 
 if TYPE_CHECKING:
@@ -628,7 +629,7 @@ class PipelineOrchestrator:
         merged = set()
         for key in list(task.result.keys()):
             if "_pool_" in key:
-                base = key.split("_pool_")[0]
+                base = agent_of(key)
                 if base not in merged:
                     merged.add(base)
                     # 从所有 pool 实例合并结果
@@ -790,7 +791,7 @@ class PipelineOrchestrator:
         names: list[str] = []
         for level in getattr(plan, "levels", []) or []:
             for node in level:
-                base = node.agent_name.split("_pool_")[0]
+                base = agent_of(node.agent_name)
                 meta = self.registry.get_meta(base)
                 if meta is not None and getattr(meta, "writes_output", False):
                     names.append(node.agent_name)

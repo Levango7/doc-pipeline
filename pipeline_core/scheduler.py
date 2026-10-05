@@ -19,6 +19,7 @@ import yaml
 
 from .conditions import ConditionError
 from .conditions import validate as validate_condition
+from .naming import agent_of
 
 
 class LockfileMismatchError(Exception):
@@ -64,7 +65,7 @@ class ExecutionNode:
         例如 ``writer_pool_0``、``writer_pool_1``。
       - 当 pool_size == 1 时，agent_name 即原始 agent 名称，无 _pool_ 后缀。
       - 所有依赖展开、schema 校验、lockfile 生成均遵循此约定，
-        反向解析使用 ``agent_name.split("_pool_")[0]`` 还原 base_name。
+        反向解析统一走 `naming.agent_of()`（还包含内联别名段）。
     """
     agent_name: str
     agent_config: AgentConfig
@@ -376,7 +377,7 @@ class Scheduler:
                     f"topology.edges 条目必须是 [源, 目标] 二元组，收到: {edge!r}")
             src, dst = str(edge[0]), str(edge[1])
             for name in (src, dst):
-                if name.split("_pool_")[0] not in agent_map:
+                if agent_of(name) not in agent_map:
                     unknown.append((src, dst))
             declared.add((src, dst))
         if unknown:
@@ -403,7 +404,7 @@ class Scheduler:
         吞掉错型值（配了字符串 3 秒当成 3 秒用），只有这里有机会拒绝。
         """
         for name, cfg in agent_map.items():
-            base_name = name.split("_pool_")[0]
+            base_name = agent_of(name)
             schema = self._schema_for_agent(base_name)
             if not schema:
                 continue

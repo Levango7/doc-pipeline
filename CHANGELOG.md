@@ -90,6 +90,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     另注：本机 `bandit` 控制台脚本是坏壳（`--version` 无输出、退出 1），要用
     `python -m bandit`；CI 上脚本正常。
 
+- **阶段 2-3 第一步（地基）：节点身份的解析收敛成一处**（`pipeline_core/naming.py`）。
+  "从节点名还原执行它的 Agent"此前以 `split("_pool_")[0]` 的形式重复在 12 处
+  （dag_executor 8 / pipeline 2 / scheduler 2），语义还略有差别。要做子流水线内联
+  （同一 Agent 在一棵图里出现多次，`writer__review`）与 foreach，必须先有唯一解析处，
+  否则加一种命名形态就要改 12 个文件。约定 `agent[_pool_i][__alias]` +
+  `agent_of / pool_index_of / alias_of / node_id`。
+  行为零变化（现名里没有 `__`，`agent_of` 对它们恒等）：全量 2013 passed 不变；
+  新增 `tests/test_naming.py` 23 例，其中一例遍历 `agents/` 的 `AGENT_NAME`，
+  保证没有真实 Agent 名会被这层解析削掉一段。
+
 - **阶段 2-1：条件节点 `when`——拓扑第一次能表达"看结果决定"**。
   此前 `topology.levels` 是手写静态层级，全仓 `condition/branch/loop/foreach/sub_pipeline`
   零命中，DAG 一旦确定就照跑。新增 `pipeline_core/conditions.py`（受限声明式，

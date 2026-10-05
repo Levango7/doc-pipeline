@@ -15,6 +15,7 @@ from .artifacts import collect_artifacts, normalize_declaration, output_artifact
 from .cache_manager import CacheManager
 from .circuit_breaker import backoff_with_jitter
 from .conditions import evaluate as _evaluate_condition
+from .naming import agent_of
 
 # ─── 模块级函数：支持 ProcessPoolExecutor pickle ──────────────────
 
@@ -256,7 +257,7 @@ class DAGExecutor:
     def _resolve_pool(node) -> tuple[str, int, int]:
         """解析池化节点名 → (base_agent, pool_idx, pool_size)。"""
         raw = node.agent_name
-        base = raw.split("_pool_")[0] if "_pool_" in raw else raw
+        base = agent_of(raw)
         idx = 0
         if "_pool_" in raw:
             try:
@@ -315,7 +316,7 @@ class DAGExecutor:
 
     def _produces_of(self, agent_name: str) -> dict[str, str]:
         """取某节点（含池化实例）声明的产物与合并策略。"""
-        base = agent_name.split("_pool_")[0] if "_pool_" in agent_name else agent_name
+        base = agent_of(agent_name)
         meta = self.registry.get_meta(base)
         if meta is None:
             return {}
@@ -365,7 +366,7 @@ class DAGExecutor:
         while frontier:
             nxt: list[str] = []
             for name in frontier:
-                base = name.split("_pool_")[0] if "_pool_" in name else name
+                base = agent_of(name)
                 if base in seen:
                     continue
                 seen.add(base)
@@ -390,7 +391,7 @@ class DAGExecutor:
         def depth(name: str) -> int:
             if name in level_of:
                 return level_of[name]
-            base = name.split("_pool_")[0] if "_pool_" in name else name
+            base = agent_of(name)
             return level_of.get(base, -1)
 
         # 远 → 近 遍历：`last` 因此在最近产出者处收尾（谁离得近谁说了算），
@@ -1167,7 +1168,7 @@ class DAGExecutor:
     def _get_task_output(self, task, key: str, default=None):
         """统一读取 task 输出（同时查 dag_nodes 和 result，加锁）。
         支持池化节点名（如 researcher_pool_0）自动解析为 base name。"""
-        base = key.split("_pool_")[0] if "_pool_" in key else key
+        base = agent_of(key)
         lock = getattr(task, "result_lock", None)
         def _read():
             for lookup in (key, base):
@@ -1189,7 +1190,7 @@ class DAGExecutor:
     def _set_task_output(self, task, key: str, value, dag_node: bool = True):
         """统一写入 task 输出（同时写 dag_nodes 和 result，加锁）。"""
         lock = getattr(task, "result_lock", None)
-        base = key.split("_pool_")[0] if "_pool_" in key else key
+        base = agent_of(key)
         def _write():
             if hasattr(task, "result"):
                 task.result[key] = value
@@ -1215,7 +1216,7 @@ class DAGExecutor:
         if not cb_cfg or not cb_cfg.get("enabled", False):
             return False
 
-        agent_name = node.agent_name.split("_pool_")[0] if "_pool_" in node.agent_name else node.agent_name
+        agent_name = agent_of(node.agent_name)
         breaker = self._cb_registry.get_or_create(
             name=agent_name,
             failure_threshold=cb_cfg.get("failure_threshold", 5),
@@ -1231,7 +1232,7 @@ class DAGExecutor:
     def _circuit_breaker_success(self, node):
         """node 成功时重置该 agent 的熔断计数（支持 ExecutionNode 和 TaskNode）"""
         agent_name = getattr(node, "agent_name", "")
-        base_name = agent_name.split("_pool_")[0] if "_pool_" in agent_name else agent_name
+        base_name = agent_of(agent_name)
         cb_cfg = None
         if hasattr(node, "agent_config") and node.agent_config:
             cb_cfg = node.agent_config.circuit_breaker
