@@ -311,10 +311,21 @@ class PipelineOrchestrator:
 
     # ─── 执行计划 ─────────────────────────────
 
+    def _legacy_agent_order(self) -> list[str]:
+        """legacy 自动图的准入：全体注册件，除去声明 `LEGACY_AUTO = False` 的那些。
+
+        legacy 按设计不读 `pipelines/*.yaml`，因此没有 per-node config；任何"没配置就
+        跑不出东西"的件（出网要 url、转换要模板）在这张图里必然业务失败——加一个这样的
+        通用件就会打挂所有 legacy 跑。它们照旧注册、照旧被声明式流水线调用。
+        """
+        order = self.registry.deps_order()
+        return [name for name in order
+                if getattr(self.registry.get_meta(name), "legacy_auto", True)]
+
     def plan(self, pipeline_name: str, input_file: str,
              config: dict | None = None) -> list[dict]:
         """生成执行计划（预览）"""
-        agent_order = self.registry.deps_order()
+        agent_order = self._legacy_agent_order()
         plan = []
 
         for i, name in enumerate(agent_order):  # type: ignore[var-annotated]
@@ -386,7 +397,7 @@ class PipelineOrchestrator:
         """并行执行 DAG（统一节点模型，无 SimpleNamespace 转换）"""
         from types import SimpleNamespace
 
-        agent_order = self.registry.deps_order()
+        agent_order = self._legacy_agent_order()
         nodes, execution_order = self._build_dag(agent_order, config)
 
         task.dag_nodes = nodes

@@ -51,7 +51,9 @@ PRESENCE_OPS = ("exists", "truthy", "falsy")
 STRING_OPS = ("==", "!=", "in", "not in")
 OPS = NUMERIC_OPS + MEMBERSHIP_OPS + PRESENCE_OPS
 
-_UNRESOLVED = object()
+#: 公开哨兵：外部模块（transform Agent、引擎上下文）判"路径取不到"必须用同一个对象，
+#: 各家自造一个 sentinel 会让 `is` 比较恒假，缺失就变成了一个看起来像值的对象。
+UNRESOLVED = _UNRESOLVED = object()
 
 
 class ConditionError(ValueError):
@@ -178,11 +180,18 @@ def unsatisfied_inputs(spec: Any, inputs: dict) -> list[str]:
 
 
 def resolve(path: str, ctx: dict) -> Any:
-    """按点号路径取值；取不到返回哨兵 _UNRESOLVED（由调用方决定是不是报错）。"""
+    """按点号路径取值；取不到返回哨兵 UNRESOLVED（由调用方决定是不是报错）。
+
+    纯数字段可以下探列表（`items.0.id`）：工作流里"取第一条结果的某个字段"是
+    最常见的需求，只支持字典等于把它推回写代码。列表段越界仍然算"取不到"，
+    不抛 IndexError —— 调用方要对"没有第 5 条"和"路径写错"给同一种反应。
+    """
     cur: Any = ctx
     for part in path.split("."):
         if isinstance(cur, dict) and part in cur:
             cur = cur[part]
+        elif isinstance(cur, (list, tuple)) and part.isdigit() and int(part) < len(cur):
+            cur = cur[int(part)]
         else:
             return _UNRESOLVED
     return cur

@@ -1,0 +1,87 @@
+# 通用 API 工作流（引擎"换一种任务类型仍然成立"的示例）
+#
+# 这条流水线里没有任何文档领域节点：调一个 JSON 接口 → 挑字段/渲染 → 落盘。
+# 它存在的意义是证明并守住通用件的接线：http_request 与 transform 若只是
+# "实现了但没人调用"，就等于没有（本项目反复犯过这个错）。
+#
+# 出网目标可以换成任意公网 https 接口；要指向内网服务必须显式列 allow_hosts，
+# 命中时产物里会带 guard: "allowlist"（不静默放行）。
+# 用法: python run.py test_input.md --pipeline api-report -o output/api_report.md
+_name: api-report
+_version: "1.0"
+description: 通用工作流示例：调用 JSON API → 挑字段并渲染 → 落盘（无领域节点）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: http_request
+    version: "1.0"
+    timeout: 60
+    dependencies: []
+    config:
+      url: https://api.github.com/repos/apache/kafka
+      method: GET
+      expect: json
+      timeout_s: 15
+      max_bytes: 200000
+      headers:
+        Accept: application/json
+        User-Agent: doc-pipeline-engine
+
+  - name: transform
+    version: "1.0"
+    timeout: 60
+    dependencies: ["http_request"]
+    config:
+      # 不做列表展开，只把响应挑几个字段渲染成 Markdown
+      items: ""
+      set:
+        - {name: full_name, from: "artifacts.response.full_name"}
+        - {name: http_status, from: "upstream.http_request.http_status"}
+      template: |
+        # {{artifacts.response.full_name}}
+
+        {{artifacts.response.description}}
+
+        - Stars: {{artifacts.response.stargazers_count}}
+        - Forks: {{artifacts.response.forks_count}}
+        - 主语言: {{artifacts.response.language}}
+        - 接口返回码: {{upstream.http_request.http_status}}
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["transform"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+topology:
+  type: dag
+  levels:
+    - [http_request]
+    - [transform]
+    - [safe_writer]
+
+  edges:
+    - [http_request, transform]
+    - [transform, safe_writer]
+
+pipeline:
+  timeout: 300
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

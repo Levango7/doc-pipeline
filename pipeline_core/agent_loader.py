@@ -302,6 +302,8 @@ class AgentLoader:
             consumes = getattr(module, "CONSUMES", getattr(cls, "CONSUMES", []))
             writes_output = bool(getattr(module, "WRITES_OUTPUT",
                                      getattr(cls, "WRITES_OUTPUT", False)))
+            legacy_auto = bool(getattr(module, "LEGACY_AUTO",
+                                   getattr(cls, "LEGACY_AUTO", True)))
         else:
             input_topics = getattr(cls, "INPUT_TOPICS", [])
             output_topics = getattr(cls, "OUTPUT_TOPICS", [])
@@ -322,6 +324,7 @@ class AgentLoader:
             produces = getattr(cls, "PRODUCES", {})
             consumes = getattr(cls, "CONSUMES", [])
             writes_output = bool(getattr(cls, "WRITES_OUTPUT", False))
+            legacy_auto = bool(getattr(cls, "LEGACY_AUTO", True))
 
         return AgentMeta(
             name=agent_name,
@@ -344,4 +347,5 @@ class AgentLoader:
             produces=normalize_declaration(produces),
             consumes=list(consumes or []),
             writes_output=writes_output,
+            legacy_auto=legacy_auto,
         )

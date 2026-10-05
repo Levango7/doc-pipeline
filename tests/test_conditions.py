@@ -233,3 +233,24 @@ class TestPurity:
         assert resolve("a.c", {"a": {"b": 1}}) is _UNRESOLVED
         assert resolve("z.b", {}) is _UNRESOLVED
         assert resolve("a.b", {"a": {"b": None}}) is None  # 真的 None 不是缺失
+
+    def test_resolve_walks_list_indices(self):
+        """`items.0.id` 这种取法是工作流里最常见的一个需求。
+
+        只支持字典等于把"取第一条结果的某字段"推回写代码；而越界仍返回哨兵，
+        不抛 IndexError——"没有第 5 条"和"路径写错"该得到同一种反应。
+        """
+        ctx = {"items": [{"id": 7}, {"id": 8}], "d": {"list": [{"x": 1}]}}
+        assert resolve("items.0.id", ctx) == 7
+        assert resolve("items.1.id", ctx) == 8
+        assert resolve("d.list.0.x", ctx) == 1
+        assert resolve("items.2.id", ctx) is _UNRESOLVED
+        assert resolve("items.-1.id", ctx) is _UNRESOLVED   # 负数下标不开这个口子
+        # 字典键优先：{"0": ...} 这种键不该被当成列表下标
+        assert resolve("k.0", {"k": {"0": "字典里的零"}}) == "字典里的零"
+
+    def test_when_can_compare_a_nested_list_value(self):
+        """条件语言同样受益：`path: artifacts.results.0.score` 现在能写了。"""
+        ctx = {"artifacts": {"results": [{"score": 82}]}}
+        assert evaluate({"path": "artifacts.results.0.score", "op": ">=", "value": 70},
+                        ctx) is True

@@ -37,6 +37,7 @@
 | `PRODUCES` | dict[str, str] | 对外产物与合并策略：`{"content": "last"}`（机制见 `pipeline_core/artifacts.py`） |
 | `CONSUMES` | list[str] | 期望的上游产物名（声明意图，供校验与阅读） |
 | `CONFIG_SCHEMA` | dict[str, tuple] | 配置项契约：`{"threshold": (["int", "float"], 70)}`，类型名是**字符串** |
+| `LEGACY_AUTO` | bool | 默认 `True`：是否参与 `--legacy` 的自动图。legacy 按设计不读 YAML、没有 per-node config，凡是"没配置就跑不出东西"的件（出网要 `url`、转换要 `template`）都必须置 `False`，否则它被拉进每一趟 legacy 跑并必然业务失败 |
 | `SANDBOX_TRUSTED` | bool | 随产品发布的内置 Agent 显式声明为 `True`，加载器据此跳过 AST 沙箱检查 |
 
 ### 1.1 产物契约（引擎怎么把上游结果给你）
@@ -169,3 +170,32 @@ class EchoAgent(BaseAgent):
 放入 `agents/` 目录后，`python run.py input.md --agent echo` 或在 pipeline YAML 的
 `agents:` 列表中声明即可被加载。若 Agent 未被流水线 DAG 引用，
 可用 `--list-agents` 确认注册状态。
+
+## 8. 节点级配置从 `payload["config"]` 来
+
+YAML 里 `- name: xxx` 下面的 `config:` **不保证**出现在 `self.config` 里：DAG 执行器把
+节点配置并进载荷的 `config` 键下发，实例配置只是兜底。所以读配置要两边合：
+
+```python
+cfg = {**(self.config or {}), **(msg.payload or {}).get("config", {})}
+url = str(cfg.get("url") or "")
+```
+
+只读 `self.config` 的 Agent 会在单测里全绿、在真流水线上直接失败或静默默认值——
+`http_request` 第一版就是这样（单元测试直接构造实例传 config，出厂 `api-report` 一跑
+就报"未给出 url"）。同理 `CONFIG_SCHEMA` 的默认值只在缺键时生效，别拿它当"运行期一定会读到"。
+
+产物键必须声明：`PRODUCES = {"response": "last"}`、`CONSUMES = [...]`。引擎按声明组装
+下游载荷，没声明的返回值不会成为产物；写文件类 Agent 还要命中交付契约（`WRITES_OUTPUT`），
+否则"跑通了却没有交付物"这类事没人替你发现。
+
+## 9. 通用能力必须有出厂消费者
+
+新增一个不带领域语义的 Agent（`agents/http_request_agent.py`、`agents/transform_agent.py`），
+必须同时交一条**真实引用它的流水线**（`pipelines/api-report.yaml`）和一条**跑通整条链的
+离线 E2E**。理由是本仓库反复验证过：实现了 ≠ 接线了，能力没进任何流水线就等于零，
+而单测只证明函数能被调用，不证明 Scheduler → DAGExecutor → 落盘这条链认它。
+
+E2E 的断言对象是**交付物本身**，不是 task.status：文件存在、模板里没有残留的 `{{`、
+渲染结果在正文里。把接口打挂的另一条用例则要求流水线如实 `failed` 并把错误带出来——
+"失败也如实"和"成功有产物"是同一枚硬币的两面。

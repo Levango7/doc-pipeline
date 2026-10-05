@@ -69,6 +69,7 @@ kb.search("本季度营收增长多少", top_k=3)        # 向量检索
 | 类别 | 能力 |
 |------|------|
 | **编排** | DAG 并行执行、断点续传、可视化执行计划、SQLite 任务队列恢复 |
+| **通用工作流** | 领域无关的 `http_request`（出网走 SSRF 校验、超限不截断、重定向不跟随）+ `transform`（声明式取数/过滤/模板，不执行表达式），出厂流水线 `api-report` 就是它们的消费者：换一种任务类型仍然成立 |
 | **需求** | **requirements_analyzer 需求分析器**（输入 → 结构化 DocumentSpec：类型/范围/读者/深度，置信度评分 + 追问建议，`--pipeline docreq`） |
 | **检索** | Bocha + Tavily + Serper + Metaso + Bing + Sogou + 360 等 10 引擎、LRU+TTL 跨任务缓存 |
 | **抓取** | Async I/O（aiohttp 并发）/ 同步线程池降级、内容质量识别 |
@@ -138,7 +139,7 @@ python run.py test_input.md --dashboard
 | `--pipeline, -p` | 流水线名称（默认 `docgen`） |
 | `--queries, -q` | 检索词（可多个） |
 | `--output, -o` | 输出文件路径 |
-| `--resume` | 从断点续传 |
+| `--resume` | 从断点续传。**当前仅 `--legacy` 分支生效**：默认的声明式路径 `run_plan()` 没有 resume 参数，`--resume` 在那里是空转（已记入 CHANGELOG 待办） |
 | `--plan / --dry-run` | 仅预览计划，不执行 |
 | `--admin / --dashboard` | 启动管理 API / 仪表盘 |
 | `--daemon` | 执行完后保持 API 常驻 |
@@ -221,7 +222,7 @@ python run.py test_input.md --dashboard
 | `docpipeline/document_enhancer.py` | 文档增强：对已有 Markdown 逐章节 LLM 深化 + ASCII 图修复 + 导出 |
 | `pipeline_core/knowledge_base.py` | 知识库：切块 → 向量化 → SQLite 持久化 → 向量检索 |
 | `pipeline_core/embeddings.py` | 嵌入层：可插拔后端（hash 内置 / local 模型 / API），auto 自动回落 |
-| `agents/` | 12 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/fact_checker/layout/safe_writer/requirements_analyzer/renderer/ingest/knowledge_base） |
+| `agents/` | 14 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/fact_checker/layout/safe_writer/requirements_analyzer/renderer/ingest/knowledge_base/http_request/transform） |
 
 ---
 
@@ -370,6 +371,50 @@ docgen-render / docreq / kb-docgen）、`{true, 0}`（docgen-verified，无条�
 `list_pipelines` / run.py 三处口径一致），但仍能被 `call` 加载；片段必须与引用它的
 YAML 同目录。它自带默认值，所以也能单独解析与加锁。版本锁定靠调用方的 lockfile：
 片段的节点、连线、配置哈希与实参都进了父图的 `topology_hash` / `config_hash`。
+
+### 通用 Agent（`http_request` / `transform`）
+
+引擎不止能写文档：这两个 Agent 不带任何领域语义，配起来就是一条"取数据 → 变形 → 落盘"
+的通用工作流，出厂流水线 `pipelines/api-report.yaml` 就是它们的真实消费者（也是接线判据，
+`tests/test_generic_agents.py` 离线跑通整条 Scheduler → DAGExecutor → safe_writer 链并断言落盘产物）。
+
+`http_request`：出网取一个接口。
+
+| 配置 | 默认 | 说明 |
+|------|------|------|
+| `url` | 必填 | 也可留空、由上游产物给（`payload["url"]`）；只接受 `http/https`，指向内网/回环/链路本地地址默认**拒绝** |
+| `method` | `GET` | `GET/POST/PUT/PATCH/DELETE/HEAD`，其余该节点直接失败 |
+| `headers` | `{}` | 原样发出；进产物的是**响应**头，且 `authorization`/`token`/`secret`/`cookie`/`api-key` 一类值恒为 `***` |
+| `body_artifact` | `""` | 用哪个上游产物当 JSON 请求体；点名了却不在上游产物里 → 节点失败 |
+| `expect` | `json` | `json` 解析失败即节点失败（错误里带响应前 500 字符）；`text` 原样传下游 |
+| `timeout_s` | `15` | 单次请求超时 |
+| `max_bytes` | `200000` | 超限**中止并报错**，不截断——残缺 JSON 会让下游拿到看似合法的坏数据 |
+| `allow_hosts` | `[]` | 内网目标的显式白名单（比对 hostname **全等**，不做前缀匹配）；命中时产物带 `guard: "allowlist"`，不静默放行 |
+
+重定向恒不跟随（`allow_redirects=False`，不是配置项）：3xx 只回 `redirect_to` 就返回，
+且不进解析——重定向响应体常为空，让"不是合法 JSON"抢先判死，作者就看不到 Location 了。
+
+`transform`：声明式的胶水，替代"为每个接口写一个 Agent"。
+
+```yaml
+- name: transform
+  dependencies: [http_request]
+  config:
+    items: artifacts.response.items       # 给了就按列表逐项处理；不给只渲染一次
+    fields: [name, id]                    # 每项挑哪些字段（缺字段 → 节点失败，不静默丢）
+    where: {path: item.enabled, op: truthy}  # 逐项过滤；与 when 同一套受限语言
+    set:                                  # 派生值：{name, from}
+      - {name: total, from: "len(items)"}
+    template: |                           # 渲染一次，不是逐 item 渲染
+      # 共 {{len(items)}} 条
+      - 首条：{{items.0.name}}（{{items.0.id}}）
+```
+
+路径与 `when` 同源（`conditions.resolve`），因此支持列表下标：`artifacts.items.0.id`。
+模板只认 `{{路径}}` 与 `{{len(路径)}}`（`len` 是唯一被放行的函数：想要别的运算就该用条件
+或换 Agent，在配置里塞表达式求值器等于把数据通道变成代码通道），取不到值就判失败而不是
+渲染成空字符串——空产物比报错难查得多。产物键：`data`（结构化，逐项处理时是列表）、
+`text` / `content`（渲染结果，同一份，方便直接接 `safe_writer`/质检那批按 `content` 取正文的节点）。
 
 ### Quality Profile（`pipelines/quality/`）
 
@@ -627,7 +672,7 @@ docx/pdf，把失败伪装成成功（`tests/test_fidelity_gate.py` 锁住该回
 
 ```
 doc-pipeline/
-├── agents/              # 12 个 Agent 实现
+├── agents/              # 14 个 Agent 实现
 ├── pipeline_core/       # 引擎层：领域无关的编排框架（不 import 文档层）
 │   ├── pipeline.py      # Orchestrator（统一节点模型）
 │   ├── dag_executor.py  # DAG 构建 + 节点调度
@@ -665,6 +710,7 @@ doc-pipeline/
 │   ├── docgen-lean.yaml # 条件升级核查：质量达标才跑 fact_checker
 │   ├── docreq.yaml      # 需求分析增强（requirements_analyzer 开头）
 │   ├── kb-docgen.yaml   # 本地资料 → 知识库接地（ingest/kb/writer 已接线）
+│   ├── api-report.yaml  # 通用件示例：JSON API → transform 挑字段 → 落盘（无文档领域节点）
 │   ├── three_pass.yaml  # 三阶段流水线（尾巴阈值/重试与片段不同，故不引用片段）
 │   ├── test_pipeline.yaml
 │   └── *.lock           # 版本锁定：config_hash + 拓扑指纹，漂移即拒绝执行
