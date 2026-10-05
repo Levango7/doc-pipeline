@@ -85,18 +85,28 @@ python -m pytest tests/ -q -m "not e2e" --cov --cov-report=term-missing
 
 | 判据 | 含义 |
 |---|---|
-| 相对阈 | 变化超过 `--threshold`（默认 30%） |
+| 环境校正 | 先按**整体环境因子**扣除"整台机器一起慢"：拿各非豁免指标相对基线的"变差倍数"取中位数，且要求参与≥3 项、多数与中位数同向，才用 `(1+原始变化)/env − 1` 校正；达不到就退回不校正（`env=1.0`） |
+| 相对阈 | 校正后的变化超过 `--threshold`（默认 30%） |
 | 绝对下限 | 变化量超过该指标自己的可测下限（`METRIC_FLOORS`，按本机实测噪声定） |
 | 噪声带 | 变化量超过 **2 × 三处噪声估计的最大者**：本轮采样波动、基线记录的波动、最近 20 轮历史跨 run 抖动 |
 
 超阈但被噪声解释掉的项打 **`UNVERIFIED`**：显式打印、退出码 0，不写进基线。
 它不是"通过"，是"这台机器此刻测不出答案"——需要时用 `--samples 5` 或
 `refresh-baseline` 复核。历史不足 5 轮时噪声带自动缺席，只按前两判。
+退出信息里会打印本轮环境因子与"原始变化 → 校正后"，被扣除的幅度是可见的，不是静默放行。
 
-`并行执行` 的 `serial / thread_pool / process_pool` 属 **`REPORT_ONLY_METRICS`**：
-照旧测量、照旧进趋势，但不许判红——它们测的是进程/线程池 spawn 成本，随机器状态漂移
-（本机 4 次独立跑跨次抖 2.6–14.4%）。"并行执行还能不能用"由
-`tests/test_executor_factory.py` 的正确性断言负责，不是性能断言。
+环境校正的代价要写清楚：**一次把所有指标同步拖慢的真实回归会被当成机器慢而放过**。
+接受它是因为另一半更糟——共享 runner 上"整台机器慢三成"是常态而"所有函数同时回归三成"
+几乎不发生；把后者判成三次回归，门禁就会退化成大家都习惯忽略的红叉。窄域回归（多数指标
+稳定、一项慢一倍）仍然照判，`tests/test_benchmark.py::TestEnvironmentFactor` 两条方向相反的用例
+钉着这一点，并用 CI run 37360857091 的原始数字（regex +36.4%、selectolax +32.2%、serial +30.9%）
+回放了一次。
+
+`并行执行` 的 `process_pool / process_speedup` 属 **`REPORT_ONLY_METRICS`**：
+照旧测量、照旧进趋势，但不许判红——它们测的是进程池 spawn 成本，跨次抖 2.6–14.4%（当轮
+3 次连续采样实测 91.9% / 51.2%）。`serial / thread_pool` **不在**豁免名单里，回归判定
+由 15 毫秒的绝对下限把关（当初那次误报的绝对差只有 10 毫秒）；"并行还能不能用"另由
+`tests/test_executor_factory.py` 的正确性断言负责。
 
 - 基线文件同时记录 `_env`（system/machine/python/cpu_count）与 `_spreads`；
   环境指纹变了 ⇒ 相对比较不可信，一律降级为 `UNVERIFIED` 并提示重立基线。
@@ -135,6 +145,6 @@ python -m pytest tests/ -q -m "not e2e" --cov --cov-report=term-missing
 
 **主打场景**：文档生成（`--pipeline docgen`）
 
-**实验性场景**：需求分析（`docreq`）、事实核查（`docgen-verified`）、文档增强（`--enhance`）、MCP Server（`--mcp`）
+**实验性场景**：需求分析（`docreq`）、事实核查（`docgen-verified`）、文档增强（`--enhance`）、MCP Server（`--mcp`）、通用工作流（`api-report`：出网取数 → 声明式变形 → 落盘，不含文档语义）
 
-新增功能请对标主打场景的深度——9 个 Agent、86% 覆盖率、CI 全绿是底线。
+新增功能请对标主打场景的深度——14 个 Agent、9 条流水线、覆盖率不低于门禁线（`pyproject.toml` 的 `fail_under`）、CI 全绿是底线。
