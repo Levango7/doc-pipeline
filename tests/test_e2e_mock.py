@@ -73,6 +73,41 @@ class TestMockE2E:
             assert task.result is not None
             assert "writer" in task.result
 
+    def test_delivery_contract_sink_failure_cannot_report_done(self, tmp_path, monkeypatch):
+        """交付契约：声明了落盘节点却没交付物，就不能报 done。
+
+        实测缺陷：kb-docgen 摄入被跳过、knowledge_base 失败，writer 之后从未执行，
+        而 `fail_fast: false` 让末端节点保持 RUNNING，收尾却无条件盖 DONE，
+        于是 exit 0 且没有任何产物文件。
+
+        这里直接封 `_delivered` 返回 False 来走同一条收尾判定——不能用
+        `patch("agents.safe_writer_agent.SafeWriterAgent.handle")`：agent_loader
+        会以 `spec_from_file_location` 重新加载模块并覆写 `sys.modules["agents.*"]`，
+        注册期之前拿到的类根本不是实例化用的那个类。
+        """
+        input_file = tmp_path / "input.md"
+        input_file.write_text("Python 异步编程的基本概念和用法\n", encoding="utf-8")
+
+        from pipeline_core import PipelineOrchestrator
+        from pipeline_core.scheduler import Scheduler
+
+        monkeypatch.setattr(PipelineOrchestrator, "_delivered", staticmethod(lambda task: False))
+        orch = PipelineOrchestrator(
+            agents_dir=str(PROJECT / "agents"),
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+        )
+        orch.register_agents()
+        plan = Scheduler().parse_file(str(PROJECT / "pipelines" / "test_pipeline.yaml"))
+        plan.fail_fast = False  # 复现 kb-docgen 的配置：软失败不中断
+        try:
+            assert orch._sink_declared(plan), "test_pipeline 应以 safe_writer 为落盘节点"
+            task = orch.run_plan(plan, input_file=str(input_file), wait=True)
+            assert task.status.value == "failed", (
+                f"没有交付物却报 {task.status.value}: {task.error}")
+            assert "交付" in (task.error or ""), task.error
+        finally:
+            orch.shutdown()
+
     def test_dag_builds_correct_levels(self):
         """验证 test_pipeline.yaml 的 DAG 层级正确。"""
         from pipeline_core.scheduler import Scheduler

@@ -119,6 +119,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     更不该记成交付——`_apply_node_success` 现在把这类节点步骤写成 `skipped`。
     显式 `kb.search` 请求缺 `query` 仍然算 error。
 
+- **`fail_fast: false` 把"没交付"洗成 done**：`_execute_plan` 收尾只要状态不是
+  FAILED/CANCELLED 就无条件盖 DONE，于是末端节点保持 RUNNING（软失败不中断）也能
+  "完成"。实测 kb-docgen：ingest 如实 skipped、knowledge_base 失败、writer 之后从未执行，
+  结果报 `状态: done` + exit 0，而 `--output` 指定的文件根本不存在。
+  现在加了交付契约：计划里声明过 `WRITES_OUTPUT` 的节点存在时，必须真拿出交付物
+  （`output_path` 指向的文件存在，或有非空内联内容）才算 done，否则 FAILED 并把原因
+  并进 `task.error`。实测：kb-docgen 空语料改为 `状态: failed` + exit 1（错误里同时
+  给出"节点失败原因；声明了落盘节点却没有交付物"），docgen 正常交付不受影响
+  （done / exit 0 / 20471 字节）。
+- **测试基建坑（本轮踩到，另立待办）**：`agent_loader` 用 `spec_from_file_location`
+  重新加载 `agents/*.py` 并覆写 `sys.modules["agents.<name>"]`，所以在
+  `register_agents()` 之前进入的 `patch("agents.writer.WriterAgent.handle", ...)`
+  绑的是旧模块对象，对真正实例化的类无效——mock E2E 里这类补丁大概率全程空转，
+  测试只靠弱断言通过。新加的交付契约测试因此改为封 `_delivered`，并在文档串里写明原因。
+
 ### Docs（2026-10-05）
 
 - README 数据校准：测试数（本机 1854 passed / 2 skipped，CI 1772 passed）、

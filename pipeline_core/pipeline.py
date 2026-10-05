@@ -767,7 +767,36 @@ class PipelineOrchestrator:
                 return
 
         if task.status != TaskStatus.FAILED and task.status != TaskStatus.CANCELLED:
+            # 交付契约：声明了落盘节点的流水线，必须真拿出交付物才算 done。
+            # `fail_fast: false` 让末端节点保持 RUNNING，收尾就无条件盖成 DONE——
+            # 实测 kb-docgen 摄入被跳过、知识库失败、writer 之后从未执行，
+            # 却报 done + exit 0 且没有产物文件。没交付就不是 done。
+            if self._sink_declared(plan) and not self._delivered(task):
+                reason = "声明了落盘节点却没有交付物（无 output_path/内容）"
+                task.error = f"{task.error}；{reason}" if task.error else reason
+                task.status = TaskStatus.FAILED
+                self._log("error", "交付契约未满足：没有交付物，不能算 done",
+                          task_id=task.id, error=task.error)
+                return
             task.status = TaskStatus.DONE
+
+    def _sink_declared(self, plan: ExecutionPlan) -> bool:
+        """计划里是否存在声明 WRITES_OUTPUT 的落盘节点。"""
+        for level in getattr(plan, "levels", []) or []:
+            for node in level:
+                base = node.agent_name.split("_pool_")[0]
+                meta = self.registry.get_meta(base)
+                if meta is not None and getattr(meta, "writes_output", False):
+                    return True
+        return False
+
+    @staticmethod
+    def _delivered(task: PipelineTask) -> bool:
+        """交付物是否真的落地：文件存在，或有非空内联内容。"""
+        path = str(getattr(task, "output_path", "") or "")
+        if path and Path(path).exists():
+            return True
+        return bool(str(getattr(task, "output_content", "") or "").strip())
 
     def run_plan(self, plan: ExecutionPlan, input_file: str = "",
                 task_id: str | None = None, wait: bool = True) -> PipelineTask:
