@@ -1,4 +1,5 @@
 """tests/test_observability.py — 结构化日志 + Prometheus 指标。"""
+import shutil
 import threading
 import time
 
@@ -8,6 +9,16 @@ from pipeline_core.observability import (
     get_logger,
     get_metrics,
 )
+
+
+def _wait_until(predicate, timeout=3.0) -> bool:
+    """轮询异步落盘：后台线程每 0.5s 收一次队列，固定 sleep 既慢又脆。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
 
 
 class TestStructuredLogger:
@@ -49,6 +60,55 @@ class TestStructuredLogger:
         assert not errors
         content = list(tmp_path.glob("*.jsonl"))[0].read_text(encoding="utf-8")
         assert content.count("msg-") == 50
+
+
+class TestWriterThreadSurvival:
+    """后台 flush 线程不能被一次写盘失败带走。
+
+    线程一死，队列只进不出：之后每一条日志都"成功"入队却永远不落盘，整个引擎
+    从此无声——排查时看到的是"没有异常"。真实触发路径是 log_dir 为相对路径，
+    进程 chdir 或临时目录被清理后 open(..., "a") 直接 FileNotFoundError。
+    """
+
+    def test_vanished_log_dir_is_recreated_and_the_entry_still_lands(self, tmp_path):
+        log_dir = tmp_path / "logs"
+        logger = StructuredLogger(str(log_dir), app_name="t")
+        logger.info("before")
+        assert _wait_until(lambda: any(
+            "before" in p.read_text(encoding="utf-8") for p in log_dir.glob("*.jsonl")
+        )), "基线：日志本该落盘"
+
+        shutil.rmtree(log_dir)
+        logger.info("after")
+
+        assert logger._writer_thread.is_alive(), "目录没了就把线程杀掉，之后全体日志静默丢失"
+        assert _wait_until(lambda: any(
+            "after" in p.read_text(encoding="utf-8") for p in log_dir.glob("*.jsonl")
+        )), "重建目录后这条必须写进去，不能只入队不出队"
+
+    def test_one_failing_flush_is_reported_not_swallowed_silently(self, tmp_path, capsys):
+        logger = StructuredLogger(str(tmp_path), app_name="t")
+        real = logger._get_file
+        seen = {"n": 0}
+
+        def flaky():
+            seen["n"] += 1
+            if seen["n"] == 1:
+                raise OSError("disk gone")
+            return real()
+
+        logger._get_file = flaky
+        logger.info("doomed")
+        assert _wait_until(lambda: seen["n"] >= 1)
+
+        err = capsys.readouterr().err
+        assert "flush failed" in err and "disk gone" in err, err
+        assert not list(tmp_path.glob("*.jsonl")), "这一次确实丢了，测试不能假装它写成功"
+
+        logger.info("second")
+        assert _wait_until(lambda: any(
+            "second" in p.read_text(encoding="utf-8") for p in tmp_path.glob("*.jsonl")
+        )), "第一次失败之后线程还活着，第二条才能落盘"
 
 
 class TestMetricsRegistry:

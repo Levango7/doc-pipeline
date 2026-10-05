@@ -68,15 +68,27 @@ class StructuredLogger:
             self._flush_batch(batch)
 
     def _flush_batch(self, batch: list):
-        """批量写入日志条目到文件"""
+        """批量写入日志条目到文件。
+
+        log_dir 是相对路径，每次 flush 按当前 cwd 解析；目录被换掉/删掉/盘满时
+        这里抛出去，后台线程就永久退出，之后队列只进不出——所有日志静默丢失，
+        而调用方看到的仍然是"成功"。所以单次写盘失败只能吞掉并继续跑。
+        """
         if not batch:
             return
         with self._lock:
-            filepath = self._get_file()
-            self._rotate_if_needed(filepath)
-            lines = [json.dumps(entry, ensure_ascii=False) + "\n" for entry in batch]
-            with open(filepath, "a", encoding="utf-8") as f:
-                f.writelines(lines)
+            try:
+                filepath = self._get_file()
+                lines = [json.dumps(entry, ensure_ascii=False) + "\n" for entry in batch]
+                filepath.parent.mkdir(parents=True, exist_ok=True)
+                self._rotate_if_needed(filepath)
+                with open(filepath, "a", encoding="utf-8") as f:
+                    f.writelines(lines)
+            except Exception as e:
+                # 丢这一批，保住线程：宁可少几行日志，不能让整个引擎从此无声
+                import sys as _sys
+                _sys.stderr.write(f"[StructuredLogger] flush failed "
+                                  f"({len(batch)} entries dropped): {e}\n")
 
     def _get_file(self) -> Path:
         now = datetime.now()
