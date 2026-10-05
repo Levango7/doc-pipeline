@@ -79,9 +79,30 @@ python -m pytest tests/ -q -m "not e2e" --cov --cov-report=term-missing
 
 ### 性能回归门禁
 
-- 阈值：30%（`benchmark.py --ci --threshold 0.30`）
-- **失败先看是不是 runner 噪声**：全栈统一慢 30-100% = 环境负载问题（swap/内存），非代码回归
-- 刷新基线：`workflow_dispatch` 触发 `refresh-baseline` job
+`python benchmark.py --ci --threshold 0.30`（CI 默认 `--samples 3`）。判据不是"比基线慢 30%
+就红"——那在共享 runner 上就是抽签，历史上它把 `serial 0.02656→0.03671 秒`（差 10 毫秒）
+判成 38% 回归，同一个 commit 重跑还能给出相反结论。现在三件事一起成立才判红：
+
+| 判据 | 含义 |
+|---|---|
+| 相对阈 | 变化超过 `--threshold`（默认 30%） |
+| 绝对下限 | 变化量超过该指标自己的可测下限（`METRIC_FLOORS`，按本机实测噪声定） |
+| 噪声带 | 变化量超过 **2 × 三处噪声估计的最大者**：本轮采样波动、基线记录的波动、最近 20 轮历史跨 run 抖动 |
+
+超阈但被噪声解释掉的项打 **`UNVERIFIED`**：显式打印、退出码 0，不写进基线。
+它不是"通过"，是"这台机器此刻测不出答案"——需要时用 `--samples 5` 或
+`refresh-baseline` 复核。历史不足 5 轮时噪声带自动缺席，只按前两判。
+
+`并行执行` 的 `serial / thread_pool / process_pool` 属 **`REPORT_ONLY_METRICS`**：
+照旧测量、照旧进趋势，但不许判红——它们测的是进程/线程池 spawn 成本，随机器状态漂移
+（本机 4 次独立跑跨次抖 2.6–14.4%）。"并行执行还能不能用"由
+`tests/test_executor_factory.py` 的正确性断言负责，不是性能断言。
+
+- 基线文件同时记录 `_env`（system/machine/python/cpu_count）与 `_spreads`；
+  环境指纹变了 ⇒ 相对比较不可信，一律降级为 `UNVERIFIED` 并提示重立基线。
+- 刷新基线：`workflow_dispatch` 触发 `refresh-baseline` job（它会同时把历史 JSONL 存进缓存）。
+- `benchmark_results.json` 与 `benchmark_history.jsonl` 都在 `.gitignore`；
+  CI 用同一把缓存键把它们成对 restore/save —— 只留基线的话波动带永远攒不到样本。
 
 ### 发版流程
 

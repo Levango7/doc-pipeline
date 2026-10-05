@@ -164,11 +164,18 @@ jobs:
       - name: Restore perf baseline
         uses: actions/cache/restore@v4
         with:
-          path: benchmark_results.json
+          path: |
+            benchmark_results.json
+            benchmark_history.jsonl
           # 精确键优先；带 run_id 的键只在 save 后的下次运行可命中，
           # 此后回退 perf-baseline-（时间最新优先）。
           # 注意：restore 会覆盖仓库文件；历史失败 run 曾经 always() 保存
           # 污染基线（已修：save 改 success()），污染缓存已手动删除。
+          #
+          # 历史文件与基线同进同出：跨 run 波动带（benchmark.py 的
+          # _historical_spreads）要靠它判断"这台 runner 今天整体慢 40%"还是
+          # "代码真的慢了"。只缓存 baseline 的话，波动带永远拿不到样本，
+          # 等于门禁在 CI 里退化成单样本相对阈——正是原来一直红的那个病根。
           key: perf-baseline-main-not-exact-${{ github.run_id }}
           restore-keys: |
             perf-baseline-main-
@@ -185,7 +192,9 @@ jobs:
         if: success() && github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/cache/save@v4
         with:
-          path: benchmark_results.json
+          path: |
+            benchmark_results.json
+            benchmark_history.jsonl
           key: perf-baseline-main-${{ github.run_id }}
 
   refresh-baseline:
@@ -237,5 +246,7 @@ jobs:
       - name: Publish refreshed baseline to cache
         uses: actions/cache/save@v4
         with:
-          path: benchmark_results.json
+          path: |
+            benchmark_results.json
+            benchmark_history.jsonl
           key: perf-baseline-main-${{ github.run_id }}

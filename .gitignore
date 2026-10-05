@@ -5,6 +5,7 @@ checkpoints/
 tmp_fetcher/
 tmp/
 benchmark_results.json
+benchmark_history.jsonl
 
 # Python
 __pycache__/

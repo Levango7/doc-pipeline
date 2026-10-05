@@ -95,8 +95,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed（2026-10-06·续）
 
+- **perf-regression 门禁改成噪声感知**（`benchmark.py`，#19）。原来的判据是
+  "单样本比基线慢 30% 就红"，在共享 runner 上就是抽签：CI run 37350496361 把
+  并行执行 `serial 0.02656→0.03671 秒`（绝对差 10 毫秒）判成 38.2% 回归，
+  内置的"复验"再判一次还是 38%（两次采样取自同一台被负载污染的机器，复验并不能否证），
+  同一个 commit 在 37324179455 与 37331760994 之间还能给出相反结论。现在：
+  - CI 默认 `--samples 3`，逐项取**中位数**（一次被抢占的采样拖不偏中位数），
+    并算出本轮相对波动 `(max-min)/median`；
+  - 判红要同时过三关：相对阈、该指标的绝对下限（`METRIC_FLOORS`，按本机 4 次独立跑
+    实测的噪声与量级标定）、变化量超过 2×噪声带（带取本轮波动 / 基线记录波动 /
+    最近 20 轮历史跨 run 抖动三者的最大值）；
+  - 过不了后两关的项打 **`UNVERIFIED`**：显式打印、退出码 0，绝不冒充"通过"，
+    也不冒充"回归"；基线里新增 `_env`（system/machine/python/cpu_count）与 `_spreads`，
+    环境指纹变了就整体降级为不可判并提示重立基线；
+  - `并行执行` 的 serial/thread_pool/process_pool 划入 `REPORT_ONLY_METRICS`：
+    它们测的是池 spawn 成本（本机跨次抖 2.6–14.4%），照旧测量与进趋势但不许判红；
+    "并行还能不能用"由 `tests/test_executor_factory.py` 的正确性断言负责。
+  - 判据本身有测试：三个方向的变异（取消绝对下限 / 取消只观测豁免 / 噪声退回只看本轮）
+    各自让对应用例转红；端到端合成三例——全指标慢一倍 ⇒ exit 1（7 项确认）、
+    复刻 CI 那组并行三项 +38% ⇒ exit 0、只让 TF-IDF 真的慢 64% ⇒ exit 1。
+  - 附带：`.gitignore` 补 `benchmark_history.jsonl`（此前 untracked 且未忽略，
+    `git add .` 会把它带进提交）；CI 的 perf 缓存改为基线与历史**成对** restore/save，
+    否则波动带在 CI 里永远攒不到样本；`ci.yml` 里两处 save 步骤同步。
 - **上一笔的 Docs 条目领先于文件**：那条说 README 已有"`call.inputs` 与默认值/作用域表、
-  `_quality-tail` 片段说明"，实测只有求值上下文表的 `inputs.*` 一行和 `value_from`
+  `_quality-tail` 片段说明"，实际只有求值上下文表的 `inputs.*` 一行和 `value_from`
   片段两处落地——那次批量编辑里最大的一块（作用域表 + 片段说明）因锚点文本不一致没有
   应用。旧条目保留不删，此处补记。现在 README 的子流水线一节有了 `inputs` 示例、
   作用域表、六条引用关系与 `_` 前缀约定；`pipelines/` 目录树补上 `_quality-tail.yaml`

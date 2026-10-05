@@ -21,7 +21,10 @@ CI 模式:
 from __future__ import annotations
 
 import json
+import os
+import platform
 import re
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -43,6 +46,18 @@ try:
 except (ValueError, IndexError):
     REGRESSION_THRESHOLD = 0.20
 
+# 采样轮数：CI 默认 3 轮取中位数并量出波动，本地默认 1 轮（省时）。
+# 上限 9 是防止有人把它当压测开关——波动要靠环境多样本来暴露，不是靠轮数堆。
+_samples_idx = sys.argv.index("--samples") + 1 if "--samples" in sys.argv else -1
+_samples_arg: int | None = None
+if 0 < _samples_idx < len(sys.argv):
+    try:
+        _samples_arg = int(sys.argv[_samples_idx])
+    except ValueError:
+        _samples_arg = None        # 坏值：回默认，而不是拿 0/None 去跑零轮采样
+_default_samples = 3 if CI_MODE else 1
+SAMPLES = max(1, min(_samples_arg if _samples_arg is not None else _default_samples, 9))
+
 # 指标方向映射：True=越高越好（吞吐、加速比），False=越低越好（耗时、延迟）
 # 未列出的指标默认按值变化方向自动推断
 METRIC_HIGHER_BETTER = {
@@ -56,6 +71,70 @@ METRIC_LOWER_BETTER = {
     "emit_ms_per_op", "consume_ms",
     "elapsed_ms",
 }
+
+# 每个指标的"至少差多少才算回归"，单位与该指标本身一致。
+#
+# 为什么要这条：CI run 37350496361 把 并行执行 serial 0.02656→0.03671 秒
+# （差 10 毫秒）判成 38.2% 回归，"复验"又判一次还是 38%——两次采样取自同一台
+# 被负载污染的机器，复验并不能否证它。共享 runner 上一直红的门禁等于没有门禁。
+#
+# 数值是量出来的，不是拍的：括号里是 2026-10-06 本机连续 4 次独立跑的 median 与
+# 跨次抖动。下限一律取得**比该指标真正关心的最小变化更小、比它的测量噪声稍大**。
+METRIC_FLOORS: dict[str, float] = {
+    # 秒/页（selectolax≈0.0034 抖 11.8%、regex≈0.0137 抖 5.1%）：关心毫秒级劣化
+    "selectolax": 0.0005, "regex": 0.001,
+    # 毫秒：TF-IDF≈43.8 抖 7.5%（一次 numpy 全程），15ms 才是工程上有意义的变化；
+    # SSE consume≈0.068 抖 14.7%（一次墙上时钟），只看 10µs 以上的差
+    "elapsed_ms": 10.0, "consume_ms": 0.01,
+    # 毫秒/操作（1000–5000 次平均）：cache 这几项本机跨次抖 31–58%，
+    # 30% 的相对阈对它们毫无意义——所以下限取到统计精度这一侧，其余交给采样波动判
+    "set_ms_per_op": 5e-5, "get_hit_ms_per_op": 5e-5, "emit_ms_per_op": 5e-5,
+    # 无量纲加速比：分子分母同源于秒级测量，噪声相干，0.15x 以内不判
+    "speedup": 0.15, "thread_speedup": 0.15, "process_speedup": 0.15,
+}
+
+# 只观测、不参与门禁的指标：并行执行那三项测的是"进程/线程池起起来要多久"，
+# 大头是 spawn 成本，随机器状态漂移（本机跨次 2.6–14.4%，CI 那次为了给别的项目
+# 让路直接整体平移 +38%）。用它当发布门禁就是抽签，所以照旧测量、照旧进历史与
+# 汇总，只是不许判红。"并行执行到底还能不能用"由
+# tests/test_executor_factory.py::TestProcessPoolExecution 负责，那是正确性断言，
+# 不是性能断言。
+REPORT_ONLY_METRICS = {"serial", "thread_pool", "process_pool"}
+# 吞吐类不设绝对下限：它们的噪声与量值成比例（700k ops/s 与 700 ops/s 的抖动
+# 不是一个量级），这类指标靠"采样波动"那条规则判，不靠固定下限。
+PROPORTIONAL_NOISE_METRICS = {
+    "set_ops_per_sec", "get_hit_ops_per_sec", "get_miss_ops_per_sec", "emit_ops_per_sec",
+}
+
+
+# 采样波动带用的历史窗口与文件上限：跨 run 抖动取最近 20 轮，文件最多留 200 行。
+HISTORY_WINDOW = 20
+HISTORY_KEEP = 200
+
+
+def _floor_for(metric: str, base_val: float) -> float:
+    """该指标"至少差多少才算回归"；返回 0 表示不设绝对下限（交给采样波动判）。"""
+    return METRIC_FLOORS.get(metric, 0.0)
+
+
+def _env_fingerprint() -> dict:
+    """跑一次基准所在环境的指纹。
+
+    `load1` 不参与"环境变了没"的比较（它是瞬时量），只用来判断"当前这台
+    runner 是否忙到测不出微基准"。
+    """
+    try:
+        load1 = round(os.getloadavg()[0], 2)
+    except (OSError, AttributeError):        # Windows 上没有 getloadavg
+        load1 = None
+    return {
+        "system": platform.system(),
+        "machine": platform.machine(),
+        "python": platform.python_version(),
+        "cpu_count": os.cpu_count(),
+        "load1": load1,
+    }
+
 
 
 def _gen_mock_html(size: int = 100_000) -> str:
@@ -287,54 +366,170 @@ def bench_tfidf():
 
 # ═══════════════════════════════════════════════════════════
 
-def _check_regression(current: dict, baseline: dict, threshold: float) -> list[str]:
-    """对比当前结果与 baseline，返回回归告警列表。
+def classify_change(bench_name: str, metric: str, base_val: float, cur_val: float,
+                    threshold: float, spread: float | None = None,
+                    ) -> tuple[str, str] | None:
+    """判定一次指标变化：返回 (级别, 消息) 或 None（无需报告）。
 
-    回归定义:
-      - 越高越好的指标: current < baseline * (1 - threshold)
-      - 越低越好的指标: current > baseline * (1 + threshold)
+    级别两种，含义必须分开：
+      REGRESSION  —— 超出相对阈 **且** 超出该指标的测量噪声（绝对下限 + 采样波动）
+      UNVERIFIED  —— 超出相对阈，但噪声解释得掉它：门禁没有资格据此判红
+    把 UNVERIFIED 当 FAIL 就是"一直红的门禁等于没有门禁"；把它当 PASS 静默忽略
+    又会让真回归溜过去，所以它要显式打印、要留在结果里。
     """
-    regressions = []
+    higher_better = metric in METRIC_HIGHER_BETTER
+    lower_better = metric in METRIC_LOWER_BETTER
+    if not higher_better and not lower_better:
+        return None
+    if higher_better:
+        ratio = (base_val - cur_val) / base_val
+        direction = f"drop={ratio:.1%} > {threshold:.0%}"
+    else:
+        ratio = (cur_val - base_val) / base_val
+        direction = f"increase={ratio:.1%} > {threshold:.0%}"
+    if ratio <= threshold:
+        return None
+
+    head = f"  {bench_name}.{metric} baseline={base_val:.4g} current={cur_val:.4g} {direction}"
+    reasons = []
+    floor = _floor_for(metric, base_val)
+    abs_delta = abs(cur_val - base_val)
+    if floor and abs_delta < floor:
+        reasons.append(f"绝对差 {abs_delta:.4g} 不到该指标的可测下限 {floor:.4g}")
+    if spread is not None and ratio < 2 * spread:
+        reasons.append(f"同一份代码重复测量的波动已达 {spread:.1%}"
+                       f"（判据要求回归超过波动的 2 倍才可信）")
+    if reasons:
+        return "UNVERIFIED", f"{head} —— 不可判：{'；'.join(reasons)}"
+    return "REGRESSION", f"REGRESSION: {head}"
+
+
+def _historical_spreads(history_path: Path, min_runs: int = 5,
+                        keep: int | None = None) -> dict[str, float]:
+    """从趋势历史里量出每个指标的跨 run 抖动：(max-min)/median。
+
+    为什么不能只靠本轮采样波动：连续 3 轮取自同一个时刻，躲不开"这台 runner
+    这一小时整体慢 40%"。历史是唯一能区分"代码慢了"与"机器慢了"的参照。
+    样本不足 min_runs 轮时返回空——没有足够历史就不假装知道噪声有多大。
+    """
+    if not history_path.exists():
+        return {}
+    series: dict[str, list[float]] = {}
+    runs = 0
+    for line in history_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        runs += 1
+        for key, val in row.items():
+            if str(key).startswith("_"):
+                continue
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                series.setdefault(str(key), []).append(float(val))
+    if runs < min_runs:
+        return {}
+    out: dict[str, float] = {}
+    for key, vals in series.items():
+        recent = vals[-(keep or HISTORY_WINDOW):]
+        med = statistics.median(recent)
+        if med:
+            out[key] = (max(recent) - min(recent)) / med
+    return out
+
+
+def _classify_all(current: dict, baseline: dict, threshold: float,
+                  spreads: dict | None = None,
+                  history_spreads: dict | None = None) -> tuple[list[str], list[str]]:
+    """逐项判定，返回 (确认回归消息, 不可判消息)。
+
+    波动取三处里最大的那个：本轮采样波动、基线自己记录的波动、历史跨 run 抖动。    只用本轮会漏判——基线若是单次采样留下的（老版本行为），它自带的抖动会被
+    误当成"当前变慢了"。实测 2026-10-06 本机 4 次独立跑：process_pool 跨次抖
+    14.4%、set_ms_per_op 抖 57.6%，而阈值是 30%——这些指标单靠相对阈判，
+    红与不红就是抽签。
+    """
+    hits: list[str] = []
+    unverified: list[str] = []
+    base_spreads = baseline.get("_spreads") or {}
+    hist = history_spreads or {}
     for bench_name, cur_metrics in current.items():
+        if str(bench_name).startswith("_") or not isinstance(cur_metrics, dict):
+            continue
         base_metrics = baseline.get(bench_name)
-        if not base_metrics or not isinstance(cur_metrics, dict):
+        if not base_metrics or not isinstance(base_metrics, dict):
             continue
         for metric, cur_val in cur_metrics.items():
-            if not isinstance(cur_val, (int, float)) or cur_val == 0:
+            if metric in REPORT_ONLY_METRICS:
+                continue        # 只观测、不判红，理由见该常量注释
+            if not isinstance(cur_val, (int, float)) or isinstance(cur_val, bool) or cur_val == 0:
                 continue
             base_val = base_metrics.get(metric)
-            if not isinstance(base_val, (int, float)) or base_val == 0:
+            if not isinstance(base_val, (int, float)) or isinstance(base_val, bool) or base_val == 0:
                 continue
-
-            higher_better = metric in METRIC_HIGHER_BETTER
-            lower_better = metric in METRIC_LOWER_BETTER
-            if not higher_better and not lower_better:
-                # 未明确方向的指标，跳过
+            key = f"{bench_name}.{metric}"
+            candidates = [v for v in ((spreads or {}).get(key), base_spreads.get(key),
+                                      hist.get(key)) if v is not None]
+            spread = max(float(v) for v in candidates) if candidates else None
+            found = classify_change(bench_name, metric, float(base_val), float(cur_val),
+                                    threshold, spread)
+            if not found:
                 continue
+            level, msg = found
+            (hits if level == "REGRESSION" else unverified).append(msg)
+    return hits, unverified
 
-            if higher_better:
-                ratio = (base_val - cur_val) / base_val
-                if ratio > threshold:
-                    regressions.append(
-                        f"  REGRESSION: {bench_name}.{metric} "
-                        f"baseline={base_val:.4g} current={cur_val:.4g} "
-                        f"drop={ratio:.1%} > {threshold:.0%}"
-                    )
-            elif lower_better:
-                ratio = (cur_val - base_val) / base_val
-                if ratio > threshold:
-                    regressions.append(
-                        f"  REGRESSION: {bench_name}.{metric} "
-                        f"baseline={base_val:.4g} current={cur_val:.4g} "
-                        f"increase={ratio:.1%} > {threshold:.0%}"
-                    )
-    return regressions
+
+def _check_regression(current: dict, baseline: dict, threshold: float,
+                      spreads: dict | None = None) -> list[str]:
+    """对比当前结果与 baseline，返回**确认的**回归列表（不可判的项不在这里）。"""
+    hits, _ = _classify_all(current, baseline, threshold, spreads)
+    return hits
+
+
+def _aggregate(samples: list[dict]) -> tuple[dict, dict]:
+    """多样本 → (各项中位数, 各项相对波动)。
+
+    取中位数不是取平均：一次被抢占的采样会把平均拖偏，中位数不会被单个
+    离群点带走。波动 =（max-min)/median，它是"这项在当前机器上测得准吗"的
+    唯一证据——门禁要么用它，要么就一直在噪声上判红。
+    """
+    medians: dict = {}
+    spreads: dict = {}
+    for bench in samples[0]:
+        per_metric: dict[str, list[float]] = {}
+        extras: dict[str, object] = {}
+        for s in samples:
+            got = s.get(bench)
+            if not isinstance(got, dict):
+                continue
+            for key, val in got.items():
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    per_metric.setdefault(key, []).append(float(val))
+                else:
+                    extras.setdefault(key, val)
+        merged: dict = dict(extras)
+        for key, vals in per_metric.items():
+            med = statistics.median(vals)
+            merged[key] = med
+            if med and len(vals) > 1:
+                spreads[f"{bench}.{key}"] = (max(vals) - min(vals)) / med
+            if med == 0 and extras.get("error"):
+                merged[key] = vals[0]
+        medians[bench] = merged or {"error": "no samples"}
+    return medians, spreads
 
 
 def _flatten_for_history(results: dict) -> dict:
     """把嵌套 benchmark 结果压平为 {metric_name: value}，便于 JSONL 趋势存储。"""
     flat: dict[str, float] = {}
     for bench_name, metrics in results.items():
+        if str(bench_name).startswith("_"):     # _env / _spreads 不是基准项
+            continue
         if not isinstance(metrics, dict) or "error" in metrics:
             continue
         for k, v in metrics.items():
@@ -429,34 +624,80 @@ def main():
     if CI_MODE:
         # CI 模式：对比 baseline，检测回归
         baseline_path = Path(__file__).parent / "benchmark_results.json"
+
+        # 多样本：第一份已在上面跑过（给人看的那张表），其余静默补采。
+        # 单样本比 30% 相对阈在共享 runner 上就是抛硬币——见 METRIC_FLOORS 的注释。
+        samples = [all_results]
+        for i in range(SAMPLES - 1):
+            print(f"补采样本 {i + 2}/{SAMPLES} …")
+            samples.append(_run_all_benchmarks(verbose=False))
+        current, spreads = _aggregate(samples) if SAMPLES > 1 else (all_results, {})
+        if spreads:
+            print(f"\n{'=' * 70}")
+            print(f"采样波动（{SAMPLES} 轮，(max-min)/median）")
+            print(f"{'=' * 70}")
+            for key in sorted(spreads, key=lambda k: -spreads[k])[:8]:
+                print(f"  {key:.<58} {spreads[key]:.1%}")
+            print(f"  （波动超过阈值 {REGRESSION_THRESHOLD:.0%} 的项，本轮无法判定回归）")
+
+        env = _env_fingerprint()
         if baseline_path.exists():
             with open(baseline_path, encoding="utf-8") as f:
                 baseline = json.load(f)
+            history_spreads = _historical_spreads(history_path)
             print(f"\n{'=' * 70}")
-            print(f"CI 回归检测 (阈值: {REGRESSION_THRESHOLD:.0%})")
+            print(f"CI 回归检测 (阈值: {REGRESSION_THRESHOLD:.0%} | 样本: {SAMPLES} | "
+                  f"绝对下限: {len(METRIC_FLOORS)} 项 | 只观测不判红: "
+                  f"{len(REPORT_ONLY_METRICS)} 项 | 历史波动带: "
+                  f"{'启用 ' + str(len(history_spreads)) + ' 项' if history_spreads else '样本不足（<5 轮）'}）")
             print(f"{'='* 70}")
-            regressions = _check_regression(all_results, baseline, REGRESSION_THRESHOLD)
-            if regressions:
-                # 抗噪复验：共享 runner 上微基准单次波动可达 ±30%，
-                # 首次超阈值时重跑一遍，连续两次超限才判定为真回归
-                print("\n首次检测到疑似回归（可能是 runner 噪声），自动复验中...")
-                rerun_results = _run_all_benchmarks(verbose=False)
-                rerun = _check_regression(rerun_results, baseline, REGRESSION_THRESHOLD)
-                if rerun:
-                    print(f"\nFAILED: 复验仍检测到 {len(rerun)} 项性能回归:")
-                    for r in rerun:
-                        print(r)
-                    sys.exit(1)
-                print("PASSED: 复验未复现回归（首次为环境噪声），采用复验结果")
-                all_results = rerun_results
+            hits, unverified = _classify_all(current, baseline, REGRESSION_THRESHOLD,
+                                             spreads, history_spreads)
+
+            base_env = baseline.get("_env") or {}
+            changed = {k: (base_env.get(k), env.get(k))
+                       for k in ("system", "machine", "python", "cpu_count")
+                       if base_env.get(k) not in (None, env.get(k))}
+            if changed and (hits or unverified):
+                # 基线是别的机器/别的 Python 跑出来的：相对比不再有可比性。
+                # 判红会把平台迁移变成"性能回归"，直接忽略又会漏掉真回归，
+                # 所以降为 UNVERIFIED 并要求重立基线（refresh-baseline）。
+                note = (f"基线环境指纹与当前不同 {changed}——相对比较不可信，"
+                        "请用 refresh-baseline 重立基线")
+                hits = [f"{h} —— 改判不可判：{note}" for h in hits]
+                hits, unverified = [], hits + unverified
+            noisy = (env.get("load1") or 0) > (env.get("cpu_count") or 1)
+            if noisy and (hits or unverified):
+                note = (f"当前机器 1 分钟负载 {env['load1']} 超过核数 "
+                        f"{env['cpu_count']}，微基准在此刻不可信")
+                hits = [f"{h} —— 改判不可判：{note}" for h in hits]
+                hits, unverified = [], hits + unverified
+
+            for msg in unverified:
+                print(f"  UNVERIFIED:{msg}")
+            if hits:
+                print(f"\nFAILED: {len(hits)} 项确认性能回归"
+                      f"（超阈值、超绝对下限、且超过采样波动的 2 倍）:")
+                for r in hits:
+                    print(r)
+                sys.exit(1)
+            if unverified:
+                print(f"\nPASSED(with warnings): 无确认回归；{len(unverified)} 项因噪声不可判，"
+                      "已逐条列在上方——这不是『通过』，是『这台机器此刻测不出答案』，"
+                      "需要时用 --samples 5 或 refresh-baseline 复核")
             else:
                 print("PASSED: 无性能回归")
             # 滚动更新 baseline：CI 缓存中的基线始终对齐最近一次通过的 main 运行
+            all_results = current
+            all_results["_env"] = env
+            all_results["_spreads"] = spreads
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(all_results, f, indent=2, default=str, ensure_ascii=False)
         else:
             print("WARNING: 无 baseline 文件，跳过回归检测")
             # 首次运行，写入 baseline
+            all_results["_env"] = env
+            all_results["_spreads"] = spreads
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(all_results, f, indent=2, default=str, ensure_ascii=False)
             print(f"已写入初始 baseline: {output_path}")
@@ -467,7 +708,13 @@ def main():
             flat["_ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             with open(history_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(flat, default=str, ensure_ascii=False) + "\n")
-            print(f"趋势已追加: {history_path}")
+            # 有界：历史只当噪声尺子用，留最近 HISTORY_KEEP 轮就够（跨 run 波动带
+            # 取的是最近 20 轮）。无限追加会让它变成没人读的日志。
+            lines = history_path.read_text(encoding="utf-8").splitlines()
+            if len(lines) > HISTORY_KEEP:
+                history_path.write_text("\n".join(lines[-HISTORY_KEEP:]) + "\n",
+                                        encoding="utf-8")
+            print(f"趋势已追加: {history_path}（保留最近 {min(len(lines), HISTORY_KEEP)} 轮）")
         except Exception as e:
             print(f"趋势记录失败（非阻塞）: {e}")
 
