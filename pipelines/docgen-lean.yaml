@@ -1,0 +1,134 @@
+# Doc-Pipeline 声明式流水线配置 — 成本分级版事实核查
+# 与 docgen-verified 的唯一差别：fact_checker 挂了 when 条件。
+# 理由（成本，不是质量取舍）：质量门控没过的稿子迟早要重做，为它花一轮
+# LLM 事实核查是浪费；核查只花在已经达标的草稿上。
+# ⚠ 需要"无条件核查"请用 docgen-verified —— 这条流水线的核查是可选升级。
+# 用法: python run.py input.md --pipeline docgen-lean
+_name: docgen-lean
+_version: "1.0"
+description: 文档生成流水线，事实核查按质量分升级触发（quality_gate 达标才核查）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+# ── Agent 定义 ──────────────────────────────
+agents:
+  - name: researcher
+    version: "2.0"
+    timeout: 300
+    dependencies: []
+    pool_size: 2
+    rate_limit:
+      rate: 5
+      burst: 10
+    config:
+      search_engines:
+        - bocha
+        - tavily
+        - serper
+        - bing
+        - sogou
+        - "360"
+      max_results: 10
+
+  - name: fetcher
+    version: "1.0"
+    timeout: 120
+    dependencies: ["researcher"]
+    config:
+      max_downloads: 15
+      temp_dir: tmp_fetcher
+
+  - name: writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["fetcher"]
+    config:
+      prompt_profile: generic-tech
+
+  - name: quality_gate
+    version: "2.0"
+    timeout: 300
+    dependencies: ["writer"]
+    config:
+      quality_profile: technical-doc
+      threshold: 70
+      max_regenerations: 3
+
+  - name: checker
+    version: "1.1"
+    timeout: 300
+    dependencies: ["quality_gate"]
+    config:
+      fail_fast: false
+
+  - name: fact_checker
+    version: "1.0"
+    timeout: 180
+    dependencies: ["checker"]
+    # 只对质量达标的草稿付核查成本；不达标时本节点被跳过，layout / safe_writer
+    # 照常执行（条件跳过不阻塞下游，见 docs/architecture.md §1.2）。
+    # 阈值取自 quality_gate.config.threshold，这里写死 70 与上面保持一致。
+    when:
+      path: upstream.quality_gate.overall_score
+      op: ">="
+      value: 70
+    config:
+      max_claims: 30
+      llm_timeout: 30
+
+  - name: layout
+    version: "2.0"
+    timeout: 300
+    dependencies: ["fact_checker"]
+    config:
+      style: markdown
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["layout"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+# ── DAG 拓扑 ──────────────────────────────
+topology:
+  type: dag
+  levels:
+    - [researcher]
+    - [fetcher]
+    - [writer]
+    - [quality_gate]
+    - [checker]
+    - [fact_checker]
+    - [layout]
+    - [safe_writer]
+
+  edges:
+    - [researcher, fetcher]
+    - [fetcher, writer]
+    - [writer, quality_gate]
+    - [quality_gate, checker]
+    - [checker, fact_checker]
+    - [fact_checker, layout]
+    - [layout, safe_writer]
+
+# ── 流水线全局策略 ──────────────────────────
+pipeline:
+  timeout: 600
+  retry:
+    max_attempts: 3
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

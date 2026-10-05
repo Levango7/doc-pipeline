@@ -105,7 +105,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     **路径取不到直接抛 `ConditionError`，整条 run 失败**——当成"条件不成立"就是
     静默跳过分支却照报 done，正是本项目一路在关的那类洞。
   - `when` 进 `topology_hash`：加条件会让既有 lockfile 报拓扑漂移；不写 `when`
-    的节点不贡献条目，7 条内置流水线指纹实测未变、锁文件全部校验通过。
+    的节点不贡献条目，内置流水线指纹实测未变、锁文件全部校验通过
+    （`test_shipped_pipelines_keep_their_hashes` 用 glob 逐条 `verify_lock=True`，
+    新增流水线不会被这条退出门漏掉）。
+  - **出厂消费者 `pipelines/docgen-lean.yaml`**：语言实现完就用它接了一条真实流水线
+    ——fact_checker 挂 `when: upstream.quality_gate.overall_score >= 70`，
+    质量分不达标的草稿不再付核查成本（迟早要重做），达标才升级核查。
+    需要无条件核查仍用 `docgen-verified`，这条的核查是可选的，YAML 头部与 README
+    场景表都写明了这个区别。
+    接这条流水线当场抓出我自己的设计缺口：`_condition_context` 原先只暴露**直接依赖**，
+    而 `fact_checker` 的直接依赖是 `checker`、`quality_gate` 是祖先节点，于是 shipped
+    配置一跑就抛"路径取不到"。已改为纳入整个上游闭包（`_upstream_closure`）——
+    作者按直觉写的条件不该因为依赖图的跳数而失效。这条测试是
+    `TestShippedConsumer` 三例：低分跳过且 layout 照跑、高分执行、指纹未变。
   - 交付契约与之衔接：落盘节点全部被条件跳过 → 视为"按声明本轮无交付"，run 仍 done
     并留 warning；因依赖失败而没跑 → 仍然 failed（#13 关掉的洞不借此复活）。
   - 测试：`tests/test_conditions.py` 56 例（语言本身，含"每个算子都可用"的对照表）+

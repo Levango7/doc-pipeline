@@ -10,6 +10,7 @@
 |---|---|---|---|
 | **主打** | 文档生成 | `python run.py <input> --pipeline docgen` | 完整 7 Agent 流水线，生产可用 |
 | **主打** | 文档生成 + 事实核查 | `--pipeline docgen-verified` | 增加 fact_checker 节点，数字类声明交叉验证 |
+| **省钱** | 文档生成 + **条件升级核查** | `--pipeline docgen-lean` | fact_checker 挂 `when`：质量分达标才付核查成本，不达标时该节点被跳过而下游照常跑 |
 | **主打** | **文档生成 + 多格式渲染** | `--pipeline docgen-render` | 追加 renderer 节点，产出 **docx / pdf**（可编辑 Word / 可打印归档） |
 | **主打** | **本地资料 → 知识库接地文档** | `--pipeline kb-docgen` | 摄入自己的 PDF/图片/文本 → 切块向量入库 → 检索命中驱动写作；离线可跑（无 LLM 时如实产出抽取式草稿） |
 | **实验性** | 需求分析 | `--pipeline docreq` | requirements_analyzer 输出结构化 DocumentSpec |
@@ -303,7 +304,7 @@ agents:
   只有 `exists` / `truthy` / `falsy` 允许路径缺失。
 
 `when` 参与 `topology_hash`：给节点加条件会让既有 lockfile 报拓扑漂移，必须 `--write-lock`。
-不写 `when` 的节点行为与之前完全一致（7 条内置流水线的指纹未变）。
+不写 `when` 的节点行为与之前完全一致（各内置流水线的 lockfile 指纹实测未变，`tests/test_condition_nodes.py` 逐条校验）。
 
 ### Quality Profile（`pipelines/quality/`）
 
@@ -595,6 +596,7 @@ doc-pipeline/
 │   ├── docgen.yaml      # 默认文档生成流水线
 │   ├── docgen-render.yaml # 追加 renderer 节点，产出 docx/pdf
 │   ├── docgen-verified.yaml
+│   ├── docgen-lean.yaml # 条件升级核查：质量达标才跑 fact_checker
 │   ├── kb-docgen.yaml   # 本地资料 → 知识库接地（ingest/kb/writer 已接线）
 │   ├── three_pass.yaml  # 三阶段流水线（DAG 版）
 │   ├── test_pipeline.yaml

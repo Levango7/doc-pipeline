@@ -85,8 +85,12 @@ import 和 `importlib.import_module("...")` 字面量，而不只是文件头部
 实现上 `_submit_level_futures`（线程版与异步版各一处，改一处必须改两处）在提交前求值
 `node.when`：不成立就打标记并记一条 `status="skipped"` 的步骤（报表看得见这格是空的），
 成立则正常提交；**求值抛 `ConditionError` 时让它冒出去整条 run 失败**——把它降级成
-"条件不成立"就会静默跳过分支却照报 done。语言与上下文见 README「条件节点」，
-求值实现是 `pipeline_core/conditions.py`（纯函数，不 exec/eval）。
+"条件不成立"就会静默跳过分支却照报 done。
+
+求值实现是 `pipeline_core/conditions.py`（纯函数，不 exec/eval）。上下文里 `upstream.*`
+覆盖**整个上游闭包**，不只是直接依赖：作者写 `upstream.quality_gate.overall_score` 时
+quality_gate 常常是祖先节点（`docgen-lean` 的 fact_checker 就是这种写法），只暴露直接
+依赖会让按直觉写的条件失效。上下文表与算子清单见 README「条件节点」。
 
 与交付契约（§1.3）的关系：落盘节点**全部**因条件被跳过 → 视为按声明本轮无交付，
 run 仍 done 并留 warning；因依赖失败没跑 → 仍然 failed。

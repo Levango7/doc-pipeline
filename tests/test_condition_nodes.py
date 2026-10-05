@@ -221,14 +221,18 @@ class TestSchedulerPlanning:
         issues = sched.verify_lockfile(plan, lockfile=str(lock_dir / "test_pipeline.lock"))
         assert any("拓扑漂移" in i for i in issues), issues
 
-    def test_pipelines_without_when_keep_their_hashes(self):
-        """退出门：7 条现有流水线的指纹不能因为这次改动而变。"""
+    def test_shipped_pipelines_keep_their_hashes(self):
+        """退出门：现有流水线的指纹不能因为这次改动而变。
+
+        逐条 `verify_lock=True` 就是证明——lockfile 里存的是改动前生成的指纹，
+        哈希一变就报拓扑漂移。用 glob 取清单，避免新增流水线时这条测试静默漏掉它。
+        """
         sched = Scheduler(agents_dir=str(PROJECT / "agents"),
                           pipeline_dir=str(PROJECT / "pipelines"))
-        for name in ("docgen", "docgen-render", "docgen-verified", "docreq",
-                     "kb-docgen", "test_pipeline", "three_pass"):
-            plan = sched.parse(name, verify_lock=True)   # 校验锁文件即含指纹比对
-            assert plan.node_count > 0
+        names = sorted(p.stem for p in (PROJECT / "pipelines").glob("*.yaml"))
+        assert "docgen-lean" in names          # 带 when 的那条也在这批里
+        for name in names:
+            assert sched.parse(name, verify_lock=True).node_count > 0
 
 
 class TestDeliveryContractWithConditions:
@@ -276,6 +280,66 @@ class TestDeliveryContractWithConditions:
         assert orch._delivered(task, plan) is False, (
             "依赖失败导致落盘节点没跑，仍然没有交付物——这正是 #13 关掉的洞")
         orch.shutdown()
+
+
+class TestShippedConsumer:
+    """`when` 在出厂流水线里有真实消费者：docgen-lean 的 fact_checker。
+
+    写这一组的理由是本项目反复踩过的同一类错——"实现正确但没被接线"。
+    语言与接线都测过之后，如果没有任何出厂配置用它，能力就等于零。
+    """
+
+    def _plan(self):
+        return Scheduler(agents_dir=str(PROJECT / "agents"),
+                         pipeline_dir=str(PROJECT / "pipelines")).parse(
+            "docgen-lean", verify_lock=True)
+
+    def _task_for(self, plan, score: float) -> PipelineTask:
+        task = PipelineTask(id="t-lean", pipeline_name="docgen-lean",
+                            input_file="in.md", config={})
+        for level in plan.levels:
+            for node in level:
+                dn = TaskNode(name=node.agent_name, agent_name=node.agent_name,
+                              dependencies=list(node.dependencies))
+                dn.status = "pending"
+                task.dag_nodes[node.agent_name] = dn
+        gate = task.dag_nodes["quality_gate"]
+        gate.status = "success"
+        gate.result = {"overall_score": score, "status": "pass"}
+        return task
+
+    def _find(self, plan, name):
+        return [n for level in plan.levels for n in level if n.agent_name == name][0]
+
+    def test_shipped_plan_carries_the_condition(self):
+        plan = self._plan()
+        fc = self._find(plan, "fact_checker")
+        assert fc.when == {"path": "upstream.quality_gate.overall_score",
+                           "op": ">=", "value": 70}
+
+    def test_low_score_skips_fact_checker_but_layout_still_runs(self):
+        plan = self._plan()
+        fc, layout = self._find(plan, "fact_checker"), self._find(plan, "layout")
+        task = self._task_for(plan, score=61.0)
+        metas = {"fact_checker": AgentMeta(name="fact_checker", produces={"verdict": "last"}),
+                 "layout": AgentMeta(name="layout", produces={"content": "last"})}
+        ex = _executor(metas)
+
+        assert ex._submit_level_futures(task, [fc], "in.md", plan, MagicMock()) == {}
+        assert task.dag_nodes["fact_checker"].skip_reason == "condition"
+
+        task.dag_nodes["checker"].status = "success"
+        task.dag_nodes["checker"].result = {"issues": []}
+        futures = ex._submit_level_futures(task, [layout], "in.md", plan, MagicMock())
+        assert len(futures) == 1, "被条件跳过的可选分支不该让下游停摆"
+
+    def test_high_score_runs_the_escalated_check(self):
+        plan = self._plan()
+        fc = self._find(plan, "fact_checker")
+        task = self._task_for(plan, score=85.0)
+        task.dag_nodes["checker"].status = "success"
+        ex = _executor({"fact_checker": AgentMeta(name="fact_checker", produces={"verdict": "last"})})
+        assert len(ex._submit_level_futures(task, [fc], "in.md", plan, MagicMock())) == 1
 
 
 class TestStepResultCompatibility:

@@ -673,6 +673,12 @@ class DAGExecutor:
         for dep in (node.dependencies or []):
             if dep in dag_nodes:
                 upstream[dep] = getattr(dag_nodes[dep], "result", None)
+        # 上游闭包也纳入：作者写 upstream.quality_gate.overall_score 时，
+        # quality_gate 常常是祖先而非直接依赖（docgen-lean 就是这样）。只暴露
+        # 直接依赖会让这种写法在运行期抛"路径取不到"，等于能力不可用。
+        for name in self._upstream_closure(task, node):
+            if name in dag_nodes and name not in upstream:
+                upstream[name] = getattr(dag_nodes[name], "result", None)
         return {
             # 上游按声明合并后的产物：artifacts.content / artifacts.results ...
             "artifacts": self._collect_upstream_artifacts(task, node, plan),
