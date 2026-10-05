@@ -244,29 +244,37 @@ class TestNoiseAwareGate:
     PARALLEL = "并行执行 (Thread vs Process)"
 
     def test_ci_evidence_case_is_unverified_not_fail(self):
-        """就是那组把 CI 判红的数字——差 10 毫秒，绝对量根本不成立。"""
+        """就是那组把 CI 判红的数字：差 10 毫秒，落在该指标的绝对下限之下。"""
         from benchmark import _classify_all
-        # 相对变化 36%（超阈），绝对差 0.0004 秒（低于 selectolax 的 0.0005 秒下限）
-        current = {self.PARALLEL: {"selectolax": 0.0015}}
-        baseline = {self.PARALLEL: {"selectolax": 0.0011}}
+        current = {self.PARALLEL: {"serial": 0.03671}}
+        baseline = {self.PARALLEL: {"serial": 0.02656}}
         hits, unverified = _classify_all(current, baseline, 0.30)
         assert hits == [], hits
         assert len(unverified) == 1 and "可测下限" in unverified[0], unverified
 
     def test_parallel_pool_timings_are_observed_but_never_gate(self):
-        """并行执行那三项测的是池 spawn 成本，随机器状态漂移，不许判红。
+        """进程池那两项只观测：CI 当轮 3 次连续采样里它自己就抖 91.9%。
 
-        正确性由 tests/test_executor_factory.py 负责；这里若能用它判红，
-        只会把"今天 runner 忙"变成"你的提交有性能问题"。
+        正确性由 tests/test_executor_factory.py 负责；拿它判红只会把"今天 runner
+        忙"变成"你的提交有性能问题"。
         """
         from benchmark import REPORT_ONLY_METRICS, _classify_all
-        assert {"serial", "thread_pool", "process_pool"} <= REPORT_ONLY_METRICS
-        current = {self.PARALLEL: {"serial": 0.03671, "thread_pool": 0.03579,
-                                   "process_pool": 0.60}}
-        baseline = {self.PARALLEL: {"serial": 0.02656, "thread_pool": 0.02584,
-                                   "process_pool": 0.1461}}
-        hits, unverified = _classify_all(current, baseline, 0.30)
-        assert hits == [] and unverified == []
+        assert sorted(REPORT_ONLY_METRICS) == ["process_pool", "process_speedup"]
+        current = {self.PARALLEL: {"process_pool": 0.60, "process_speedup": 0.02}}
+        baseline = {self.PARALLEL: {"process_pool": 0.1461, "process_speedup": 0.2}}
+        assert _classify_all(current, baseline, 0.30) == ([], [])
+
+    def test_thread_and_serial_are_still_gated(self):
+        """serial / thread_pool 不豁免：它们本机跨次只抖 5.3% / 2.6%。
+
+        真慢一倍时必须还判得红——豁免名单不是"并行全家都不测"，
+        只排除测量本身不可信的那一项。
+        """
+        from benchmark import _classify_all
+        current = {self.PARALLEL: {"serial": 0.060, "thread_pool": 0.065}}
+        baseline = {self.PARALLEL: {"serial": 0.030, "thread_pool": 0.032}}
+        hits, _ = _classify_all(current, baseline, 0.30)
+        assert len(hits) == 2, hits
 
     def test_same_ratio_above_floor_is_a_real_regression(self):
         """判据必须能命中：把 CI 那个比例搬到明显超出噪声的量级上就该判红。"""
@@ -342,11 +350,10 @@ class TestNoiseAwareGate:
         assert hits == [] and len(unverified) == 1
 
     def test_report_only_metrics_never_reach_a_verdict(self):
-        """并行那三项只观测：既不判红，也不该以"不可判"的名义刷屏。"""
-        from benchmark import REPORT_ONLY_METRICS, _classify_all
-        assert {"serial", "thread_pool", "process_pool"} <= REPORT_ONLY_METRICS
-        current = {self.PARALLEL: {"serial": 0.9, "thread_pool": 0.9, "process_pool": 0.9}}
-        baseline = {self.PARALLEL: {"serial": 0.01, "thread_pool": 0.01, "process_pool": 0.01}}
+        """只观测的两项既不判红，也不以"不可判"的名义刷屏。"""
+        from benchmark import _classify_all
+        current = {self.PARALLEL: {"process_pool": 0.9, "process_speedup": 0.01}}
+        baseline = {self.PARALLEL: {"process_pool": 0.01, "process_speedup": 0.9}}
         assert _classify_all(current, baseline, 0.30) == ([], [])
 
     def test_floor_table_covers_every_gated_metric(self):
