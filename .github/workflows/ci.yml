@@ -166,7 +166,8 @@ jobs:
         with:
           path: |
             benchmark_results.json
-            benchmark_history.jsonl
+            benchmark_history.jsonl          # 基线与历史分开缓存：前者只在成功时滚动，后者每轮都追加。
+          # 两个 path 用同一次 restore 拿，键不同 → 见下面的两步 save/restore。
           # 精确键优先；带 run_id 的键只在 save 后的下次运行可命中，
           # 此后回退 perf-baseline-（时间最新优先）。
           # 注意：restore 会覆盖仓库文件；历史失败 run 曾经 always() 保存
@@ -180,6 +181,16 @@ jobs:
           restore-keys: |
             perf-baseline-main-
 
+      - name: Restore perf history
+        uses: actions/cache/restore@v4
+        with:
+          path: benchmark_history.jsonl
+          # 与基线分开的另一把键：历史每轮都追加（含红跑），基线只在成功时滚动。
+          # 同一把键做不到这两件事——见下面两步 save 的 if 条件。
+          key: perf-history-main-not-exact-${{ github.run_id }}
+          restore-keys: |
+            perf-history-main-
+
       - name: Performance regression check
         run: |
           python benchmark.py --ci --threshold 0.30
@@ -192,10 +203,18 @@ jobs:
         if: success() && github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/cache/save@v4
         with:
-          path: |
-            benchmark_results.json
-            benchmark_history.jsonl
+          path: benchmark_results.json
           key: perf-baseline-main-${{ github.run_id }}
+
+      # 历史 JSONL 是"测量日志"而不是"基准"：红跑的那轮同样要留下样本，
+      # 否则跨 run 波动带永远只在绿跑上累积，一次环境劣化就把门禁锁死在红色。
+      # 基线仍按 success() 才滚动更新（避免把劣化结果洗成新的正常值）。
+      - name: Save perf history
+        if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: benchmark_history.jsonl
+          key: perf-history-main-${{ github.run_id }}
 
   refresh-baseline:
     # 手动触发的基线刷新：与 perf 判定同源环境（ubuntu + Python 3.12 +

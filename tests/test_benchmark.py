@@ -5,9 +5,12 @@
   - 不实际运行完整基准（耗时）
   - 每个测试方法聚焦一个行为
 """
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -97,18 +100,97 @@ class TestCheckRegression:
         assert regressions == []
 
     def test_multiple_regressions(self):
-        """多个回归全部报告"""
+        """多个回归全部报告——前提是它们不是"一起动"。
+
+        这条原来用"三项同比例变差"的夹具，而在新判据下那正是环境漂移的形状
+        （见 TestEnvironmentFactor），会被整体校正掉。所以夹具改成
+        "多数指标稳定 + 少数指标劣化"，这本来也是真回归该有的样子。
+        """
         from benchmark import _check_regression
         current = {
             "bench1": {"set_ops_per_sec": 50, "set_ms_per_op": 150},
             "bench2": {"get_hit_ops_per_sec": 60},
+            "bench3": {"elapsed_ms": 100, "consume_ms": 20},
+            "bench4": {"regex": 20.0, "selectolax": 3.0},
         }
         baseline = {
             "bench1": {"set_ops_per_sec": 100, "set_ms_per_op": 100},
             "bench2": {"get_hit_ops_per_sec": 100},
+            "bench3": {"elapsed_ms": 102, "consume_ms": 20},
+            "bench4": {"regex": 20.2, "selectolax": 3.02},
         }
         regressions = _check_regression(current, baseline, 0.20)
-        assert len(regressions) == 3
+        assert len(regressions) == 3, regressions
+
+
+class TestEnvironmentFactor:
+    """整体漂移与真回归要分得开。
+
+    直接来自 CI run 37360857091 的形状：selectolax +32.2%、serial +30.9%、
+    regex +36.4%。三段互不相干的代码不可能同时回归三成，那是那台 runner 那天慢；
+    可当时的判据把它判成了一次真回归，门禁又红了。
+    """
+
+    def test_the_real_ci_red_of_run_37360857091_is_no_longer_red(self):
+        """判据要拿真数字说话：这是那次 run 日志里三个指标的原始基线/实测值。
+
+        日志只留下被判到的三项，所以这里就是三项参与（`_effective_env` 的下限）。
+        那笔提交只动了 agent_loader 的模块复用，与 regex/selectolax/serial 三条
+        互不相干的耗时都无因果，判红必是机器慢——校正后应 0 项确认、0 项待证。
+        """
+        from benchmark import _check_regression
+        base = {"HTML 正文提取 (selectolax vs regex)": {"selectolax": 0.0009595,
+                                                          "regex": 0.01204},
+                "并行执行 (Thread vs Process)": {"serial": 0.03765}}
+        cur = {"HTML 正文提取 (selectolax vs regex)": {"selectolax": 0.001268,
+                                                        "regex": 0.01642},
+               "并行执行 (Thread vs Process)": {"serial": 0.04929}}
+        assert _check_regression(cur, base, 0.30) == []
+
+    def test_coherent_slowdown_across_the_suite_is_not_a_regression(self):
+        from benchmark import _check_regression
+        base = {"b1": {"elapsed_ms": 100.0}, "b2": {"regex": 1.0},
+                "b3": {"set_ms_per_op": 1.0}, "b4": {"consume_ms": 1.0}}
+        cur = {k: {m: v * 1.33 for m, v in d.items()} for k, d in base.items()}
+        assert _check_regression(cur, base, 0.30) == []
+
+    def test_outlier_still_fails_when_the_rest_is_stable(self):
+        """判据必须还能命中：多数稳定，一项慢一倍就是真回归。"""
+        from benchmark import _check_regression
+        base = {"b1": {"elapsed_ms": 100.0}, "b2": {"regex": 1.0},
+                "b3": {"set_ms_per_op": 1.0}, "b4": {"consume_ms": 1.0}}
+        cur = {"b1": {"elapsed_ms": 240.0}, "b2": {"regex": 1.01},
+               "b3": {"set_ms_per_op": 1.0}, "b4": {"consume_ms": 1.01}}
+        hits = _check_regression(cur, base, 0.30)
+        assert len(hits) == 1 and "elapsed_ms" in hits[0], hits
+
+    def test_env_factor_needs_a_majority_to_apply(self):
+        from benchmark import _effective_env, _environment_factor
+        base = {f"b{i}": {"elapsed_ms": 100.0} for i in range(5)}
+        # 4 项慢 35%、1 项不动 ⇒ 中位数就在 1.35 附近，判环境
+        cur = {**{f"b{i}": {"elapsed_ms": 135.0} for i in range(4)},
+               "b4": {"elapsed_ms": 100.0}}
+        env, involved, agreeing = _environment_factor(cur, base)
+        assert involved == 5 and env > 1.3 and agreeing >= 3, (env, involved, agreeing)
+        assert _effective_env(cur, base) > 1.3
+
+    def test_two_metrics_are_too_few_to_call_it_environment(self):
+        """样本太少时不许用中位数开脱：两项一起动更可能是两处真回归。"""
+        from benchmark import _effective_env
+        base = {"b1": {"elapsed_ms": 100.0}, "b2": {"regex": 1.0}}
+        cur = {"b1": {"elapsed_ms": 140.0}, "b2": {"regex": 1.4}}
+        assert _effective_env(cur, base) == 1.0
+
+    def test_report_only_metrics_do_not_drag_the_factor(self):
+        """进程池那两项抖动 90%+，不该参与"机器整体快慢"的估计。"""
+        from benchmark import _environment_factor
+        base = {"并行执行 (Thread vs Process)": {"process_pool": 0.3, "elapsed_ms": 100.0},
+                "b2": {"regex": 1.0}, "b3": {"consume_ms": 1.0}, "b4": {"set_ms_per_op": 1.0}}
+        cur = {"并行执行 (Thread vs Process)": {"process_pool": 3.0, "elapsed_ms": 101.0},
+               "b2": {"regex": 1.01}, "b3": {"consume_ms": 1.01}, "b4": {"set_ms_per_op": 1.01}}
+        env, involved, _ = _environment_factor(cur, base)
+        assert env == 1.0, env
+        assert involved == 4, involved   # process_pool 没被算进来
 
 
 # ─── _gen_mock_html ────────────────────────────
@@ -510,3 +592,73 @@ class TestModeFlags:
                 del sys.modules["benchmark"]
             import benchmark
             assert benchmark.UPDATE_BASELINE is True
+
+
+class TestCiEntryPoint:
+    """`main()` 是这条门禁唯一真正被运行的代码，它自己要有判据。
+
+    判据函数测得再细也挡得住入口写错：`env` 一个名字同时承载"环境指纹 dict"和
+    "环境因子 float"，指纹比较那几行直接 AttributeError，整条 perf job 崩——
+    而在加这一类用例之前，没有任何测试走过 main()。
+    """
+
+    BASE = {
+        "HTML 正文提取 (selectolax vs regex)": {"selectolax": 0.001, "regex": 0.012},
+        "CacheManager 吞吐": {"set_ms_per_op": 0.0018, "get_hit_ms_per_op": 0.0014},
+        "TF-IDF 语义匹配": {"elapsed_ms": 70.0},
+        "SSE 流式 chunk 传播": {"consume_ms": 0.05, "emit_ms_per_op": 0.000007},
+    }
+
+    def _setup(self, monkeypatch, tmp_path, current):
+        import copy
+
+        import benchmark
+
+        monkeypatch.setattr(benchmark, "CI_MODE", True)
+        monkeypatch.setattr(benchmark, "QUICK", True)
+        monkeypatch.setattr(benchmark, "SAMPLES", 1)
+        monkeypatch.setattr(benchmark, "REGRESSION_THRESHOLD", 0.30)
+        monkeypatch.setattr(benchmark, "BASELINE_PATH", tmp_path / "baseline.json")
+        monkeypatch.setattr(benchmark, "HISTORY_PATH", tmp_path / "history.jsonl")
+        monkeypatch.setattr(benchmark, "_run_all_benchmarks",
+                            lambda verbose=True: copy.deepcopy(current))
+        (tmp_path / "baseline.json").write_text(
+            json.dumps(copy.deepcopy(self.BASE), ensure_ascii=False), encoding="utf-8")
+        return benchmark
+
+    def test_uniform_slowdown_exits_zero_and_keeps_a_dict_fingerprint(self, monkeypatch,
+                                                                      tmp_path, capsys):
+        """整台机器慢 35%：环境因子吸收，main() 必须正常返回而不是 exit 1。
+
+        顺带钉住 `_env` 写的是指纹 dict —— 曾经写成那个 float，下一轮比较就废了。
+        """
+        slow = {b: {m: (v / 1.35 if m.endswith("speedup") else v * 1.35)
+                    for m, v in metrics.items()} for b, metrics in self.BASE.items()}
+        benchmark = self._setup(monkeypatch, tmp_path, slow)
+        benchmark.main()                                   # 不抛 SystemExit 即通过
+        out = capsys.readouterr().out
+        assert "整体环境因子" in out, out
+        saved = json.loads((tmp_path / "baseline.json").read_text(encoding="utf-8"))
+        assert isinstance(saved["_env"], dict) and {"system", "python", "cpu_count"} <= set(saved["_env"])
+
+    def test_narrow_regression_still_exits_one(self, monkeypatch, tmp_path, capsys):
+        """判据必须还能命中：多数指标不动，TF-IDF 慢近两倍要 exit 1。"""
+        cur = {b: dict(m) for b, m in self.BASE.items()}
+        cur["TF-IDF 语义匹配"]["elapsed_ms"] = 200.0
+        benchmark = self._setup(monkeypatch, tmp_path, cur)
+        with pytest.raises(SystemExit) as got:
+            benchmark.main()
+        assert got.value.code == 1
+        assert "REGRESSION" in capsys.readouterr().out
+
+    def test_first_run_without_baseline_writes_fingerprint(self, monkeypatch, tmp_path):
+        """没有基线时不该崩，且落下的第一份基线要带指纹。"""
+        import copy
+
+        benchmark = self._setup(monkeypatch, tmp_path, self.BASE)
+        (tmp_path / "baseline.json").unlink()
+        benchmark.main()
+        saved = json.loads((tmp_path / "baseline.json").read_text(encoding="utf-8"))
+        assert isinstance(saved["_env"], dict), saved["_env"]
+        assert copy.deepcopy(self.BASE)["TF-IDF 语义匹配"]["elapsed_ms"] == \
+            saved["TF-IDF 语义匹配"]["elapsed_ms"]

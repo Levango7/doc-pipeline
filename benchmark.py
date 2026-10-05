@@ -373,8 +373,61 @@ def bench_tfidf():
 
 # ═══════════════════════════════════════════════════════════
 
+def _environment_factor(current: dict, baseline: dict, min_metrics: int = 3,
+                        min_shift: float = 0.10) -> tuple[float, int, int]:
+    """整体环境因子：本轮相对基线"普遍慢/普遍差"多少倍。
+
+    共享 runner 上最常见的情形不是某个函数变慢，而是整台机器一起慢——CI run
+    37360857091 就是这个形状：selectolax +32.2%、serial +30.9%、regex +36.4%。
+    三项互不相干的代码不可能同时回归三成；把它当三次回归判红，门禁就又变成抽签。
+
+    取"变差倍数"的中位数（不是均值：一个真回归的 outlier 会把均值带走），
+    并要求至少 min_metrics 项参与。返回 (因子, 参与项数, 与因子同向的项数)；
+    不够条件时因子为 1.0（即不校正）。
+    """
+    factors: list[float] = []
+    for bench_name, cur_metrics in current.items():
+        if str(bench_name).startswith("_") or not isinstance(cur_metrics, dict):
+            continue
+        base_metrics = baseline.get(bench_name)
+        if not isinstance(base_metrics, dict):
+            continue
+        for metric, cur_val in cur_metrics.items():
+            if metric in REPORT_ONLY_METRICS:
+                continue        # 只观测的项不参与"机器整体快慢"的估计
+            if not isinstance(cur_val, (int, float)) or isinstance(cur_val, bool) or not cur_val:
+                continue
+            base_val = base_metrics.get(metric)
+            if not isinstance(base_val, (int, float)) or isinstance(base_val, bool) or not base_val:
+                continue
+            if metric in METRIC_HIGHER_BETTER:
+                factors.append(float(base_val) / float(cur_val))
+            elif metric in METRIC_LOWER_BETTER:
+                factors.append(float(cur_val) / float(base_val))
+    if len(factors) < min_metrics:
+        return 1.0, len(factors), 0
+    med = statistics.median(factors)
+    if med < 1.0 + min_shift:
+        return 1.0, len(factors), 0
+    agreeing = sum(1 for f in factors if 0.6 * med <= f <= 1.6 * med)
+    return med, len(factors), agreeing
+
+
+def _effective_env(current: dict, baseline: dict) -> float:
+    """需要时返回整体环境因子，否则 1.0。
+
+    "多数指标一起动"才算环境：一半一半的时候，中位数没有资格替真回归开脱，
+    所以要求同向项数占多数。
+    """
+    env, involved, agreeing = _environment_factor(current, baseline)
+    if env == 1.0 or involved < 3 or agreeing * 2 < involved:
+        return 1.0
+    return env
+
+
 def classify_change(bench_name: str, metric: str, base_val: float, cur_val: float,
                     threshold: float, spread: float | None = None,
+                    env: float = 1.0,
                     ) -> tuple[str, str] | None:
     """判定一次指标变化：返回 (级别, 消息) 或 None（无需报告）。
 
@@ -383,21 +436,24 @@ def classify_change(bench_name: str, metric: str, base_val: float, cur_val: floa
       UNVERIFIED  —— 超出相对阈，但噪声解释得掉它：门禁没有资格据此判红
     把 UNVERIFIED 当 FAIL 就是"一直红的门禁等于没有门禁"；把它当 PASS 静默忽略
     又会让真回归溜过去，所以它要显式打印、要留在结果里。
+
+    `env` 是整体环境因子（见 _environment_factor）：先按它校正变化幅度，再判三关。
     """
     higher_better = metric in METRIC_HIGHER_BETTER
     lower_better = metric in METRIC_LOWER_BETTER
     if not higher_better and not lower_better:
         return None
-    if higher_better:
-        ratio = (base_val - cur_val) / base_val
-        direction = f"drop={ratio:.1%} > {threshold:.0%}"
-    else:
-        ratio = (cur_val - base_val) / base_val
-        direction = f"increase={ratio:.1%} > {threshold:.0%}"
+    raw_ratio = ((base_val - cur_val) if higher_better
+                 else (cur_val - base_val)) / base_val
+    ratio = (1.0 + raw_ratio) / (env or 1.0) - 1.0
     if ratio <= threshold:
         return None
 
-    head = f"  {bench_name}.{metric} baseline={base_val:.4g} current={cur_val:.4g} {direction}"
+    verb = "drop" if higher_better else "increase"
+    note = f"  {bench_name}.{metric} baseline={base_val:.4g} current={cur_val:.4g} " \
+           f"{verb}={ratio:.1%} > {threshold:.0%}"
+    if env != 1.0:
+        note += f"（原始 {raw_ratio:.1%}，已按整体环境因子 {env:.2f}× 校正）"
     reasons = []
     floor = _floor_for(metric, base_val)
     abs_delta = abs(cur_val - base_val)
@@ -407,8 +463,8 @@ def classify_change(bench_name: str, metric: str, base_val: float, cur_val: floa
         reasons.append(f"同一份代码重复测量的波动已达 {spread:.1%}"
                        f"（判据要求回归超过波动的 2 倍才可信）")
     if reasons:
-        return "UNVERIFIED", f"{head} —— 不可判：{'；'.join(reasons)}"
-    return "REGRESSION", f"REGRESSION: {head}"
+        return "UNVERIFIED", f"{note} —— 不可判：{'；'.join(reasons)}"
+    return "REGRESSION", f"REGRESSION: {note}"
 
 
 def _historical_spreads(history_path: Path, min_runs: int = 5,
@@ -451,11 +507,13 @@ def _historical_spreads(history_path: Path, min_runs: int = 5,
 
 
 def _classify_all(current: dict, baseline: dict, threshold: float,
-                  spreads: dict | None = None,
-                  history_spreads: dict | None = None) -> tuple[list[str], list[str]]:
+                  spreads: dict | None = None, history_spreads: dict | None = None,
+                  env: float | None = None) -> tuple[list[str], list[str]]:
     """逐项判定，返回 (确认回归消息, 不可判消息)。
 
-    波动取三处里最大的那个：本轮采样波动、基线自己记录的波动、历史跨 run 抖动。    只用本轮会漏判——基线若是单次采样留下的（老版本行为），它自带的抖动会被
+    波动取三处里最大的那个：本轮采样波动、基线自己记录的波动、历史跨 run 抖动。
+
+    只用本轮会漏判——基线若是单次采样留下的（老版本行为），它自带的抖动会被
     误当成"当前变慢了"。实测 2026-10-06 本机 4 次独立跑：process_pool 跨次抖
     14.4%、set_ms_per_op 抖 57.6%，而阈值是 30%——这些指标单靠相对阈判，
     红与不红就是抽签。
@@ -464,6 +522,8 @@ def _classify_all(current: dict, baseline: dict, threshold: float,
     unverified: list[str] = []
     base_spreads = baseline.get("_spreads") or {}
     hist = history_spreads or {}
+    if env is None:
+        env = _effective_env(current, baseline)
     for bench_name, cur_metrics in current.items():
         if str(bench_name).startswith("_") or not isinstance(cur_metrics, dict):
             continue
@@ -483,7 +543,7 @@ def _classify_all(current: dict, baseline: dict, threshold: float,
                                       hist.get(key)) if v is not None]
             spread = max(float(v) for v in candidates) if candidates else None
             found = classify_change(bench_name, metric, float(base_val), float(cur_val),
-                                    threshold, spread)
+                                    threshold, spread, env)
             if not found:
                 continue
             level, msg = found
@@ -583,6 +643,12 @@ def _run_all_benchmarks(verbose: bool = True) -> dict:
     return all_results
 
 
+# 落盘路径（CI 的两把缓存键对齐的就是这两个文件）。提到模块级是为了让 main() 这条
+# 出厂路径可测：测试把它们换成 tmp 下的文件，不必碰仓库里那份真基线。
+BASELINE_PATH = Path(__file__).parent / "benchmark_results.json"
+HISTORY_PATH = Path(__file__).parent / "benchmark_history.jsonl"
+
+
 def main():
     print("=" * 70)
     print("doc-pipeline 性能基准测试")
@@ -625,12 +691,12 @@ def main():
     print()
 
     # 导出 JSON
-    output_path = Path(__file__).parent / "benchmark_results.json"
-    history_path = Path(__file__).parent / "benchmark_history.jsonl"
+    output_path = BASELINE_PATH
+    history_path = HISTORY_PATH
 
     if CI_MODE:
         # CI 模式：对比 baseline，检测回归
-        baseline_path = Path(__file__).parent / "benchmark_results.json"
+        baseline_path = BASELINE_PATH
 
         # 多样本：第一份已在上面跑过（给人看的那张表），其余静默补采。
         # 单样本比 30% 相对阈在共享 runner 上就是抛硬币——见 METRIC_FLOORS 的注释。
@@ -647,7 +713,7 @@ def main():
                 print(f"  {key:.<58} {spreads[key]:.1%}")
             print(f"  （波动超过阈值 {REGRESSION_THRESHOLD:.0%} 的项，本轮无法判定回归）")
 
-        env = _env_fingerprint()
+        fingerprint = _env_fingerprint()
         if baseline_path.exists():
             with open(baseline_path, encoding="utf-8") as f:
                 baseline = json.load(f)
@@ -658,13 +724,17 @@ def main():
                   f"{len(REPORT_ONLY_METRICS)} 项 | 历史波动带: "
                   f"{'启用 ' + str(len(history_spreads)) + ' 项' if history_spreads else '样本不足（<5 轮）'}）")
             print(f"{'='* 70}")
+            env = _effective_env(current, baseline)
             hits, unverified = _classify_all(current, baseline, REGRESSION_THRESHOLD,
-                                             spreads, history_spreads)
+                                             spreads, history_spreads, env)
+            if env != 1.0:
+                print(f"整体环境因子 {env:.2f}×：本轮多数指标与基线同向偏移，"
+                      "已按该因子校正后再判定（否则 runner 抖动会被读成回归）")
 
             base_env = baseline.get("_env") or {}
-            changed = {k: (base_env.get(k), env.get(k))
+            changed = {k: (base_env.get(k), fingerprint.get(k))
                        for k in ("system", "machine", "python", "cpu_count")
-                       if base_env.get(k) not in (None, env.get(k))}
+                       if base_env.get(k) not in (None, fingerprint.get(k))}
             if changed and (hits or unverified):
                 # 基线是别的机器/别的 Python 跑出来的：相对比不再有可比性。
                 # 判红会把平台迁移变成"性能回归"，直接忽略又会漏掉真回归，
@@ -673,10 +743,10 @@ def main():
                         "请用 refresh-baseline 重立基线")
                 hits = [f"{h} —— 改判不可判：{note}" for h in hits]
                 hits, unverified = [], hits + unverified
-            noisy = (env.get("load1") or 0) > (env.get("cpu_count") or 1)
+            noisy = (fingerprint.get("load1") or 0) > (fingerprint.get("cpu_count") or 1)
             if noisy and (hits or unverified):
-                note = (f"当前机器 1 分钟负载 {env['load1']} 超过核数 "
-                        f"{env['cpu_count']}，微基准在此刻不可信")
+                note = (f"当前机器 1 分钟负载 {fingerprint['load1']} 超过核数 "
+                        f"{fingerprint['cpu_count']}，微基准在此刻不可信")
                 hits = [f"{h} —— 改判不可判：{note}" for h in hits]
                 hits, unverified = [], hits + unverified
 
@@ -696,14 +766,14 @@ def main():
                 print("PASSED: 无性能回归")
             # 滚动更新 baseline：CI 缓存中的基线始终对齐最近一次通过的 main 运行
             all_results = current
-            all_results["_env"] = env
+            all_results["_env"] = fingerprint
             all_results["_spreads"] = spreads
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(all_results, f, indent=2, default=str, ensure_ascii=False)
         else:
             print("WARNING: 无 baseline 文件，跳过回归检测")
             # 首次运行，写入 baseline
-            all_results["_env"] = env
+            all_results["_env"] = fingerprint
             all_results["_spreads"] = spreads
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(all_results, f, indent=2, default=str, ensure_ascii=False)
