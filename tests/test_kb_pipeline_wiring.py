@@ -6,6 +6,7 @@
 并在离线（无 LLM Key、无网络）条件下跑通整条 DAG。
 """
 import os
+import shutil
 import sys
 import uuid
 from pathlib import Path
@@ -78,13 +79,18 @@ def _msg(payload: dict):
 
 class TestPipelineDefinition:
     def test_kb_docgen_parses_with_expected_levels(self):
+        from pipeline_core.naming import agent_of
         from pipeline_core.scheduler import Scheduler
         plan = Scheduler().parse_file(str(PROJECT / "pipelines" / "kb-docgen.yaml"))
         assert plan.pipeline_name == "kb-docgen"
-        assert plan.node_count == 7
-        order = [n[0].agent_name for n in plan.levels]
-        assert order == ["ingest", "knowledge_base", "writer",
-                         "quality_gate", "checker", "layout", "safe_writer"]
+        # 8 = ingest + knowledge_base + writer + 质量尾内联的五个节点
+        # （尾里多出 fact_checker__quality_tail，被 when 条件跳过而非删除）
+        assert plan.node_count == 8, plan.node_count
+        # 层级按 Agent 还原：片段身份带别名是抽取的预期结果，钉字面名等于每次
+        # 改调用方命名都要来动这条结构断言。
+        assert [agent_of(n[0].agent_name) for n in plan.levels] == [
+            "ingest", "knowledge_base", "writer",
+            "quality_gate", "checker", "fact_checker", "layout", "safe_writer"]
 
     def test_ingest_and_kb_declare_their_own_schema(self):
         """config 类型漂移必须在解析期报错，而不是运行时静默。
@@ -333,6 +339,10 @@ class TestKbPipelineOfflineE2E:
         offline = src.replace("embedder: auto", "embedder: hash")
         yaml_path = corpus["tmp"] / "kb-docgen-offline.yaml"
         yaml_path.write_text(offline, encoding="utf-8")
+        # 片段与引用它的 YAML 必须同目录：chdir 到 tmp 之后 Scheduler 的相对
+        # pipeline_dir 也指向 tmp，漏拷就是"片段不存在"而不是漂移。
+        shutil.copy(PROJECT / "pipelines" / "_quality-tail.yaml",
+                    corpus["tmp"] / "_quality-tail.yaml")
 
         from pipeline_core import PipelineOrchestrator
         from pipeline_core.scheduler import Scheduler

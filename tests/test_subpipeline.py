@@ -153,6 +153,18 @@ class TestCallIsRejectedEarly:
         with pytest.raises(ValueError, match="循环引用"):
             _sched(tmp_path).parse("a", verify_lock=False)
 
+    def test_missing_fragment_names_the_co_location_rule(self, tmp_path):
+        """片段找不到时，报错要说出"跟调用方同目录"这条部署要求。
+
+        单文件复制流水线的用户（以及把一条 yaml 拷进沙箱的测试）撞的就是这个，
+        只报"流水线不存在"会让人去查名字拼写，而真正的问题是目录里没有片段。
+        """
+        _write(tmp_path, "needs_frag", [
+            {"name": "tail", "call": "_not_installed", "dependencies": []},
+        ], [["tail"]])
+        with pytest.raises(ValueError, match="同一个 pipelines/ 目录"):
+            _sched(tmp_path).parse("needs_frag", verify_lock=False)
+
     def test_same_sub_reused_by_two_call_nodes(self, tmp_path):
         """两条节点引用同一个子流水线是合法复用，不是环；身份也不能互相覆盖。
 

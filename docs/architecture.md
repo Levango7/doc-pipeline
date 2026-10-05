@@ -132,10 +132,18 @@ run 仍 done 并留 warning；因依赖失败没跑 → 仍然 failed。
 
 ### 1.5 子流水线片段与参数作用域
 
-`pipelines/_quality-tail.yaml` 是四条 docgen 流水线的共享质量尾。抽取前逐字节比对过四份
-尾巴：`quality_gate/checker/layout/safe_writer` 的 version/timeout/config 完全一致，只差
+`pipelines/_quality-tail.yaml` 是六条流水线（docgen / docgen-render / docgen-verified /
+docgen-lean / docreq / kb-docgen）的共享质量尾。抽取前逐字节比对过这几份尾巴：
+`quality_gate/checker/layout/safe_writer` 的 version/timeout/config 完全一致，只差
 fact_checker 在不在、什么条件下跑。所以差异收敛成两个参数（`fact_check` / `min_score`），
 由调用方在 `call` 节点的 `inputs:` 里传。
+
+判据不是"看起来一样"：重锁后按节点比对抽取前后 lock 里的 `config_hash` / `version` /
+`pool_size`，六条共 26 组，0 处不一致。
+
+`three_pass` 故意不引用片段——它的尾巴是另一份真相（threshold 65、max_regenerations 2、
+checker/layout 超时 120、safe_writer 超时 60）。把它并进来要么改它行为，要么给片段
+加一堆"每节点可覆盖"的参数，那是为了消灭重复而制造更复杂的重复。
 
 参数作用域三条规则：
 

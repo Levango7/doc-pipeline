@@ -331,6 +331,9 @@ agents:
   - name: review                 # 节点身份，不是 Agent 名
     call: docgen-verified        # 被引用的流水线（pipelines/docgen-verified.yaml）
     dependencies: [writer]
+    inputs:                      # 传给子流水线的参数，片段用 when 的 inputs.* 读
+      fact_check: true
+      min_score: 70
   - name: publish
     dependencies: [review]       # 自动接到子流水线的出口节点
 ```
@@ -340,8 +343,33 @@ agents:
 - 环与深度在解析期拒绝：`a → b → a` 报"循环引用"，超过 3 层（含叶子）报"嵌套超过上限"。
 - `call` 节点不接受 `config` / `when` / `pool_size` / `rate_limit` —— 配置属于子流水线，
   父子各写一份会变成两处真相。
-- **被引子流水线改了，调用方的 lockfile 会报拓扑漂移**（指纹按展开后的图算），
-  换掉一段复用的子流程不可能绕过版本锁定。
+- **被引子流水线改了，调用方的 lockfile 会报拓扑漂移**（展开后的图算指纹，
+  `inputs` 的实参也算），必须 `--write-lock`。
+
+参数（`inputs`）的作用域：
+
+| 写在哪 | 含义 |
+| --- | --- |
+| `call` 节点 | 这次调用传给子流水线的实参 |
+| 普通节点 | 自己的默认值，仅当它的 `when` 读到 `inputs.*` 才允许写 |
+
+内联时按"节点默认值 ← 调用方实参"合并，且只把该节点确实会读的那几个键落到节点上；
+更深一层的 `call` 有自己的作用域，外层参数不会灌进去。参数双向都在解析期查：
+引用了没人传 → 报错（`all:` 会短路，缺参到运行期可能被静默绕过）；传了没人读 → 报错
+（`min_scor: 70` 这类拼写错误原本会静默走默认值）。
+
+出厂片段 `pipelines/_quality-tail.yaml`（质量尾：quality_gate → checker → 可选
+fact_checker → layout → safe_writer）被 docgen / docgen-render / docgen-verified /
+docgen-lean / docreq / kb-docgen 六条流水线引用；抽取前逐字节比对过这六份尾巴，
+`quality_gate/checker/layout/safe_writer` 的 version/timeout/config 完全一致，
+差异只有 fact_checker 的有无与门槛，于是收敛成两个参数：`fact_check: false`（docgen /
+docgen-render / docreq / kb-docgen）、`{true, 0}`（docgen-verified，无条件核查）、
+`{true, 70}`（docgen-lean，达标才核查）。
+
+`_` 前缀 = 内部片段：不进 `--pipeline` 候选清单（`installed_pipelines` /
+`list_pipelines` / run.py 三处口径一致），但仍能被 `call` 加载；片段必须与引用它的
+YAML 同目录。它自带默认值，所以也能单独解析与加锁。版本锁定靠调用方的 lockfile：
+片段的节点、连线、配置哈希与实参都进了父图的 `topology_hash` / `config_hash`。
 
 ### Quality Profile（`pipelines/quality/`）
 
@@ -630,12 +658,14 @@ doc-pipeline/
 │   ├── ingest.py        # PDF / 图片 / 文本 → 结构化 Markdown
 │   └── document_enhancer.py # 已有文档逐章节 LLM 增强
 ├── pipelines/           # Pipeline 定义 + Quality Profile
-│   ├── docgen.yaml      # 默认文档生成流水线
+│   ├── _quality-tail.yaml # 内部片段：质量尾（六条流水线共用，不进 --pipeline 候选）
+│   ├── docgen.yaml      # 默认文档生成流水线（尾巴 call _quality-tail，不核查）
 │   ├── docgen-render.yaml # 追加 renderer 节点，产出 docx/pdf
 │   ├── docgen-verified.yaml
 │   ├── docgen-lean.yaml # 条件升级核查：质量达标才跑 fact_checker
+│   ├── docreq.yaml      # 需求分析增强（requirements_analyzer 开头）
 │   ├── kb-docgen.yaml   # 本地资料 → 知识库接地（ingest/kb/writer 已接线）
-│   ├── three_pass.yaml  # 三阶段流水线（DAG 版）
+│   ├── three_pass.yaml  # 三阶段流水线（尾巴阈值/重试与片段不同，故不引用片段）
 │   ├── test_pipeline.yaml
 │   └── *.lock           # 版本锁定：config_hash + 拓扑指纹，漂移即拒绝执行
 │   └── quality/

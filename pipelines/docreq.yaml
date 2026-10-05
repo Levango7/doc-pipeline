@@ -55,37 +55,11 @@ agents:
     config:
       prompt_profile: generic-tech
 
-  - name: quality_gate
-    version: "2.0"
-    timeout: 300
+  - name: quality_tail
+    call: _quality-tail
     dependencies: ["writer"]
-    config:
-      quality_profile: technical-doc
-      threshold: 70
-      max_regenerations: 3
-      # 权重统一由 pipelines/quality/technical-doc.yaml 提供（与 docgen 同步移除内嵌 weights）
-
-  - name: checker
-    version: "1.1"
-    timeout: 300
-    dependencies: ["quality_gate"]
-    config:
-      fail_fast: false
-
-  - name: layout
-    version: "2.0"
-    timeout: 300
-    dependencies: ["checker"]
-    config:
-      style: markdown
-
-  - name: safe_writer
-    version: "2.0"
-    timeout: 300
-    dependencies: ["layout"]
-    config:
-      backup_dir: backups
-      atomic: true
+    inputs:
+      fact_check: false
 
 # ── DAG 拓扑 ──────────────────────────────
 topology:
@@ -95,19 +69,13 @@ topology:
     - [researcher]
     - [fetcher]
     - [writer]
-    - [quality_gate]
-    - [checker]
-    - [layout]
-    - [safe_writer]
+    - [quality_tail]
 
   edges:
     - [requirements_analyzer, researcher]
     - [researcher, fetcher]
     - [fetcher, writer]
-    - [writer, quality_gate]
-    - [quality_gate, checker]
-    - [checker, layout]
-    - [layout, safe_writer]
+    - [writer, quality_tail]
 
 # ── 流水线全局策略 ──────────────────────────
 pipeline:

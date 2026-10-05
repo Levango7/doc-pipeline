@@ -1,10 +1,16 @@
 agents:
-  checker:
+  checker__quality_tail:
     config_hash: 4cca84a3c824
     dependencies:
     - quality_gate
     pool_size: 1
     version: '1.1'
+  fact_checker__quality_tail:
+    config_hash: 11e5aedb286d
+    dependencies:
+    - checker
+    pool_size: 1
+    version: '1.0'
   ingest:
     config_hash: fc9e5efd88b0
     dependencies: []
@@ -16,19 +22,18 @@ agents:
     - ingest
     pool_size: 1
     version: '1.0'
-  layout:
+  layout__quality_tail:
     config_hash: fd4abfa751e5
     dependencies:
-    - checker
+    - fact_checker
     pool_size: 1
     version: '2.0'
-  quality_gate:
+  quality_gate__quality_tail:
     config_hash: e3ebdd7e47f8
-    dependencies:
-    - writer
+    dependencies: []
     pool_size: 1
     version: '2.0'
-  safe_writer:
+  safe_writer__quality_tail:
     config_hash: a5047e77162a
     dependencies:
     - layout
@@ -40,8 +45,8 @@ agents:
     - knowledge_base
     pool_size: 1
     version: '2.0'
-created_at: '2026-10-05T01:44:16'
-node_count: 7
+created_at: '2026-10-06T01:49:39'
+node_count: 8
 pipeline: kb-docgen
-plan_id: 805b1cb8
-topology_hash: e196e27b5b09
+plan_id: c4d30cad
+topology_hash: 9297257cbd1d

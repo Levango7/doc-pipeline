@@ -43,36 +43,13 @@ agents:
     config:
       prompt_profile: generic-tech
 
-  - name: quality_gate
-    version: "2.0"
-    timeout: 300
+  # 质量尾来自共享片段 _quality-tail.yaml（与 docgen 同一份定义、同一个选择：
+  # 不做事实核查）。本地语料场景下核查的对照物就是语料本身，交给 knowledge_base 做。
+  - name: quality_tail
+    call: _quality-tail
     dependencies: ["writer"]
-    config:
-      quality_profile: technical-doc
-      threshold: 70
-      max_regenerations: 3
-
-  - name: checker
-    version: "1.1"
-    timeout: 300
-    dependencies: ["quality_gate"]
-    config:
-      fail_fast: false
-
-  - name: layout
-    version: "2.0"
-    timeout: 300
-    dependencies: ["checker"]
-    config:
-      style: markdown
-
-  - name: safe_writer
-    version: "2.0"
-    timeout: 300
-    dependencies: ["layout"]
-    config:
-      backup_dir: backups
-      atomic: true
+    inputs:
+      fact_check: false
 
 topology:
   type: dag
@@ -80,18 +57,12 @@ topology:
     - [ingest]
     - [knowledge_base]
     - [writer]
-    - [quality_gate]
-    - [checker]
-    - [layout]
-    - [safe_writer]
+    - [quality_tail]
 
   edges:
     - [ingest, knowledge_base]
     - [knowledge_base, writer]
-    - [writer, quality_gate]
-    - [quality_gate, checker]
-    - [checker, layout]
-    - [layout, safe_writer]
+    - [writer, quality_tail]
 
 pipeline:
   timeout: 900

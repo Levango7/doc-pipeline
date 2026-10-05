@@ -234,6 +234,8 @@ class TestShippedPipelinesAreLocked:
             drifted = src.replace("threshold: 70", "threshold: 71", 1)
         target = sandbox / "docreq.yaml"
         target.write_text(drifted, encoding="utf-8")
+        shutil.copy(PROJECT / "pipelines" / "_quality-tail.yaml",
+                    sandbox / "_quality-tail.yaml")
 
         sched = Scheduler(pipeline_dir=str(sandbox))
         plan = sched.parse_file(str(target), verify_lock=False)

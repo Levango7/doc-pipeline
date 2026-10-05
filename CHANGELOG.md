@@ -76,6 +76,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 （fact_checker 实跑）、docgen-render `done`（renderer 因 python-docx 对占位稿报 XML 控制字符
 错误而 ❌，与本次抽取无关，另立待办）。
 
+### Added（2026-10-06·续，未发版）
+
+- **docreq / kb-docgen 也接上质量尾片段**（承接上面"四条"的范围，现共六条流水线引用
+  `_quality-tail`）。两条的尾巴与片段逐字段相等（threshold 70、max_regenerations 3、
+  timeout 300、`fail_fast: false`、`style: markdown`、`backup_dir/atomic`），
+  都只要 `inputs: {fact_check: false}`。上一笔写"未引用片段的四条…逐字段未变"，
+  那是当时的范围决定而非结论——`three_pass` 才是不该并入的那条
+  （threshold 65 / max_regenerations 2 / 超时 120·60 与片段不同）。
+- 平价判据（脚本比对，不是断言）：抽取前的 lock（`/tmp/locks_before`）与重锁后的 lock
+  逐节点比 `config_hash` / `version` / `pool_size`，六条流水线共 **26 组，0 处不一致**。
+- 拓扑与锁文件差异（本笔两条）：
+
+  | 流水线 | node_count | topology_hash | 节点名变化 |
+  |---|---|---|---|
+  | docreq | 9 → 10 | `06008455dc1f` → `13ab15c3b1b5` | 去 `checker/layout/quality_gate/safe_writer`；加同名 `__quality_tail` 五个（多出 `fact_checker__quality_tail`，被条件跳过） |
+  | kb-docgen | 7 → 8 | `e196e27b5b09` → `9297257cbd1d` | 同上 |
+
+### Fixed（2026-10-06·续）
+
+- **上一笔的 Docs 条目领先于文件**：那条说 README 已有"`call.inputs` 与默认值/作用域表、
+  `_quality-tail` 片段说明"，实测只有求值上下文表的 `inputs.*` 一行和 `value_from`
+  片段两处落地——那次批量编辑里最大的一块（作用域表 + 片段说明）因锚点文本不一致没有
+  应用。旧条目保留不删，此处补记。现在 README 的子流水线一节有了 `inputs` 示例、
+  作用域表、六条引用关系与 `_` 前缀约定；`pipelines/` 目录树补上 `_quality-tail.yaml`
+  与 `docreq.yaml`，并标注 `three_pass` 为何不引用片段。
+
 ### Added（2026-10-05，未发版）
 
 - **Phase 1 解耦——产物契约**（`pipeline_core/artifacts.py` + `config_schema.py`）：
