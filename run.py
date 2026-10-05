@@ -493,12 +493,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-search", action="store_true", help="禁用搜索补充（仅 LLM 增强）")
     parser.add_argument("--mcp", action="store_true", help="启动 MCP server（stdio JSON-RPC，供 AI agent 调度）")
     parser.add_argument("--recover", action="store_true", help="恢复中断的任务（重启后把 running 改回 pending 并重新执行）")
+    parser.add_argument("--worker", action="store_true",
+                        help="以常驻 worker 身份消费任务队列（claim → 执行 → 落状态）")
+    parser.add_argument("--worker-id", default="", help="worker 标识，写进队列的 worker_id 列")
+    parser.add_argument("--once", action="store_true", help="配合 --worker：只消费一条任务")
+    parser.add_argument("--poll-interval", type=float, default=1.0,
+                        help="worker 空闲轮询间隔秒数")
+    parser.add_argument("--idle-timeout", type=float, default=None,
+                        help="worker 空转多少秒后退出（默认不退出）")
+    parser.add_argument("--lease-stale", type=float, default=900.0,
+                        help="回收 running 行的租约阈值（秒）")
     return parser
 
 
 def main():
     parser = build_arg_parser()
     args = parser.parse_args()
+
+    # worker 模式自带参数解析，直接交给 pipeline_core.worker，不与流水线参数纠缠
+    if args.worker:
+        from pipeline_core.worker import main as worker_main
+
+        raise SystemExit(worker_main([
+            *([f"--worker-id={args.worker_id}"] if args.worker_id else []),
+            *(["--once"] if args.once else []),
+            f"--poll-interval={args.poll_interval}",
+            *([f"--idle-timeout={args.idle_timeout}"] if args.idle_timeout is not None else []),
+            f"--lease-stale={args.lease_stale}",
+        ]))
 
     # 无输入文件时：仅 --check/--mcp/--recover 及服务模式（admin/dashboard/daemon）可用
     if args.input is None and not args.check and not args.mcp and not args.recover \

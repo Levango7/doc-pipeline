@@ -441,14 +441,14 @@ class PipelineOrchestrator:
     def _finalize_task_queue(self, task: PipelineTask, config: dict) -> None:
         """任务终态同步任务队列 + 清理临时文件 + 断点保留/删除。"""
         try:
-            self.task_queue.update_status(
+            self.task_queue.finish(
                 task.id,
                 task.status.value if hasattr(task.status, "value") else str(task.status),
                 result=dict(task.result) if task.result else None,
                 error=task.error,
             )
         except Exception as e:
-            self._logger.log("warning", "task_queue.update_status 失败",
+            self._logger.log("warning", "task_queue.finish 失败",
                              task_id=task.id, error=str(e))
         self._cleanup_task_temp(task)
         if task.status == TaskStatus.PAUSED:
@@ -664,15 +664,17 @@ class PipelineOrchestrator:
 
         # update_status 必须有异常保护：本方法在 execute() 的 finally 链中执行，
         # TaskQueue 异常若外抛会中断后续报告/回调/清理（对照 _finalize_task_queue 的同款防护）
+        # 用 finish 而不是 update_status：终态只应写一次。worker 化之后，API 取消
+        # （行已 cancelled）与流水线收尾会并发，无条件覆写会把取消洗成 done。
         try:
-            self.task_queue.update_status(
+            self.task_queue.finish(
                 task.id,
                 task.status.value if hasattr(task.status, "value") else str(task.status),
                 result=dict(task.result) if task.result else None,
                 error=task.error,
             )
         except Exception as e:
-            self._logger.log("warning", "task_queue.update_status 失败",
+            self._logger.log("warning", "task_queue.finish 失败",
                              task_id=task.id, error=str(e))
 
         # ── 事件钩子 ──

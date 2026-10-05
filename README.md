@@ -143,6 +143,7 @@ python run.py test_input.md --dashboard
 | `--daemon` | 执行完后保持 API 常驻 |
 | `--mcp` | 启动 MCP Server（JSON-RPC over stdio，供外部 Agent 调度） |
 | `--recover` | 启动时恢复中断的任务队列 |
+| `--worker` | 常驻 worker：消费 `task_queue` 里的 pending 任务（claim → 执行 → 落状态）；配 `--once` 只消费一条，`--poll-interval` / `--idle-timeout` / `--lease-stale` 控制节奏与崩溃租约回收 |
 | `--config, -c` | 自定义配置文件 |
 | `--json-output` | 输出 JSON 结果（供 wrapper 解析） |
 | `--legacy` | （已冻结，仅兜底）按 Agent 注册元数据执行，不经 Scheduler/YAML；生产请用默认 DAG 模式 |
@@ -207,7 +208,8 @@ python run.py test_input.md --dashboard
 | `pipeline_core/cost_tracker.py` | LLM 成本追踪（16 供应商定价表 + 预算熔断） |
 | `pipeline_core/alert_manager.py` | 告警机制（熔断/DLQ/限流/预算超限通知） |
 | `pipeline_core/quality_feedback.py` | 质量评分历史 + 弱项模式分析 + 写作建议 |
-| `pipeline_core/task_queue.py` | SQLite 持久化任务队列（中断恢复） |
+| `pipeline_core/task_queue.py` | SQLite 持久化任务队列（原子 claim、租约回收、终态只写一次） |
+| `pipeline_core/worker.py` | 常驻 worker：消费队列里的 pending 任务（`--worker`），多 worker 互斥、崩溃租约回收 |
 | `pipeline_core/mcp_server.py` | MCP Server（JSON-RPC 2.0 over stdio，5 tools） |
 | `pipeline_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
 | `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
@@ -541,6 +543,7 @@ doc-pipeline/
 │   ├── alert_manager.py # 告警机制
 │   ├── quality_feedback.py # 质量闭环学习
 │   ├── task_queue.py    # SQLite 任务队列
+│   ├── worker.py        # 常驻 worker（--worker）：消费队列、租约回收
 │   ├── mcp_server.py    # MCP Server (JSON-RPC)
 │   ├── openapi_spec.py  # OpenAPI 3.0 规范
 │   ├── agent_loader.py  # Agent 安全加载（沙箱）

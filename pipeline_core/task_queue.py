@@ -225,6 +225,34 @@ class TaskQueue:
                     (status, task_id),
                 )
 
+    def finish(self, task_id: str, status: str, result: dict = None,
+               error: str = "", allow_states: tuple = ("running", "pending")) -> bool:
+        """写终态，但只在当前状态属于 allow_states 时才写。返回是否真的写了。
+
+        为什么需要它：`update_status` 是无条件覆写，而 worker 化之后"用户取消"
+        与"任务跑完"会并发发生——API 把行改成 cancelled，执行中的流水线收尾时
+        会把同一行又写回 done，取消凭空消失。终态只应被写一次。
+
+        不拼 IN 子句（bandit B608）：先读当前状态，再用常量 SQL 把那个观测值写进
+        WHERE。观测值参与条件让"读到 cancelled 之后才被改"的竞态仍然安全——
+        状态一变 rowcount 就归 0，不会覆写。
+        """
+        with self._lock, self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT status FROM task_queue WHERE task_id = ?", (task_id,),
+            ).fetchone()
+            if not row or row[0] not in allow_states:
+                logger.info(
+                    f"finish 跳过 task_id={task_id}：当前状态 {row[0] if row else '不存在'}"
+                    f" 不在允许集合 {allow_states} 内（可能已被取消）")
+                return False
+            cursor = conn.execute(
+                "UPDATE task_queue SET status = ?, result_json = ?, error = ?, finished_at = ? "
+                "WHERE task_id = ? AND status = ?",
+                (status, _fast_dumps(result or {}), error, time.time(), task_id, row[0]),
+            )
+            return cursor.rowcount > 0
+
     def recover(self, stale_seconds: float | None = None) -> list[dict]:
         """重启恢复：把 running 状态的任务改回 pending。
 

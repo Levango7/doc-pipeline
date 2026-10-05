@@ -64,6 +64,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CI 的 py_compile/mypy/bandit 口径与 pyproject `packages`/coverage `include`
   同步纳入 `docpipeline/`，否则搬出去的代码会静默脱离门禁。
 
+- **阶段 2-2：常驻 worker 补上队列的消费端**（`pipeline_core/worker.py` + `--worker`）。
+  此前 `TaskQueue.acquire()` 没有任何调用方（全仓 grep 只命中定义与 docstring 示例），
+  `POST /api/tasks` 入队之后必须有人再手动跑一次 `run.py --recover` 才会真的执行——
+  队列只进不出，"提交即排队"在跨进程部署里并不成立。
+  - `TaskWorker`：`recover(stale_seconds)` 回收崩溃租约（要求 owner_pid 已死且 started_at
+    过期，活进程正在跑的任务不动）→ `acquire(worker_id)` 原子 claim → 按名解析 YAML
+    （锁文件漂移直接拒绝执行并写 failed，不退回 legacy）→ `run_plan` → 落终态。
+    `run_forever` 支持 stop_event 与 `--idle-timeout`，SIGINT 处理完当前任务才退出。
+  - `TaskQueue.finish()`：**终态只写一次**。`update_status` 是无条件覆写，而 worker 化之后
+    API 取消（行已 cancelled）与流水线收尾会并发，取消会被洗成 done；两条收尾路径
+    （`_finalize_plan_task` / `_finalize_task_queue`）都改用它。
+  - CLI：`--worker` / `--once` / `--poll-interval` / `--idle-timeout` / `--lease-stale`。
+  - 测试 `tests/test_worker.py` 15 例，两个关键判据都做过反向验证：
+    去掉 acquire 的 `AND status='pending'` → 互斥用例转红；
+    把 `finish` 改回无条件覆写 → 6 例转红。第一版互斥用例用同一个 `TaskQueue`
+    实例开两个线程，被实例内的 `threading.Lock` 先串行化了，SQL 守卫根本没被行使，
+    反向验证时**没有转红**——那是假绿，已改为两个独立句柄（等价于两个进程）。
+  - 本机实测跑通真实队列：worker claim 到两条历史 kb-docgen 任务，因 input 文件已不存在
+    而如实写 failed（错误串同时带"文件不存在"和交付契约原因），不是静默跳过。
+  - bandit 拦下我自己写的 B608：`finish` 里按 `allow_states` 长度拼 `IN (?,?,…)` 被判
+    "string-based query construction"（MEDIUM，`-ll` 门禁会红）。改成先读当前状态、
+    再用常量 SQL 把观测值放进 WHERE——观测值参与条件同样挡住"读到 cancelled 之后
+    状态又变"的竞态（状态一变 rowcount 归 0）。改后 `-ll` 零命中。
+    另注：本机 `bandit` 控制台脚本是坏壳（`--version` 无输出、退出 1），要用
+    `python -m bandit`；CI 上脚本正常。
+
 ### Fixed（2026-10-05）
 
 - **SSE 流式回调从来没挂上过**：`admin_api._find_streaming_agent` 遍历
