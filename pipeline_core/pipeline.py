@@ -115,6 +115,9 @@ class TaskNode:
 
     # 运行时状态
     status: str = "pending"            # pending/running/success/failed/skipped
+    #: 跳过原因："condition"=when 不成立（作者声明的可选分支，下游不受影响）；
+    #: 空串 + status=skipped 表示因依赖失败被级联跳过。
+    skip_reason: str = ""
     result: dict = field(default_factory=dict)
     error: str = ""
     started_at: float = 0
@@ -773,7 +776,7 @@ class PipelineOrchestrator:
             # `fail_fast: false` 让末端节点保持 RUNNING，收尾就无条件盖成 DONE——
             # 实测 kb-docgen 摄入被跳过、知识库失败、writer 之后从未执行，
             # 却报 done + exit 0 且没有产物文件。没交付就不是 done。
-            if self._sink_declared(plan) and not self._delivered(task):
+            if self._sink_declared(plan) and not self._delivered(task, plan):
                 reason = "声明了落盘节点却没有交付物（无 output_path/内容）"
                 task.error = f"{task.error}；{reason}" if task.error else reason
                 task.status = TaskStatus.FAILED
@@ -782,23 +785,43 @@ class PipelineOrchestrator:
                 return
             task.status = TaskStatus.DONE
 
-    def _sink_declared(self, plan: ExecutionPlan) -> bool:
-        """计划里是否存在声明 WRITES_OUTPUT 的落盘节点。"""
+    def _sink_node_names(self, plan: ExecutionPlan) -> list[str]:
+        """计划里所有声明了 WRITES_OUTPUT 的节点名（落盘节点）。"""
+        names: list[str] = []
         for level in getattr(plan, "levels", []) or []:
             for node in level:
                 base = node.agent_name.split("_pool_")[0]
                 meta = self.registry.get_meta(base)
                 if meta is not None and getattr(meta, "writes_output", False):
-                    return True
-        return False
+                    names.append(node.agent_name)
+        return names
 
-    @staticmethod
-    def _delivered(task: PipelineTask) -> bool:
-        """交付物是否真的落地：文件存在，或有非空内联内容。"""
+    def _sink_declared(self, plan: ExecutionPlan) -> bool:
+        """计划里是否存在声明 WRITES_OUTPUT 的落盘节点。"""
+        return bool(self._sink_node_names(plan))
+
+    def _delivered(self, task: PipelineTask, plan: ExecutionPlan | None = None) -> bool:
+        """交付物是否真的落地：文件存在，或有非空内联内容。
+
+        例外：落盘节点全部被 `when` 条件主动跳过时，"这轮不需要交付物"是作者
+        声明的意图，不算失败（但下面的收尾会留一条 warning 日志，别让它无声）。
+        """
         path = str(getattr(task, "output_path", "") or "")
         if path and Path(path).exists():
             return True
-        return bool(str(getattr(task, "output_content", "") or "").strip())
+        if str(getattr(task, "output_content", "") or "").strip():
+            return True
+        if plan is not None:
+            sinks = self._sink_node_names(plan)
+            nodes = getattr(task, "dag_nodes", {}) or {}
+            skipped_by_condition = [n for n in sinks
+                                    if getattr(nodes.get(n), "status", "") == "skipped"
+                                    and getattr(nodes.get(n), "skip_reason", "") == "condition"]
+            if sinks and len(skipped_by_condition) == len(sinks):
+                self._log("warning", "落盘节点被条件跳过，本次无交付物（按声明）",
+                          task_id=task.id, nodes=skipped_by_condition)
+                return True
+        return False
 
     def run_plan(self, plan: ExecutionPlan, input_file: str = "",
                 task_id: str | None = None, wait: bool = True) -> PipelineTask:

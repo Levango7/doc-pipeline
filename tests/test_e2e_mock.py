@@ -109,7 +109,8 @@ class TestMockE2E:
         from pipeline_core import PipelineOrchestrator
         from pipeline_core.scheduler import Scheduler
 
-        monkeypatch.setattr(PipelineOrchestrator, "_delivered", staticmethod(lambda task: False))
+        monkeypatch.setattr(PipelineOrchestrator, "_delivered",
+                            lambda self, task, plan=None: False)
         orch = PipelineOrchestrator(
             agents_dir=str(PROJECT / "agents"),
             checkpoint_dir=str(tmp_path / "checkpoints"),

@@ -73,6 +73,30 @@ import 和 `importlib.import_module("...")` 字面量，而不只是文件头部
 > `docpipeline` 只依赖 `pipeline_core` 的 `llm_router` / `search_engines`
 > （`document_enhancer` 用到），这两个仍是引擎级横切组件，没有跟着搬。
 
+### 1.2 两种 skipped，别混
+
+节点状态 `skipped` 有两个完全不同的来源，靠 `TaskNode.skip_reason` 区分：
+
+| 来源 | `skip_reason` | 下游 | 含义 |
+|------|---------------|------|------|
+| `when` 条件不成立 | `"condition"` | **照常执行** | 作者声明这轮不需要这条分支 |
+| 依赖未成功被级联跳过 | `""` | 继续跳过 | 上游挂了，拿不到输入 |
+
+实现上 `_submit_level_futures`（线程版与异步版各一处，改一处必须改两处）在提交前求值
+`node.when`：不成立就打标记并记一条 `status="skipped"` 的步骤（报表看得见这格是空的），
+成立则正常提交；**求值抛 `ConditionError` 时让它冒出去整条 run 失败**——把它降级成
+"条件不成立"就会静默跳过分支却照报 done。语言与上下文见 README「条件节点」，
+求值实现是 `pipeline_core/conditions.py`（纯函数，不 exec/eval）。
+
+与交付契约（§1.3）的关系：落盘节点**全部**因条件被跳过 → 视为按声明本轮无交付，
+run 仍 done 并留 warning；因依赖失败没跑 → 仍然 failed。
+
+### 1.3 交付契约
+
+`_execute_plan` 收尾不再无条件盖 DONE：计划里存在声明 `WRITES_OUTPUT` 的节点时，
+必须 `task.output_path` 指向的文件真的存在（或有非空内联内容）才算 done。
+起因是实测 kb-docgen 报 `done` + exit 0 却没有任何产物文件。
+
 ## 2. 核心概念
 
 | 概念 | 定义位置 | 说明 |

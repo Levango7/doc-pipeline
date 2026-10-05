@@ -267,6 +267,44 @@ topology:
     # ...
 ```
 
+### 条件节点（`when`）
+
+节点可以声明执行条件；不成立时该节点被跳过，**下游照常执行**（这正是"可选分支"的含义）：
+
+```yaml
+agents:
+  - name: renderer
+    when:
+      path: config.format            # 见下方可用路径
+      op: "in"
+      value: [docx, pdf]
+
+  - name: fact_checker
+    when:
+      all:                           # 只允许一层组合
+        - {path: upstream.quality_gate.overall_score, op: ">=", value: 60}
+        - {path: artifacts.results, op: truthy}
+```
+
+求值上下文（`pipeline_core/conditions.py`，纯声明、不 eval）：
+
+| 前缀 | 内容 | 例子 |
+|------|------|------|
+| `artifacts.*` | 上游按 `PRODUCES` 合并后的产物 | `artifacts.content` |
+| `upstream.*` | 某个具体上游节点的原始结果 | `upstream.quality_gate.overall_score` |
+| `config.*` | 本节点的节点级配置 | `config.format` |
+| `pipeline` / `task.*` | 流水线名 / 任务 id 与输入文件 | `task.input_file` |
+
+算子：`==` `!=` `<` `<=` `>` `>=` `in` `not in` `exists` `truthy` `falsy`。三条硬规矩：
+
+- 写法非法（未知算子、缺 `value`、嵌套 `all/any`、单条件还套组合）在**解析期**报错；
+- 数值比较要求两侧同型，`bool` 不与数字比较（Python 里 `True == 1` 会静默成立）；
+- **路径取不到就抛错**，整条 run 失败——把它当"条件不成立"就会静默跳过分支却照报 done。
+  只有 `exists` / `truthy` / `falsy` 允许路径缺失。
+
+`when` 参与 `topology_hash`：给节点加条件会让既有 lockfile 报拓扑漂移，必须 `--write-lock`。
+不写 `when` 的节点行为与之前完全一致（7 条内置流水线的指纹未变）。
+
 ### Quality Profile（`pipelines/quality/`）
 
 ```yaml

@@ -90,6 +90,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     另注：本机 `bandit` 控制台脚本是坏壳（`--version` 无输出、退出 1），要用
     `python -m bandit`；CI 上脚本正常。
 
+- **阶段 2-1：条件节点 `when`——拓扑第一次能表达"看结果决定"**。
+  此前 `topology.levels` 是手写静态层级，全仓 `condition/branch/loop/foreach/sub_pipeline`
+  零命中，DAG 一旦确定就照跑。新增 `pipeline_core/conditions.py`（受限声明式，
+  纯函数、不 exec/eval）+ Scheduler/`ExecutionNode`/`AgentConfig` 接线 +
+  `TaskNode.skip_reason`。
+  - 语义：条件不成立 → 节点标 `skipped` + `skip_reason="condition"`、不投递消息，
+    且**下游照常执行**（可选分支不该让整个下游停摆）；因依赖失败被级联跳过的依赖
+    仍然让下游跳过，两条路径靠 `skip_reason` 区分，各有用例钉住。
+  - 求值上下文：`artifacts.*`（上游按 PRODUCES 合并的产物）/ `upstream.<node>.*`
+    （原始结果）/ `config.*` / `pipeline` / `task.*`。
+  - 三条硬规矩：算子白名单与写法在**解析期**校验（`ValueError: [agent] when 条件非法`）；
+    `bool` 不与数字比较（`True == 1` 在 Python 里会静默成立）；
+    **路径取不到直接抛 `ConditionError`，整条 run 失败**——当成"条件不成立"就是
+    静默跳过分支却照报 done，正是本项目一路在关的那类洞。
+  - `when` 进 `topology_hash`：加条件会让既有 lockfile 报拓扑漂移；不写 `when`
+    的节点不贡献条目，7 条内置流水线指纹实测未变、锁文件全部校验通过。
+  - 交付契约与之衔接：落盘节点全部被条件跳过 → 视为"按声明本轮无交付"，run 仍 done
+    并留 warning；因依赖失败而没跑 → 仍然 failed（#13 关掉的洞不借此复活）。
+  - 测试：`tests/test_conditions.py` 56 例（语言本身，含"每个算子都可用"的对照表）+
+    `tests/test_condition_nodes.py` 16 例（接线行为）。三条判据各做过反向变异并确认转红：
+    移除"条件跳过不阻塞下游"的例外 → 1 例红；把求值错误降级成"条件不成立" → 1 例红；
+    `when` 不进指纹 → 2 例红。还原后全绿。
+
 ### Fixed（2026-10-05）
 
 - **SSE 流式回调从来没挂上过**：`admin_api._find_streaming_agent` 遍历

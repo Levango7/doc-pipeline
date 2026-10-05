@@ -17,6 +17,9 @@ from pathlib import Path
 
 import yaml
 
+from .conditions import ConditionError
+from .conditions import validate as validate_condition
+
 
 class LockfileMismatchError(Exception):
     """当前 plan 与 lockfile 不一致（版本锁定校验失败）"""
@@ -43,6 +46,9 @@ class AgentConfig:
     dependencies: list = field(default_factory=list)
     pool_size: int = 1
     rate_limit: dict = field(default_factory=dict)
+    #: 可选的执行条件（受限声明式，见 pipeline_core/conditions.py）。
+    #: None = 无条件，永远执行 —— 不写 when 的老流水线行为完全不变。
+    when: dict | None = None
 
     def __post_init__(self):
         if self.pool_size < 1:
@@ -67,6 +73,8 @@ class ExecutionNode:
     max_retries: int = 3
     backoff: str = "exponential"
     initial_delay: float = 1.0
+    #: 执行条件（从 AgentConfig.when 复制，便于锁文件与执行器都只看节点）
+    when: dict | None = None
 
 
 @dataclass
@@ -260,7 +268,15 @@ class Scheduler:
                 dependencies=list(merged.get("dependencies", [])),
                 pool_size=pool_size,
                 rate_limit=merged.get("rate_limit", {}),
+                when=merged.get("when"),
             )
+            # 条件写法非法要在解析期炸掉：放到运行时才发现，节点会被静默跳过，
+            # 流水线照样 done —— 那正是本项目一路在关的静默绿。
+            if cfg.when is not None:
+                try:
+                    validate_condition(cfg.when)
+                except ConditionError as e:
+                    raise ValueError(f"[{cfg.name}] when 条件非法: {e}") from e
             agent_map[cfg.name] = cfg
 
         # ── Schema 校验 ──
@@ -323,6 +339,7 @@ class Scheduler:
                         max_retries=cfg.retry.get("max_attempts", 3),
                         backoff=cfg.retry.get("backoff", "exponential"),
                         initial_delay=cfg.retry.get("initial_delay", 1.0),
+                        when=cfg.when,
                     ))
                 appeared.add(name)
 
@@ -414,12 +431,23 @@ class Scheduler:
 
     @staticmethod
     def _topology_hash(plan: ExecutionPlan) -> str:
-        """拓扑指纹（W4）：锁定连线条目（node→dep 有序集合），防改 YAML 连线绕过校验"""
+        """拓扑指纹（W4）：锁定连线条目（node→dep 有序集合），防改 YAML 连线绕过校验
+
+        节点上挂的 `when` 条件也算拓扑：给某节点加/改条件，执行行为就变了，
+        锁文件必须察觉。没有 when 的节点不贡献条目，因此既有 7 条流水线的
+        lockfile 指纹保持不变。
+        """
         edges = sorted(
             f"{node.agent_name}->{dep}"
             for level in plan.levels
             for node in level
             for dep in (node.dependencies or [])
+        )
+        edges += sorted(
+            f"{node.agent_name}?{json.dumps(node.when, ensure_ascii=False, sort_keys=True)}"
+            for level in plan.levels
+            for node in level
+            if getattr(node, "when", None) is not None
         )
         return hashlib.sha256(
             json.dumps(edges, ensure_ascii=False).encode()

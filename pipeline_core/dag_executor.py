@@ -14,6 +14,7 @@ from typing import Any
 from .artifacts import collect_artifacts, normalize_declaration, output_artifact_name
 from .cache_manager import CacheManager
 from .circuit_breaker import backoff_with_jitter
+from .conditions import evaluate as _evaluate_condition
 
 # ─── 模块级函数：支持 ProcessPoolExecutor pickle ──────────────────
 
@@ -663,6 +664,59 @@ class DAGExecutor:
             if dag_node.status != "success" and dag_node.attempts == 0:
                 dag_node._bypass_idempotency = True
 
+    # ── 条件节点（when） ────────────────────────────
+
+    def _condition_context(self, task, node, plan) -> dict:
+        """`when` 的求值上下文。只放只读数据：不传回调、不 exec、不 eval。"""
+        dag_nodes = getattr(task, "dag_nodes", {}) or {}
+        upstream = {}
+        for dep in (node.dependencies or []):
+            if dep in dag_nodes:
+                upstream[dep] = getattr(dag_nodes[dep], "result", None)
+        return {
+            # 上游按声明合并后的产物：artifacts.content / artifacts.results ...
+            "artifacts": self._collect_upstream_artifacts(task, node, plan),
+            # 某个具体上游节点的原始结果：upstream.quality_gate.overall_score
+            "upstream": upstream,
+            "config": dict(getattr(node.agent_config, "config", None) or {}),
+            "pipeline": getattr(plan, "pipeline_name", ""),
+            "task": {"id": getattr(task, "id", ""),
+                     "input_file": getattr(task, "input_file", "")},
+        }
+
+    def _should_skip_by_condition(self, task, node, plan) -> str:
+        """返回跳过原因；空串表示该节点应当执行。
+
+        求值失败（路径拼错等）**直接抛**：把它当成"条件不成立"就是静默跳过，
+        流水线会带着一个从未执行的分支报 done。
+        """
+        spec = getattr(node, "when", None)
+        if not spec:
+            return ""
+        if _evaluate_condition(spec, self._condition_context(task, node, plan)):
+            return ""
+        import json as _json
+
+        return f"when 不成立: {_json.dumps(spec, ensure_ascii=False)}"
+
+    def _skip_node_by_condition(self, task, node, dag_node, plan, reason: str) -> None:
+        """条件不成立：标记 skipped 并留痕，不投递消息。
+
+        `skip_reason = "condition"` 是刻意的：它表示"作者声明这条分支这轮不需要"，
+        因此下游不受影响；而依赖失败的级联跳过不带这个标记，下游照样被跳过。
+        """
+        from .pipeline import StepResult
+
+        dag_node.status = "skipped"
+        dag_node.skip_reason = "condition"
+        dag_node.error = reason
+        dag_node.finished_at = time.time()
+        self._log("info", f"Node {node.agent_name} 按条件跳过：{reason}", task_id=task.id)
+        step_result = StepResult(step_name=node.agent_name, agent_name=node.agent_name,
+                                 status="skipped", started_at=time.time(), error="")
+        step_result.result = {"status": "skipped", "reason": reason}
+        self._record_step_result(task, plan, node, step_result)
+
     def _reuse_completed_node(self, task, node, dag_node, plan) -> bool:
         """断点续传：已完成且结果非空的节点直接复用结果注入下游，不提交 bus.request"""
         if dag_node.status != "success" or not dag_node.result:
@@ -712,11 +766,19 @@ class DAGExecutor:
             if self._reuse_completed_node(task, node, dag_node, plan):
                 continue
 
+            cond_reason = self._should_skip_by_condition(task, node, plan)
+            if cond_reason:
+                self._skip_node_by_condition(task, node, dag_node, plan, cond_reason)
+                continue
+
             # fail_fast=False 时失败依赖的下游不应带缺失依赖继续执行：
             # 提交前检查依赖终态，任一依赖非 success 则跳过（skipped 级联到下游）
+            # 例外：被 when 条件主动跳过的依赖不算"未成功"——那是作者声明的
+            # 可选分支，整条下游因此停摆就不是"可选"了。
             unmet_deps = [d for d in node.dependencies
                           if d in task.dag_nodes
-                          and task.dag_nodes[d].status != "success"]
+                          and task.dag_nodes[d].status != "success"
+                          and getattr(task.dag_nodes[d], "skip_reason", "") != "condition"]
             if unmet_deps:
                 dag_node.status = "skipped"
                 dag_node.error = f"依赖未成功，已跳过: {', '.join(unmet_deps)}"
@@ -965,10 +1027,16 @@ class DAGExecutor:
                 continue
             if self._reuse_completed_node(task, node, dag_node, plan):
                 continue
+            cond_reason = self._should_skip_by_condition(task, node, plan)
+            if cond_reason:
+                self._skip_node_by_condition(task, node, dag_node, plan, cond_reason)
+                continue
             # 对齐线程版：fail_fast=False 时失败依赖的下游跳过执行
+            # （被 when 条件主动跳过的依赖除外，见线程版注释）
             unmet_deps = [d for d in node.dependencies
                           if d in task.dag_nodes
-                          and task.dag_nodes[d].status != "success"]
+                          and task.dag_nodes[d].status != "success"
+                          and getattr(task.dag_nodes[d], "skip_reason", "") != "condition"]
             if unmet_deps:
                 dag_node.status = "skipped"
                 dag_node.error = f"依赖未成功，已跳过: {', '.join(unmet_deps)}"
