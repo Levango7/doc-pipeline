@@ -180,8 +180,22 @@ class AgentLoader:
             discovered.append(f.stem)
         return discovered
 
-    def register(self, agent_names: list[str] | None = None, config: dict | None = None) -> list[str]:
-        """注册 Agent 插件"""
+    def register(self, agent_names: list[str] | None = None, config: dict | None = None,
+                 *, reload: bool = False) -> list[str]:
+        """注册 Agent 插件。
+
+        `reload=False`（默认）时，如果 `sys.modules` 里已经有**同一个文件**加载出来的
+        模块对象，就直接复用：
+
+        - 每次新建模块对象会让同一个 Agent 存在两份类。测试里
+          `patch("agents.writer.WriterAgent.handle")` 打的是先前导入的那一份，
+          注册器造的却是另一份——补丁一声不响地空转，E2E 照样绿（本项目抓到过
+          两次这类"假绿"，根因都在这里）。
+        - 反复注册还会不断丢弃旧模块，模块级状态（缓存、正则、计数器）跟着翻倍泄漏。
+
+        想热插拔新代码就显式传 `reload=True`；但注意复用条件是"文件路径一致"，
+        不同目录下的同名 Agent（测试夹具里很常见）不会被误当成同一份。
+        """
         from .base_agent import BaseAgent
 
         names = agent_names or self.discover()
@@ -189,20 +203,32 @@ class AgentLoader:
 
         for name in names:
             try:
-                # 动态导入
-                spec = importlib.util.spec_from_file_location(
-                    f"agents.{name}",
-                    self.agents_dir / f"{name}.py"
-                )
-                mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-                # 必须先注册到 sys.modules，这样 _extract_meta 才能找到模块属性
-                sys.modules[f"agents.{name}"] = mod
-
                 agent_file = self.agents_dir / f"{name}.py"
+                module_key = f"agents.{name}"
+                cached = sys.modules.get(module_key)
+                cached_file = getattr(cached, "__file__", None)
+                reuse = bool(cached is not None and not reload and cached_file
+                             and Path(cached_file).resolve() == agent_file.resolve())
+
+                # 安全检查与是否复用无关：缓存在 sys.modules 里的那一份可能是
+                # 别的入口（普通 import）加载的，从没走过这道 AST 扫描。
                 if not declares_sandbox_trust(agent_file):
                     _check_safety(agent_file, strict=self._strict_safety)
 
-                spec.loader.exec_module(mod)  # type: ignore[union-attr]
+                if reuse:
+                    mod = cached
+                    if self._logger:
+                        self._logger.log("debug", f"复用已加载模块: {module_key}")
+                else:
+                    # 动态导入
+                    spec = importlib.util.spec_from_file_location(
+                        module_key,
+                        agent_file
+                    )
+                    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+                    # 必须先注册到 sys.modules，这样 _extract_meta 才能找到模块属性
+                    sys.modules[module_key] = mod
+                    spec.loader.exec_module(mod)  # type: ignore[union-attr]
 
                 # 找 Agent 类
                 for attr_name in dir(mod):

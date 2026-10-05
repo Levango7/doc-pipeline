@@ -113,7 +113,33 @@ def handle(self, msg: Message) -> dict | None:
 
 即：自定义 Agent 内**不要用 `open()`**——需要读写文件时通过基类缓存或 config 提供的路径封装。
 
-## 6. 最小示例
+## 6. 模块身份：一个文件在进程里只能有一份对象
+
+`AgentLoader.register()` 默认**复用** `sys.modules["agents.<name>"]` 里已经由同一个
+文件加载出来的模块对象；要强制换新代码得显式传 `reload=True`。
+
+这不是优化，是断掉一类假绿：原来每次注册都 `module_from_spec + exec_module` 并覆写
+`sys.modules`，于是同一个 Agent 存在两份类对象——测试里
+`patch("agents.writer.WriterAgent.handle")` 打的是先导入的那一份，注册器造的实例用的
+是另一份，补丁全程空转，用例照样通过（本仓库因此收回过两次"绿了"的结论）。
+重复注册还会不断丢弃旧模块，模块级状态跟着翻倍。
+
+三条边界：
+
+| 情况 | 行为 |
+|------|------|
+| 缓存模块的 `__file__` 与 `agents_dir/<name>.py` 是同一个文件 | 复用，不重新执行 |
+| 同名但来自**另一个目录**（测试夹具、插件目录并存时常见） | 不复用，按本目录的文件重新加载 |
+| `reload=True` | 强制重新执行（热插拔新代码的口子） |
+
+复用与否都照旧跑 AST 安全扫描：缓存里那一份可能是普通 `import` 带进来的，
+从没走过这道检查，只在"新加载"时检查等于给已导入模块开免检通道。
+
+判据：`tests/test_agent_loader.py::TestModuleIdentity`（含"注册前打的补丁必须生效"、
+"同名不同目录不得复用"、"reload 真的换对象"、"复用时仍扫描"），
+把复用条件改回"永远新建"会有三条转红。
+
+## 7. 最小示例
 
 ```python
 """agents/echo_agent.py — 最小自定义 Agent 示例"""

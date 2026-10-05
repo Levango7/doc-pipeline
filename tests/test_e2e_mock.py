@@ -44,11 +44,13 @@ class TestMockE2E:
     def test_full_docgen_pipeline_with_mocks(self, tmp_path):
         """验证 DAG 构建 → 节点执行 → 质量门控 → 输出的完整路径。
 
-        mock 必须在 `register_agents()` **之后**打：agent_loader 用
-        spec_from_file_location 重新加载 agents/*.py 并覆写
-        `sys.modules["agents.<name>"]`，注册前拿到的类不是实例化用的那个类，
-        补丁会全程空转（本文件此前正是如此，靠弱断言"writer in task.result"蒙过）。
-        因此这里断言 mock 的哨兵字符串真的出现在结果里——判据本身必须能被命中。
+        这里仍从 `register_agents()` 之后的 `sys.modules` 取类来打补丁——取法不变。
+        之所以曾经必须这样：agent_loader 每次注册都 `module_from_spec + exec_module`
+        并覆写 `sys.modules["agents.<name>"]`，注册前拿到的类与实例化用的类是两份对象，
+        补丁全程空转（本文件此前正是如此，靠弱断言"writer in task.result"蒙过）。
+        现在 loader 在"同一个文件"前提下复用已导入的模块（见
+        tests/test_agent_loader.py::TestModuleIdentity），注册前打补丁也有效；
+        断言 mock 哨兵字符串真的出现在结果里这条要求保留——判据本身必须能被命中。
         """
         input_file = tmp_path / "input.md"
         input_file.write_text("Python 异步编程的基本概念和用法\n", encoding="utf-8")

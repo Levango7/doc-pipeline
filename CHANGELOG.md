@@ -99,7 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "单样本比基线慢 30% 就红"，在共享 runner 上就是抽签：CI run 37350496361 把
   并行执行 `serial 0.02656→0.03671 秒`（绝对差 10 毫秒）判成 38.2% 回归，
   内置的"复验"再判一次还是 38%（两次采样取自同一台被负载污染的机器，复验并不能否证），
-  同一个 commit 在 37324179455 与 37331760994 之间还能给出相反结论。现在：
+  同一个 commit 反复重跑也只是在同一台机器上再抽一次签。现在：
   - CI 默认 `--samples 3`，逐项取**中位数**（一次被抢占的采样拖不偏中位数），
     并算出本轮相对波动 `(max-min)/median`；
   - 判红要同时过三关：相对阈、该指标的绝对下限（`METRIC_FLOORS`，按本机 4 次独立跑
@@ -123,6 +123,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   应用。旧条目保留不删，此处补记。现在 README 的子流水线一节有了 `inputs` 示例、
   作用域表、六条引用关系与 `_` 前缀约定；`pipelines/` 目录树补上 `_quality-tail.yaml`
   与 `docreq.yaml`，并标注 `three_pass` 为何不引用片段。
+
+### Added（2026-10-06·续2，未发版）
+
+- **AgentLoader 复用已导入的模块对象**（#17 收口）：`register()` 原来每次都
+  `module_from_spec + exec_module` 并覆写 `sys.modules["agents.<name>"]`，同一个 Agent
+  因此存在两份类对象——测试里 `patch("agents.writer.WriterAgent.handle")` 打的是先导入
+  的那一份，注册器造的实例用的是另一份，补丁全程空转、用例照样绿（本仓库已因此收回过
+  两次"绿了"的结论）。现在默认复用，并区分三种边界：同一文件 → 复用；同名但来自
+  另一个目录（夹具、插件目录并存时常见）→ 按本目录文件重新加载；`reload=True` →
+  强制换新的热插拔口子。无论复用与否都照旧跑 AST 安全扫描——缓存里那一份可能是普通
+  `import` 带进来的，从没走过这道检查。判据：
+  `tests/test_agent_loader.py::TestModuleIdentity` 七条（含"注册前打的补丁必须生效"、
+  "同名不同目录不得复用"、"reload 真的换对象"、"复用时仍扫描"），
+  把复用条件写死成 `False` 会有三条转红。`docs/agents.md` 新增"模块身份"一节。
+
+### Fixed（2026-10-06·续2）
+
+- **perf 门禁的豁免名单按 CI 实测收窄**：e90ebd6 那一版把 serial / thread_pool /
+  process_pool 三项一起划成"只观测"，理由写得对不对要拿数据说话——CI run 37357935560
+  当轮 3 次连续采样的波动是 process_pool 91.9%、process_speedup 51.2%、elapsed_ms
+  38.1%、selectolax 27.1%，而 serial / thread_pool 连前八都没进（本机跨次也只有
+  5.3% / 2.6%）。所以豁免只留进程池那两项，serial / thread_pool 回到判定，
+  改由 15 毫秒的绝对下限挡住当初那次误报（差 10 毫秒被判 38.2%）。
+  新增 `test_thread_and_serial_are_still_gated`：慢一倍必须还判得红，
+  豁免不是"并行全家不测"。
 
 ### Added（2026-10-05，未发版）
 

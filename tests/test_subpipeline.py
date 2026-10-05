@@ -633,9 +633,10 @@ class TestRuntimeIdentity:
         orch = PipelineOrchestrator(agents_dir=str(PROJECT / "agents"),
                                     checkpoint_dir=str(tmp_path / "ck"))
         orch.register_agents()
-        # 类必须从注册**之后**的 sys.modules 里取：agent_loader 会重新加载
-        # agents/*.py 并覆写这些键，注册前拿到的是另一个类对象，patch 会空转
-        # （见 tests/test_e2e_mock.py 的同源教训）。
+        # 从注册之后的 sys.modules 取类（取法不变）。曾经这是必须的：loader 每次注册
+        # 都重新 exec_module 并覆写这些键，注册前拿到的类与实例化用的类是两份对象，
+        # patch 全程空转。现在 loader 在"同一个文件"前提下复用模块
+        # （tests/test_agent_loader.py::TestModuleIdentity 守住），空转的根因已堵住。
         layout_cls = sys.modules["agents.layout"].LayoutAgent
         writer_cls = sys.modules["agents.writer"].WriterAgent
         safe_writer_cls = sys.modules["agents.safe_writer_agent"].SafeWriterAgent
