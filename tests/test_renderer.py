@@ -363,3 +363,53 @@ class TestPipelineDeclaration:
         sched = Scheduler()
         sched.parse_file(
             str(ROOT / "pipelines" / "docgen-render.yaml"), verify_lock=True)
+
+
+class TestControlCharsAreStripped:
+    """抓取来的正文混一个 `\x08` 就会让整条渲染判死（#21 实测）。
+
+    python-docx 在 lxml 层抛 `ValueError: All strings must be XML compatible`，
+    reportlab 那条同理；这类字符不可见、不承载内容，剔除才能出厂——但剔了几个
+    必须如实回报，正文被动过不该是静默的。
+    """
+
+    DIRTY = "# 标题\n\n运行实例 » \x08相关文章\n\n- 项目\x08\n\n代码\t缩进\n换行\r回车\n"
+
+    def test_xml_safe_keeps_tab_cr_lf_and_counts_the_rest(self):
+        clean, n = renderer.xml_safe(self.DIRTY)
+        assert n == 2 and "\x08" not in clean
+        assert "\t" in clean and "\r" in clean and "\n" in clean
+
+    def test_docx_renders_and_reports_the_count(self, tmp_path):
+        pytest.importorskip("docx")
+        res = renderer.render_docx(self.DIRTY, tmp_path / "d.docx")
+        assert res["status"] == "ok", res
+        assert res["control_chars_stripped"] == 2
+
+        from docx import Document
+        text = "\n".join(p.text for p in Document(res["path"]).paragraphs)
+        assert "相关文章" in text and "运行实例" in text, text
+        assert "\x08" not in text
+
+    def test_pdf_renders_and_reports_the_count(self, tmp_path):
+        pytest.importorskip("reportlab")
+        res = renderer.render_pdf(self.DIRTY, tmp_path / "d.pdf")
+        assert res["status"] == "ok", res
+        assert res["control_chars_stripped"] == 2
+
+    def test_dirty_title_is_cleaned_and_counted(self, tmp_path):
+        """标题是另一条入口：docx 写 core_properties 被 suppress 包着，脏标题不报错
+        而是静默丢掉文档属性——静默丢属性同样不可接受，所以一并清洗。"""
+        pytest.importorskip("docx")
+        dirty_title = "季度" + chr(0x0b) + "报告"
+        res = renderer.render_docx("# 干净标题\n\n正文内容\n",
+                                   tmp_path / "t.docx", title=dirty_title)
+        assert res["status"] == "ok" and res["control_chars_stripped"] == 1
+        from docx import Document
+        assert Document(res["path"]).core_properties.title == "季度报告"
+
+    def test_clean_input_reports_zero(self, tmp_path):
+        """没剔就不该虚报：判据要能区分"动过"与"没动过"。"""
+        pytest.importorskip("docx")
+        res = renderer.render_docx(SAMPLE_MD, tmp_path / "c.docx")
+        assert res["status"] == "ok" and res["control_chars_stripped"] == 0

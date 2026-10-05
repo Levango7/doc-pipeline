@@ -171,6 +171,19 @@ def _setup_docx_styles(doc) -> None:
         _force_style_font(st)
 
 
+_RE_XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+
+def xml_safe(text: str) -> tuple[str, int]:
+    """剔掉 OOXML 文本层不接受的控制字符（保留 \t\n\r），返回 (干净文本, 剔掉几个)。
+
+    抓来的正文里混一个 `\x08` 就够让 python-docx 抛 "All strings must be XML
+    compatible"，整条流水线到此为止。这些字符不可见也不承载内容，剔除是唯一能
+    交付的选择——但**数量要如实报给调用方**：正文被动过不该是静默的。
+    """
+    return _RE_XML_ILLEGAL.subn("", text)
+
+
 def render_docx(markdown: str, output_path: str | Path,
                 title: str = DEFAULT_TITLE) -> dict[str, Any]:
     """Markdown → docx。
@@ -181,6 +194,11 @@ def render_docx(markdown: str, output_path: str | Path,
     if not HAS_DOCX:
         return {"status": "error",
                 "message": "python-docx 未安装，跳过 docx 渲染（pip install python-docx）"}
+    markdown, stripped = xml_safe(markdown)
+    # 标题同一条边界：docx 那边 core_properties 写入被 suppress 包着，脏标题不会
+    # 报错而是静默丢掉文档属性——那比抛异常更难查。
+    title, title_stripped = xml_safe(title)
+    stripped += title_stripped
     blocks = parse_markdown(markdown)
     if not blocks:
         return {"status": "error", "message": "内容为空，无法渲染"}
@@ -229,7 +247,8 @@ def render_docx(markdown: str, output_path: str | Path,
 
     doc.save(str(path))
     return {"status": "ok", "path": str(path), "format": "docx",
-            "size": path.stat().st_size, "blocks": stats}
+            "size": path.stat().st_size, "blocks": stats,
+            "control_chars_stripped": stripped}
 
 
 # ─────────────────────────────── pdf 渲染 ───────────────────────────────
@@ -313,6 +332,9 @@ def render_pdf(markdown: str, output_path: str | Path,
     if not HAS_PDF:
         return {"status": "error",
                 "message": "reportlab 未安装，跳过 pdf 渲染（pip install reportlab）"}
+    markdown, stripped = xml_safe(markdown)
+    title, title_stripped = xml_safe(title)
+    stripped += title_stripped
     blocks = parse_markdown(markdown)
     if not blocks:
         return {"status": "error", "message": "内容为空，无法渲染"}
@@ -343,7 +365,8 @@ def render_pdf(markdown: str, output_path: str | Path,
 
     doc.build(flow)
     return {"status": "ok", "path": str(path), "format": "pdf",
-            "size": path.stat().st_size, "blocks": len(flow)}
+            "size": path.stat().st_size, "blocks": len(flow),
+            "control_chars_stripped": stripped}
 
 
 # ───────────────────────────── 统一入口 ─────────────────────────────

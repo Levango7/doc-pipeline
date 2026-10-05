@@ -82,6 +82,11 @@ class RendererAgent(BaseAgent):
             if res.get("status") == "ok":
                 size_kb = res.get("size", 0) / 1024
                 self.log_info(f"{fmt} 渲染完成: {target.name} ({size_kb:.1f} KB)")
+                if res.get("control_chars_stripped"):
+                    # 正文被改过必须留痕：这些字符不可见，但不等于动过没人知道
+                    self.log_warning(
+                        f"{fmt} 渲染剔除了 {res['control_chars_stripped']} 个 "
+                        "XML 非法控制字符（来源多为抓取正文）")
             else:
                 self.log_warning(f"{fmt} 渲染跳过: {res.get('message')}")
             outputs[fmt] = res
