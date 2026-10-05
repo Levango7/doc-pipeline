@@ -130,6 +130,14 @@ class TransformAgent(BaseAgent):
                 validate_condition(where)
             except ConditionError as e:
                 return {"status": "error", "error": f"where 非法: {e}"}
+            if not cfg.get("items"):
+                # 与引擎对 call.inputs 的规矩同源：写了没人读的配置必须报错，
+                # 静默忽略比报错难查得多（作者以为过滤生效了，产物却全量出厂）。
+                return {"status": "error",
+                        "error": "where 需要 items：它按项过滤，没有列表时被过滤的其实是零项"}
+        if fields and not cfg.get("items"):
+            return {"status": "error",
+                    "error": "fields 需要 items：挑字段是逐项目标，没给列表时会被静默忽略"}
         if items is not None:
             for idx, one in enumerate(items):
                 item_ctx = dict(ctx)

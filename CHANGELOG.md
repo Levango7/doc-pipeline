@@ -240,6 +240,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   进程池两项，此处按代码改正（`benchmark.REPORT_ONLY_METRICS` 实测为
   `['process_pool', 'process_speedup']`）。
 
+### Fixed（2026-10-06·续4）
+
+- **`transform` 里 `where` / `fields` 不给 `items` 时被静默忽略**：两者只在逐项循环里生效，
+  没给列表就等于"写了没人读"——作者以为过滤跑了，产物却全量出厂。现在直接判失败
+  （`需要 items`），与引擎对 `call.inputs` 的规矩同源。判据一条两个方向：分别注掉
+  `where` 或 `fields` 的守卫，用例都会转红（不是只验了第一半）。
+
+- **渲染层拒绝不了抓取正文里的控制字符**（#21，docgen-render 出厂流水线因此 ❌）。
+  `renderer` 把正文交给 python-docx，lxml 在写 `<w:t>` 时抛
+  `ValueError: All strings must be XML compatible: Unicode or ASCII, no NULL bytes or
+  control characters`，整条流水线到此为止。触发样本是抓取来的一页正文里混着的**一个
+  `\x08`**（`运行实例 » \x08相关文章`）。pdf 那条走 reportlab 同理。
+  现在 `xml_safe()` 在进后端前剔掉 XML 非法控制字符（保留 `\t\n\r`），并把
+  **剔了几个**如实放进结果（`control_chars_stripped`），`renderer_agent` 收到非零就
+  `log_warning`——这些字符不可见，但不等于"正文被动过"可以静默。
+  判据五条（`TestControlCharsAreStripped`）：计数与保留 `\t\n\r`、docx 渲染成功且
+  round-trip 后正文完好、pdf 同样成功、干净输入回报 0（不能虚报动过）、脏标题
+  （`\x0b`）被清洗后 `core_properties.title` 仍是"季度报告"。
+  标题是另一条入口：docx 那边 `core_properties` 写入被 `contextlib.suppress` 包着，
+  脏标题**不报错而是静默丢掉文档属性**，所以 `xml_safe` 也作用于 `title` 并计入同一个数。
+  把 `xml_safe` 调用换成 `stripped = 0` 会让 docx 与 pdf 两条直接复现上面那句 ValueError；
+  单独注掉标题那两行会让脏标题用例转红。
+  实跑确认：`python run.py test_input.md --pipeline docgen-render` 现在 10 个节点全 ✅
+  （renderer 142.5ms，此前是 ❌），落盘 `output/render_probe2.docx` 47 KB，
+  重新读回 docx 后正文里非法控制字符 0 个、Title/Heading 样式照旧在（目录可跳转没退化）。
+
 ### Added（2026-10-05，未发版）
 
 - **Phase 1 解耦——产物契约**（`pipeline_core/artifacts.py` + `config_schema.py`）：

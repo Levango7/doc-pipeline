@@ -276,6 +276,13 @@ class TestTransformRefusesToGuess:
         out = agent.handle(_msg({"upstream": {}}))
         assert out["status"] == "error" and "set.from" in out["error"]
 
+    def test_where_or_fields_without_items_is_an_error_not_a_noop(self):
+        """写了没人读的配置必须报错——静默忽略会让作者以为过滤生效了。"""
+        for cfg in ({"where": {"path": "item.id", "op": "truthy"}}, {"fields": ["id"]}):
+            out = _transform_agent(items="", **cfg).handle(_msg({"upstream": {}}))
+            assert out["status"] == "error", (cfg, out)
+            assert "需要 items" in out["error"], (cfg, out)
+
     def test_bad_where_spec_is_rejected_at_handle_time(self):
         agent = _transform_agent(items="artifacts.response",
                                  where={"path": "item.id", "op": "matches", "value": 1})
