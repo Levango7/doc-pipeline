@@ -128,11 +128,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   并进 `task.error`。实测：kb-docgen 空语料改为 `状态: failed` + exit 1（错误里同时
   给出"节点失败原因；声明了落盘节点却没有交付物"），docgen 正常交付不受影响
   （done / exit 0 / 20471 字节）。
-- **测试基建坑（本轮踩到，另立待办）**：`agent_loader` 用 `spec_from_file_location`
-  重新加载 `agents/*.py` 并覆写 `sys.modules["agents.<name>"]`，所以在
-  `register_agents()` 之前进入的 `patch("agents.writer.WriterAgent.handle", ...)`
-  绑的是旧模块对象，对真正实例化的类无效——mock E2E 里这类补丁大概率全程空转，
-  测试只靠弱断言通过。新加的交付契约测试因此改为封 `_delivered`，并在文档串里写明原因。
+- **mock E2E 的补丁是空转的**（`tests/test_e2e_mock.py`）：`agent_loader` 以
+  `spec_from_file_location` 重新加载 `agents/*.py` 并覆写 `sys.modules["agents.<name>"]`，
+  因此在 `register_agents()` 之前进入的 `patch("agents.writer.WriterAgent.handle", ...)`
+  绑到旧模块对象，对真正实例化的类无效。探针实测：`实例的 handle is mock: False`。
+  结果这个"Mock 端到端测试"跑的是真 writer/真 quality_gate，只靠
+  `assert "writer" in task.result` 这种弱断言通过。现改为注册之后再对
+  `sys.modules["agents.writer"].WriterAgent` 打补丁，并**断言 mock 的哨兵字符串
+  真的出现在产出里**——补丁失效时测试自己会红。
+  loader 覆写 `sys.modules` 造成同名模块两份对象（模块级锁/缓存各一套）这个设计问题
+  仍未处理，已另立待办。
 
 ### Docs（2026-10-05）
 

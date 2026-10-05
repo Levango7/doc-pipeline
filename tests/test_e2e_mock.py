@@ -42,36 +42,54 @@ class TestMockE2E:
     """Mock E2E: 完整 docgen 流水线。"""
 
     def test_full_docgen_pipeline_with_mocks(self, tmp_path):
-        """验证 DAG 构建 → 节点执行 → 质量门控 → 输出的完整路径。"""
+        """验证 DAG 构建 → 节点执行 → 质量门控 → 输出的完整路径。
+
+        mock 必须在 `register_agents()` **之后**打：agent_loader 用
+        spec_from_file_location 重新加载 agents/*.py 并覆写
+        `sys.modules["agents.<name>"]`，注册前拿到的类不是实例化用的那个类，
+        补丁会全程空转（本文件此前正是如此，靠弱断言"writer in task.result"蒙过）。
+        因此这里断言 mock 的哨兵字符串真的出现在结果里——判据本身必须能被命中。
+        """
         input_file = tmp_path / "input.md"
         input_file.write_text("Python 异步编程的基本概念和用法\n", encoding="utf-8")
 
         mock_results = [_mock_search_result(f"Result {i}") for i in range(3)]
 
+        from pipeline_core import PipelineOrchestrator
+        from pipeline_core.scheduler import Scheduler
+
+        orch = PipelineOrchestrator(
+            agents_dir=str(PROJECT / "agents"),
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+        )
+        orch.register_agents()
+
+        # 取加载器真正使用的类对象（sys.modules 已被 loader 覆写）
+        writer_cls = sys.modules["agents.writer"].WriterAgent
+        gate_cls = sys.modules["agents.quality_gate"].QualityGateAgent
+
         with patch("pipeline_core.search_engines.SearchEngineManager.from_env") as mock_mgr, \
-             patch("agents.writer.WriterAgent.handle", _mock_writer_handle()), \
-             patch("agents.quality_gate.QualityGateAgent.handle", _mock_quality_gate_handle()):
+             patch.object(writer_cls, "handle", _mock_writer_handle()), \
+             patch.object(gate_cls, "handle", _mock_quality_gate_handle()):
 
             mock_mgr.return_value.is_available.return_value = True
             mock_mgr.return_value.search_with_sites.return_value = mock_results
             mock_mgr.return_value.search.return_value = mock_results
 
-            from pipeline_core import PipelineOrchestrator
-            orch = PipelineOrchestrator(
-                agents_dir=str(PROJECT / "agents"),
-                checkpoint_dir=str(tmp_path / "checkpoints"),
-            )
-            orch.register_agents()
-
-            from pipeline_core.scheduler import Scheduler
             sched = Scheduler()
             plan = sched.parse_file(str(PROJECT / "pipelines" / "test_pipeline.yaml"))
 
-            task = orch.run_plan(plan, input_file=str(input_file), wait=True)
+            try:
+                task = orch.run_plan(plan, input_file=str(input_file), wait=True)
 
-            assert task.status.value == "done"
-            assert task.result is not None
-            assert "writer" in task.result
+                assert task.status.value == "done", f"{task.status.value}: {task.error}"
+                assert task.result is not None
+                assert "writer" in task.result
+                content = str(task.result["writer"].get("content", ""))
+                assert "mock 生成的文档内容" in content, (
+                    f"writer mock 没被命中，说明补丁打在了错误的类对象上: {content[:120]!r}")
+            finally:
+                orch.shutdown()
 
     def test_delivery_contract_sink_failure_cannot_report_done(self, tmp_path, monkeypatch):
         """交付契约：声明了落盘节点却没交付物，就不能报 done。
