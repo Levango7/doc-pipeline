@@ -24,7 +24,22 @@ DEGRADE_BANNER = "> ⚠️ **降级声明**"
 # 门禁据此判失败：占位符标记，命中即视为"没有产出"
 PLACEHOLDER_MARKERS = (EMPTY_RESULT_DOC, NO_SOURCE)
 
+# ── 抓取层中间格式泄漏 ────────────────────────────────────
+# `fetcher._save_article` 落盘的每篇文章是这个形状：
+#     标题: … / 来源: … / 下载时间: YYYY-MM-DD HH:MM:SS / 一条 60 连等号 / 正文…
+# 那是**素材的磁盘格式**，不是成品正文。writer 在素材不足时会把整块原样粘进文档，
+# 于是交付物里出现"下载时间:"和 60 连等号线 —— 2026-10-07 实测两份这种文档
+# （本机 28.4 KB、CI 21.9 KB）都拿到 95.5 pass，且被 CI 记成 OUTPUT FIDELITY OK。
+FETCH_TIMESTAMP_RE = re.compile(r"^下载时间: \d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", re.MULTILINE)
+FETCH_RULE_RE = re.compile(r"^={60}$", re.MULTILINE)
+
 _SECTION_HEADING_RE = re.compile(r"^##\s+\S", re.MULTILINE)
+
+
+def raw_fetch_block_count(content: str) -> int:
+    """正文里泄漏的抓取块签名数（取时间戳行与 60 连等号线中的较大者）。"""
+    return max(len(FETCH_TIMESTAMP_RE.findall(content)), len(FETCH_RULE_RE.findall(content)))
+
 
 
 def placeholder_section_count(content: str) -> int:

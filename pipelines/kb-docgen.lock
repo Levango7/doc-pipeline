@@ -29,7 +29,7 @@ agents:
     pool_size: 1
     version: '2.0'
   quality_gate__quality_tail:
-    config_hash: db28e2c9363f
+    config_hash: ceb0d41976b0
     dependencies: []
     pool_size: 1
     version: '2.0'
@@ -45,8 +45,8 @@ agents:
     - knowledge_base
     pool_size: 1
     version: '2.0'
-created_at: '2026-10-06T20:19:36'
+created_at: '2026-10-07T01:59:25'
 node_count: 8
 pipeline: kb-docgen
-plan_id: b46c76cd
+plan_id: ad13d910
 topology_hash: 9297257cbd1d

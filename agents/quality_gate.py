@@ -38,6 +38,7 @@ CONFIG_SCHEMA = {
     "max_regenerations": ('int', 3),
     "min_output_chars": ('int', 120),
     "max_placeholder_section_ratio": (['int', 'float'], 0.34),
+    "allow_raw_fetch_blocks": ('bool', False),
 }
 AGENT_VERSION = "2.0"
 AGENT_DESC = "质量门禁 Agent v2 - Profile 模板驱动、可插拔评分"
@@ -266,7 +267,24 @@ class QualityGateAgent(BaseAgent):
                 f"{degradation.placeholder_section_count(text)}/"
                 f"{degradation.section_count(text)} 个章节是占位符"
                 f"（{ratio:.0%} > {max_ratio:.0%}）")
+        # 抓取层中间格式泄漏：成品里出现「下载时间:」或 60 连等号分隔线，说明
+        # writer 把素材块原样粘进来了 —— 这类文档字数充足、无占位语，光靠占比拦不住。
+        if not self._flag_enabled(run_config.get("allow_raw_fetch_blocks")):
+            leaked = degradation.raw_fetch_block_count(text)
+            if leaked:
+                violations.append(
+                    f"正文泄漏 {leaked} 块抓取层原始素材（「下载时间:」/60 连等号分隔线），"
+                    "那是素材的磁盘格式而非成品内容；确有需要请用 allow_raw_fetch_blocks 显式放行")
         return violations
+
+    @staticmethod
+    def _flag_enabled(value: object) -> bool:
+        """只认显式的真值。YAML 里写成字符串 "false" 时不能被 bool("false") 判成 True。"""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
 
     def _resolve_run_cfg(self, run_config: dict) -> _RunCfg:
         """解析本次请求的运行配置：profile（run_config 指定，否则沿用初始化 profile）+ 覆盖项。

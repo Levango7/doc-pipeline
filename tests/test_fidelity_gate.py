@@ -360,3 +360,63 @@ class TestPlaceholderSectionFloor:
         src = (Path(__file__).parent.parent / "agents" / "writer.py").read_text(encoding="utf-8")
         assert "degradation.SECTION_PLACEHOLDER" in src, "writer 又自带字面量占位串了"
         assert degradation.SECTION_PLACEHOLDER not in src, "writer 里不该再留第二份字面量"
+
+
+# ─── 8. 抓取层中间格式不得当作成品交付 ────────────────────
+
+#: 2026-10-07 实测两类"字数够、占比过、却是素材直粘"的交付物形状（本机 28.4 KB /
+#: CI 21.9 KB 都曾拿 95.5 pass，CI 还把它记成 OUTPUT FIDELITY OK）
+FETCH_LEAK_DOC = (
+    "# 自动生成文档\n\n## 简介\n\n"
+    "标题: 欢迎来到 Python.org - Python 编程语言\n"
+    "来源: https://www.python.org/\n"
+    "下载时间: 2026-10-07 01:52:32\n"
+    + "=" * 60 + "\n\n"
+    "Python is a great language.\n\n## 应用场景\n\n"
+    "数据分析、Web 开发与自动化都常用它，社区也提供了大量标准库支持。\n"
+)
+
+
+class TestRawFetchBlockFloor:
+    def test_scraped_block_header_is_rejected(self, gate):
+        agent, Message = gate
+        res = agent.handle(Message(topic="quality_gate.input",
+                                   payload={"content": FETCH_LEAK_DOC, "task_id": "f1",
+                                            "queries": ["Python"]}))
+        assert res["hard_floor"] is True, (
+            f"素材块头被当成品出厂仍判合格：{res.get('violations')}")
+        assert any("抓取层原始素材" in v for v in res["violations"]), res["violations"]
+
+    def test_real_document_is_not_flagged(self, gate):
+        agent, Message = gate
+        res = agent.handle(Message(topic="quality_gate.input",
+                                   payload={"content": REAL_DOC, "task_id": "f2",
+                                            "queries": ["Kafka 配额"]}))
+        assert not res.get("hard_floor"), res.get("violations")
+
+    def test_opt_out_is_explicit(self, gate):
+        """确有场景要把原文附在交付物里时，必须显式放行，而不是默认放过。"""
+        agent, Message = gate
+        res = agent.handle(Message(topic="quality_gate.input",
+                                   payload={"content": FETCH_LEAK_DOC, "task_id": "f3",
+                                            "config": {"allow_raw_fetch_blocks": True}}))
+        assert not res.get("hard_floor"), res.get("violations")
+
+    def test_string_false_does_not_mean_enabled(self, gate):
+        """YAML 里 `allow_raw_fetch_blocks: "false"` 是字符串，bool("false") 会判真。"""
+        agent, Message = gate
+        res = agent.handle(Message(topic="quality_gate.input",
+                                   payload={"content": FETCH_LEAK_DOC, "task_id": "f4",
+                                            "config": {"allow_raw_fetch_blocks": "false"}}))
+        assert res["hard_floor"] is True, res.get("violations")
+
+    def test_detector_counts_the_fetchers_own_format(self):
+        """签名取自 fetcher 落盘格式本身，不是猜的关键词。"""
+        import inspect
+
+        import agents.fetcher as fetcher
+        from docpipeline import degradation
+        src = inspect.getsource(fetcher.FetcherAgent._save_article)
+        assert '"标题: ' in src and "{'='*60}" in src, "fetcher 的块格式变了，签名要同步"
+        assert degradation.raw_fetch_block_count(FETCH_LEAK_DOC) == 1
+        assert degradation.raw_fetch_block_count(REAL_DOC) == 0
