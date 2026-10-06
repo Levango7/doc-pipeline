@@ -55,12 +55,15 @@ from pipeline_core.ids import new_task_id  # noqa: E402
 
 
 def print_banner():
+    # 走 stderr：stdout 是机器读的通道 —— `--mcp` 在上面跑 JSON-RPC 帧，
+    # `--json-output` 让 wrapper 解析单行 JSON。banner 落 stdout 时实测会
+    # 排在 initialize 响应之前，等于往协议通道里塞非 JSON 行。
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║          Doc-Pipeline v{__version__} - 文档生成流水线               ║
 ║          声明式 DAG | 自动重做 | 熔断器 | 审计日志             ║
 ╚══════════════════════════════════════════════════════════════╝
-""")
+""", file=sys.stderr)
 
 
 def output_json_result(task, output_path, steps, status):

@@ -36,6 +36,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     quality_gate 的 `config_hash` 由 `e3ebdd7e47f8` 变 `db28e2c9363f`）。
     `api-report.lock` 只差 `created_at`/`plan_id`（不参与校验），已还原以免无意义churn。
 
+- **MCP 的 stdio 通道被启动 banner 污染，且 `serverInfo.version` 恒为 `unknown`（FP-3，
+  产品定义 docs/product-spec.md §6）**。真子进程跑 `python run.py --mcp` 喂
+  `initialize`/`tools/list` 复现：stdout 头四行是框线 banner，之后才是 JSON-RPC 帧——
+  严格说这是往协议通道里塞非 JSON 行，`--json-output` 的 wrapper 同样受影响。
+  - 处置：`print_banner()` 改走 stderr（stdout 只留机器读的产物通道）。
+  - 版本回显的根因是**包初始化次序**：`pipeline_core/__init__.py` 在第 31 行就导入
+    `mcp_server`，而 `__version__` 定义在文件末尾（原第 83 行），于是子模块里
+    `from . import __version__` 发生在包半初始化时抛 ImportError，被就近的
+    `except ImportError: SERVER_VERSION = "unknown"` 吞掉 ⇒ 表面永远报 unknown。
+    现在 `__version__` 上移到子模块导入之前，并把那个兜底 except **删掉**——
+    取不到版本应当当场炸，而不是伪装成一个能出厂的字符串。
+  - 判据：新增 `TestMCPOverRealStdio` 两条（每个请求恰好一帧且 stdout 无 banner 文本；
+    `serverInfo.version` 必须等于 `pipeline_core.__version__`）。此前 12 条 MCP 用例
+    全在进程内调 `_handle_request`，所以这两个缺陷没有任何测试能发现。
+  - 变异验证：banner 改回 stdout ⇒ 两条全红（断言里直接看到框线字符）；
+    把 `SERVER_VERSION` 钉成 `"unknown"` ⇒ 版本那条红并打出真实回显字典。均已还原。
+  - 真 stdio 用例把 `DOC_PIPELINE_STATE_DIR` 指到 tmp_path：幂等库按检出绝对路径共享，
+    跑在仓库 `bus_data/` 上会与真实运行串台。
+
 ### Added（2026-10-06，未发版）
 
 - **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，

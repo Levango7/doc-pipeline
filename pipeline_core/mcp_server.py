@@ -36,17 +36,13 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from . import __version__ as SERVER_VERSION
 from . import scheduler as _scheduler_mod
 from .artifacts import task_output
 from .fast_json import dumps as _fast_dumps
 from .fast_json import loads as _fast_loads
 from .ids import new_task_id
 from .scheduler import resolve_pipeline_name
-
-try:
-    from . import __version__ as SERVER_VERSION
-except ImportError:  # pragma: no cover
-    SERVER_VERSION = "unknown"
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "doc-pipeline"

@@ -121,3 +121,47 @@ class TestMCPServer:
         assert isinstance(content, list)
         assert content[0]["type"] == "text"
         assert isinstance(content[0]["text"], str)
+
+
+class TestMCPOverRealStdio:
+    """真实 stdio 往返：上面 12 条用例都在进程内调 _handle_request，
+    于是"banner 打到 stdout 污染 JSON-RPC 通道"和"serverInfo.version 恒为
+    unknown"这两件事没有任何测试能发现（2026-10-06 实测复现）。
+    """
+
+    REPO = Path(__file__).parent.parent
+
+    def _roundtrip(self, tmp_path):
+        import subprocess
+        import sys
+        requests = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        ]
+        payload = "\n".join(json.dumps(r) for r in requests) + "\n"
+        env = dict(__import__("os").environ,
+                   # 状态目录隔离：幂等库按检出绝对路径共享，跑在真 bus_data/ 上会串台
+                   DOC_PIPELINE_STATE_DIR=str(tmp_path))
+        proc = subprocess.run([sys.executable, "run.py", "--mcp"], input=payload,
+                              capture_output=True, text=True, timeout=120,
+                              cwd=str(self.REPO), env=env)
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        frames = [line for line in proc.stdout.splitlines() if line.strip()]
+        return frames
+
+    def test_stdout_carries_only_jsonrpc_frames(self, tmp_path):
+        frames = self._roundtrip(tmp_path)
+        assert len(frames) == 2, f"每个请求应回一帧，实得: {frames}"
+        for line in frames:
+            parsed = json.loads(line)          # 非 JSON 行（banner 等）在这里炸
+            assert parsed.get("jsonrpc") == "2.0", parsed
+        assert "Doc-Pipeline" not in "\n".join(frames), "banner 又回到 stdout 了"
+
+    def test_server_info_reports_real_version(self, tmp_path):
+        from pipeline_core import __version__
+        frames = self._roundtrip(tmp_path)
+        info = json.loads(frames[0])["result"]["serverInfo"]
+        assert info["name"] == SERVER_NAME
+        assert info["version"] == __version__, \
+            f"版本回显必须是真实值，历史上当成 'unknown' 出厂过: {info}"
+        assert json.loads(frames[1])["result"]["tools"], "tools/list 必须给出工具表"
