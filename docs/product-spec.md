@@ -175,6 +175,13 @@
 
 ## 6. 前置必修：四个假阳性（不修则所有验收判据都能被"绿而未跑"骗过）
 
+| 项 | 状态（2026-10-07） | 落点 |
+|---|---|---|
+| FP-1 质量门假绿 | **已关闭** | `4ede02b` |
+| FP-2 CI 三处静默判绿 | **已关闭，待第一次真实 CI 运行确认** | 本次提交（改的是 `.github/workflows/ci.yml`，本地只能验脚本语义） |
+| FP-3 MCP stdout 污染 | **已关闭** | `10cc2e7` |
+| FP-4 `foreach` 未接线 / 无时间触发 / 无人审 | **未开始**（属 P0 立项，不是修复） | §5.1 |
+
 ### FP-1 · 质量门给空壳文档打 98.8 —— P0，代价 S
 
 〔实测，本机 keyless / `pool_size: 2` / 单进程〕`--pipeline docgen` **exit 0**，落盘 3065 字节，`overall_score = 98.8 status = pass`，`checker` 只报 4 条 P3；而正文是 360 识图页面的样板文案，`writer.stats.empty_sections = [核心概念, 详细分析, 实践与应用, 总结]`（**4/5 章节为空**）。
@@ -215,21 +222,29 @@
 
 | 项 | 现值 | 目标值 | 影响面〔静态〕 |
 |---|---|---|---|
-| 产品名 / banner | Doc-Pipeline · 文档生成流水线 | **NexusLoom · Agent 工作流运行时** | `run.py:60`；"文档生成流水线" 11 处 / 8 文件 |
+| 产品名 / banner | Doc-Pipeline · 文档生成流水线 | **Loom · Agent 工作流运行时** | `run.py:60`；"文档生成流水线" 11 处 / 8 文件 |
 | 本地路径 | `F:\Nexus\Workflow\doc-pipeline` | `F:\Nexus\Loom` | 见 §7.2 |
 | GitHub 仓 | `Levango7/doc-pipeline` | `Levango7/nexus-loom` | 旧 SSH remote 需更新 |
 | 发行名 | `doc-pipeline` | `nexus-loom` | `pyproject.toml:6` |
 | **import 根包** | `pipeline_core` | **第一阶段保持不动** | 647 处 / 131 文件，且被 MAOP 硬绑 |
 | 领域包 | `docpipeline` | `loom_pack_docgen`（pack 化） | 83 处 / 23 文件 |
-| console script | `doc-pipeline` | `loom` | `pyproject.toml:41` |
+| console script / CLI | `doc-pipeline` | `loom`（动词：`loom run / plan / lock / pack / plugin`） | `pyproject.toml:41` |
 | env 前缀 | `DOC_PIPELINE_*` / `DOCPIPE_*` | `LOOM_*` | 13 处 / 8 文件 + 16 处 / 26 文件 |
-| **插件 group（新增）** | 无 | `nexus_loom.agents` | 20x 的开关 |
-| MCP `serverInfo.name` | `doc-pipeline` | `nexus-loom` | `mcp_server.py:52` |
-| 观测 namespace | `docpipeline` | `nexusloom` | `observability.py:161` |
+| **插件 group（新增）** | 无 | `loom.agents` | 20x 的开关 |
+| MCP `serverInfo.name` | `doc-pipeline` | `loom` | `mcp_server.py:52` |
+| 观测 namespace | `docpipeline` | `loom` | `observability.py:161` |
+| **API 原语（新增）** | 裸 `task_id` 字符串 | **`RunHandle`**：`status / await / cancel / resume / artifacts` | HTTP `/api/tasks` 与 MCP 返回值都要换成它 |
 
-> 备选名（若 `nexus-loom` 不取）：**Chassis**（底盘隐喻最贴"引擎+插槽"）、**Tessera**（镶嵌，每 Agent 一片）。
+> **命名已确认（2026-10-07）**：产品名 **Loom**；`handle` 这个词留给 API 原语 `RunHandle`
+> ——运行时交给调用方的本来就是一个句柄，而现在 HTTP/MCP 传的是裸 `task_id` 字符串。
+> 占用实测（HTTP 200=已占、404=空闲）：PyPI 裸名 `loom`/`chassis`/`tessera`/`weft`/`flowkit`/
+> `runloom`/`agentloom`/`loomkit`/`handle` **均已被占**（其中 `handle` 是 0.0.0、summary 写
+> "placeholder" 的空壳抢注），`nexus-loom`/`loom-runtime`/`handle-runtime`/`nexloom` **空闲**；
+> npm 的 `handle` 与 `official` 都已占。故发行名必须带前缀，不能裸 `loom`。
+> `official` 已否决：形容词无专指、搜索不可达、CLI 读作无主语、`import official` 与
+> Vue 生态"官方模板目录"的既有心智撞车。`track` 已否决：PyPI 被真实包占（基因组数据读写），
+> 且默认联想是追踪/埋点。
 > 已避开：Conductor / Cadence / Temporal / Prefect / Weave / Flux / Foundry（同层同名产品）。
-> 已查证：PyPI 裸名 `loom` **被占**（旧 Fabric 部署工具 0.0.18）〔实测：pypi.org/project/loom 返回该包〕→ 发行名必须带前缀。Chassis / Tessera 的 PyPI 占用**未验到**（页面 JS 拦截），发布前需复查。
 
 ### 7.2 迁移依赖（实测：唯一外部消费者是 MAOP）
 
@@ -242,12 +257,17 @@
 
 ### 7.3 迁移动作序列（顺序不可颠倒）
 
-1. 先把在飞的 10 个未提交文件收成一个 commit（避免与搬迁混在一起难查）。
-2. GitHub 端 rename（保留重定向）。
-3. 本地整目录 move（不 cp，保 `.git` 完整）。
-4. 更新 remote URL + 清 gitignore 产物 + 重跑 2211 测。
-5. MAOP 侧 **lockstep 一个 commit**：adapter 候选路径加新位置并保留旧路径兜底；测试改为从 `DOC_PIPELINE_ROOT` 注入而非硬编码绝对路径；跑 MAOP 相关测试。
-6. 才开始动代码内的名字（顺序：banner/CLI 文案 → env 前缀 → MCP/观测标识 → 包名（需 MAOP 同步）→ pack 拆分）。
+**边界先说清：本产品是独立项目，不并入 MAOP。** MAOP 是外部调用方（`MAOP/config/agents.yaml:176` 已把本仓登记为一条 `driver: python` 适配器），这个关系本身就是"独立"的证据。MAOP 侧硬编码本仓绝对路径属**它的技术债**，不构成本项目并入的理由；四条独立成仓的硬理由：① 20x 的物理来源是第三方能 pip 安装并发插件，合并进治理层后插件要跟着 MAOP 发版；② 两套执行模型（派发外部 CLI 外壳 vs 跑进程内 Python 节点）混在一仓会抹掉差异化；③ 许可结构会糊——`MAOP/LICENSE` 是 MIT 而 `MAOS/LICENSE` 是 `Commercial License - Levango7`，运行时一旦被并进 MAOP 线就会被期待做成 MAOS 商业特性；④ 终态应是 MAOP 依赖发布出去的包，而不是 `sys.path.insert(外部仓路径)`。
+
+1. ~~先把在飞的 10 个未提交文件收成一个 commit~~ **已完成**（`d538f8a`，与产品定义/修复工作分账）。
+2. 关闭 §6 的前置必修项后再搬，避免"搬迁 + 修 bug"两种失败原因混在一次 CI 里。
+3. GitHub 端 rename（保留重定向）。
+4. 本地整目录 move（不 cp，保 `.git` 完整）。
+5. 更新 remote URL + 清 gitignore 产物（`bus_data/`、`logs/`、`.test_state/` 里都是旧绝对路径）+ 重跑全量测试。
+6. **MAOP 侧不改仓**（已定）：迁移时设环境变量 `DOC_PIPELINE_ROOT=<新路径>` —— `doc_pipeline_adapter.py:38-55` 的第一候选就是它，于是 MAOP 立刻能找到新位置，无需它侧任何提交。
+   - 残留：`MAOP/py/tests/test_doc_pipeline_adapter.py:62,68,79,86,93` 五处**硬编码绝对路径**，环境变量救不了它们（不经 `_resolve_doc_pipeline_root()`）→ 搬完 MAOP 那 5 条用例会红。这是 MAOP 仓的账，**改动权在维护者**，本项目只记账不代改。
+   - 若日后想让旧脚本零改动继续跑，可在旧路径留 Windows junction 兜底；代价是机器上出现"看着像两个仓"的入口，容易误编辑，非必要时不采用。
+7. 才开始动代码内的名字（顺序：banner/CLI 文案 → env 前缀 → MCP/观测标识 → 包名（需与 MAOP lockstep）→ pack 拆分）。
 
 ---
 
@@ -272,8 +292,9 @@
 
 ## 9. 未决项
 
-1. **§7.3 第 5 步是否授权改 MAOP 仓**（不改则搬目录必红 MAOP 测试）。
+1. ~~是否授权改 MAOP 仓~~ **已定：不改**（§7.3 第 6 步）。迁移用 `DOC_PIPELINE_ROOT` 环境变量指向新路径；MAOP 那 5 处硬编码测试会红，属它自己的账，本项目只记账不代改。
 2. **`perf-regression` 是否纳入 required**，以及是否接受 `enforce_admins = false` 的现状。
 3. **人审/approval 节点**进 P0 还是 P1（本文暂放 P1）。
-4. Chassis / Tessera 的 PyPI 占用复查（若最终不取 `nexus-loom`）。
-5. README 的"文档表格"与 CHANGELOG 需在本 spec 落库后补引用 —— 本轮**故意未动**这两个文件（它们正处在别人的未提交改动中，避免混入归属）。
+4. ~~Chassis / Tessera 的 PyPI 占用复查~~ **已查**：两者裸名均已被占（§7.1 注）。当前定名 Loom / 发行名 `nexus-loom`（实测空闲）。
+5. **FP-2 的真实验证只能在 CI 上做**：本轮把 `--check` 的退出码与 pip-audit 的进程健康变成硬依赖，ubuntu runner 上若有本机没暴露的结构性问题，CI 会如实变红 —— 届时"CI 全绿"需要重取，`docs/product-spec.md` §3 P0 判据第 4 条以此为准。
+6. README 文档表与 CHANGELOG 对本 spec 的引用：CHANGELOG 已在本轮同步记录三项修复；README 的文档索引表尚未加 `product-spec.md` 一行（下一批命名清理时一并改，避免与 pack 拆分改动叠在同一次提交）。
