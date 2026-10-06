@@ -53,6 +53,10 @@ _load_dotenv()
 from pipeline_core import PipelineOrchestrator, TaskStatus, __version__  # noqa: E402
 from pipeline_core.ids import new_task_id  # noqa: E402
 
+#: `--json-output` 期间的真实机器读通道。默认 None 表示"用当下的 sys.stdout"——
+#: 不能直接在导入期绑死 `sys.stdout`，否则测试里 capsys 之类替换后就读不到输出。
+_RESULT_OUT = None
+
 
 def print_banner():
     # 走 stderr：stdout 是机器读的通道 —— `--mcp` 在上面跑 JSON-RPC 帧，
@@ -76,7 +80,11 @@ def output_json_result(task, output_path, steps, status):
         "status": status,
         "steps": steps
     }
-    print(json.dumps(result, ensure_ascii=False))
+    # 写 _RESULT_OUT 而不是 sys.stdout：json_output 模式下 sys.stdout 已被改接到
+    # stderr（人类可读的过程输出不许混进 wrapper 要解析的那条通道）。
+    target = _RESULT_OUT if _RESULT_OUT is not None else sys.stdout
+    print(json.dumps(result, ensure_ascii=False), file=target)
+    target.flush()
 
 
 def _run_ascii_fix(output_path: str):
@@ -536,6 +544,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main():
     parser = build_arg_parser()
     args = parser.parse_args()
+
+    # --json-output 的契约是"stdout 上只有一行 JSON 供 wrapper 解析"。实测这里
+    # 之前会先印 11 行人类可读的过程输出（banner 之外的 [run] 提示、任务头等），
+    # wrapper 按行解析就得到垃圾。把过程输出整体改接 stderr，结果 JSON 由
+    # output_json_result 显式写回 _RESULT_OUT（重定向前抓下的那条真 stdout）。
+    # 注意不给 --mcp 做同样的重定向：MCP 的协议帧就走 sys.stdout，换了会把它送去 stderr。
+    if args.json_output:
+        globals()["_RESULT_OUT"] = sys.stdout
+        sys.stdout = sys.stderr
 
     # worker 模式自带参数解析，直接交给 pipeline_core.worker，不与流水线参数纠缠
     if args.worker:
