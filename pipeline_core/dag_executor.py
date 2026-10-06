@@ -277,7 +277,10 @@ class DAGExecutor:
         """
         all_queries = self._extract_queries(input_file, node)
         meta = self.registry.get_meta(base_agent)
-        if getattr(meta, "extracts_queries", False) and pool_size > 1 and len(all_queries) >= pool_size:
+        if getattr(meta, "extracts_queries", False) and pool_size > 1:
+            # 分片而不是复制：`all_queries[pool_idx::pool_size]` 天然处理
+            # "查询词比池实例少"——多余的实例拿到 []，如实回报零结果，
+            # 而不是把同一条 query 再跑一遍（旧条件 len>=pool_size 会整体退回全量复制）。
             queries = all_queries[pool_idx::pool_size]
         else:
             queries = all_queries
