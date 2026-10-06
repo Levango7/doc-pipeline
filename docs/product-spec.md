@@ -179,7 +179,7 @@
 | 项 | 状态（2026-10-07） | 落点 |
 |---|---|---|
 | FP-1 质量门假绿 | **已关闭** | `4ede02b` |
-| FP-1b 成品夹带抓取层原始素材 | **已关闭**（FP-1 的余波，见下方说明） | 本轮提交 |
+| FP-1b 成品夹带抓取层原始素材 | **已关闭**（FP-1 的余波，见下方说明）：gate 与 CI 两侧各带同一判据，CI 不再只信 gate | 本轮提交 |
 | FP-2 CI 三处静默判绿 | **已关闭并经真实 CI 确认** | `9ecfc12`；CI run 37504991608 在 `690c6d7` 上 5 条 required + perf 全绿，日志实证 `结果: 26 OK / 2 WARN / 0 ERROR` 与 `VULNS: []`（即 rc 被采信且没有误红） |
 | FP-3 MCP stdout 污染 | **已关闭** | `10cc2e7` |
 | FP-3b `--json-output` 的 stdout 混入过程输出 | **已关闭**：`--json-output` 时过程输出整体改接 stderr，JSON 是唯一一行 stdout（`tests/test_cli_output_channels.py`） | 本轮提交 |

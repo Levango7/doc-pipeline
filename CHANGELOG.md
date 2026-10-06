@@ -102,6 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 判据 `TestRawFetchBlockFloor` 五条：素材块头被拒 / 真文档不误伤 / 显式放行生效 /
     `"false"` 字符串不放行 / **签名与 fetcher 落盘格式同源**（用 `inspect.getsource` 断言
     fetcher 格式变了就必须同步改签名，防止判据单方面失效）。
+  - CI 侧同判据再落一遍：`.github/workflows/ci.yml` 的 docgen 步骤在 `OUTPUT FIDELITY OK`
+    之前自己 grep 一次素材签名，不单独依赖 gate——让 CI 只信 gate 等于把判定权交给可能被改松
+    的一侧。本地验证：把该 grep 摘掉 ⇒ `test_ci_step_carries_the_output_fidelity_checks` 红；
+    合成样本（含 `下载时间:` 行、长度已过 800 B 下限）判红，同形但去掉签名行的文档判 OK
+    ——两份样本都先过了尺寸与占位语两关，所以红只能来自新加的那道签名检查。
 - **researcher 池化从"复制"改为"分片"**。`_build_node_payload` 的分片分支原先要求
   `len(all_queries) >= pool_size`，查询词比池实例少时整体退回全量复制。实测后果：
   `pool_size: 2` 的两个 `researcher_pool_*` 返回逐字节相同的结果，同一条 query 出网两遍。
