@@ -39,6 +39,17 @@ REAL_DOC = (
 PLACEHOLDER = "# 自动生成文档\n\n> 生成时间: 2026-10-04\n\n未采集到可整合的搜索结果。\n"
 
 
+@pytest.fixture
+def gate():
+    """不跑 LLM 的 QualityGateAgent：门禁判据本身是纯规则。"""
+    from agents.quality_gate import QualityGateAgent
+    from pipeline_core.base_agent import AgentMeta, Message
+    agent = QualityGateAgent("quality_gate",
+                             AgentMeta(name="quality_gate", version="2.0"),
+                             {"quiet": True}, None, None)
+    return agent, Message
+
+
 # ─── 1. 幂等命中不得伪装成执行结果 ────────────────────────
 
 class TestDuplicateKeyIsNotSuccess:
@@ -204,15 +215,6 @@ class TestRegenerationTargetIsDeclared:
 # ─── 6. QualityGate 产出保真底线 ──────────────────────────
 
 class TestFidelityFloor:
-    @pytest.fixture
-    def gate(self, tmp_path):
-        from agents.quality_gate import QualityGateAgent
-        from pipeline_core.base_agent import AgentMeta, Message
-        agent = QualityGateAgent("quality_gate",
-                                 AgentMeta(name="quality_gate", version="2.0"),
-                                 {"quiet": True}, None, None)
-        return agent, Message
-
     def test_placeholder_document_is_rejected(self, gate):
         agent, Message = gate
         res = agent.handle(Message(topic="quality_gate.input",
@@ -271,3 +273,90 @@ class TestFidelityFloor:
                                    payload={"content": REAL_DOC[:80], "task_id": "t5",
                                             "config": {"min_output_chars": "很多"}}))
         assert res.get("hard_floor") is True
+
+
+# ─── 7. 逐节占位：长度过底线不等于"有内容" ─────────────────
+
+def _doc_with_placeholders(total: int, empty: int) -> str:
+    """拼一份"看起来有字数、其实大半是占位符"的文档。
+
+    有内容的章节里塞的是抓取回来的网页样板文字 —— 真实事故的形状就是如此：
+    长度足以过 `min_output_chars`，内容却几乎全是噪声。
+    """
+    from docpipeline import degradation
+    parts = ["# 自动生成文档", "", "> 主题: Python 异步编程的基本概念和用法", ""]
+    for i in range(total - empty):
+        body = _SCRAPE_JUNK if i == 0 else (
+            "协程不是操作系统提供的能力，而是用户态内的上下文切换技术；"
+            "事件循环负责在就绪回调之间调度，因此单线程也能撑住大量并发 IO。")
+        parts += [f"## 有内容的一节 {i + 1}", body, ""]
+    for _ in range(empty):
+        parts += ["## 空的一节", degradation.SECTION_PLACEHOLDER, ""]
+    parts += ["## 参考资料", "- [来源](https://example.com/a)", ""]
+    return "\n".join(parts)
+
+
+#: 360 识图页面的导航样板文字节选（实测样本里被当成正文出厂的东西）
+_SCRAPE_JUNK = (
+    "网页 资讯 AI问答 视频 图片 良医 地图 百科 文库 软件 翻译 360搜索首页 反馈 登录 搜索 "
+    "360识图 粘贴图片网址 如何粘贴图片网址： 1. 右键点击网页上的图片，选择「复制图片网址」。 "
+    "2. 在搜索框中粘贴该网址(Ctrl+v)，按 enter 键或点击「搜索」按钮。上传图片 提示：您也可以将"
+    "图片拖至此处(Chrome 浏览器还支持截图上传)，图片不要超过 2MB 哦~ 不支持文字输入，请输入"
+    "图片网址或截屏粘贴的图片 相关搜索：python 基本结构有哪三种 python 用于哪些领域 Python 的"
+    "应用领域 java 基础知识点 python 三大结构 python 输入代码 点击下方图片，秒变简笔画。"
+    "全部尺寸 大尺寸 中尺寸 小尺寸 壁纸尺寸 自定义 宽 高 确定 全部颜色 全部类型 动态图片 静态图片"
+    "全部图片 精选素材 版权图片 版权图搜索上线啦 更多品质、低价、免费版权图片供您选择 我知道了 "
+    "360搜索客户端官网 意见反馈 产品论坛 网站收录 使用帮助 推广合作 官方微信 站长平台 隐私管理")
+
+
+#: 2026-10-06 实跑 keyless docgen 的真实结构：6 个二级章节、4 个交白卷，
+#: 正文 3065 字节（远超 min_output_chars=120），当时却拿到 98.8 pass 并落盘。
+MEASURED_JUNK_DOC = _doc_with_placeholders(total=6, empty=4)
+
+
+class TestPlaceholderSectionFloor:
+    def test_measured_junk_document_is_rejected(self, gate):
+        agent, Message = gate
+        assert len(MEASURED_JUNK_DOC) > 600, "样本须远超 min_output_chars=120，才能证明拦它的是占比判据"
+        res = agent.handle(Message(topic="quality_gate.input",
+                                   payload={"content": MEASURED_JUNK_DOC,
+                                            "task_id": "p1", "queries": ["Python 异步"]}))
+        assert res["hard_floor"] is True, \
+            f"4/6 章节交白卷仍被判合格，正是 2026-10-06 的假绿现场：{res.get('violations')}"
+        assert any("章节是占位符" in v for v in res["violations"]), res["violations"]
+        assert res["needs_regenerate"] is False, "占位章节不是「写不好」，重做也救不回来"
+
+    def test_single_thin_section_is_scored_not_hard_failed(self, gate):
+        """底线不许顺手把"偶尔一节没料"也判死——那属于评分该管的事。"""
+        agent, Message = gate
+        doc = _doc_with_placeholders(total=6, empty=1)
+        res = agent.handle(Message(topic="quality_gate.input",
+                                   payload={"content": doc, "task_id": "p2",
+                                            "queries": ["Python 异步"]}))
+        assert not res.get("hard_floor"), res.get("violations")
+
+    def test_ratio_threshold_is_configurable(self, gate):
+        agent, Message = gate
+        doc = _doc_with_placeholders(total=6, empty=2)   # 33%，恰好不超默认阈值
+        assert not agent.handle(Message(topic="quality_gate.input",
+                                        payload={"content": doc, "task_id": "p3"})).get("hard_floor")
+        res = agent.handle(Message(topic="quality_gate.input",
+                                   payload={"content": doc, "task_id": "p3b",
+                                            "config": {"max_placeholder_section_ratio": 0.2}}))
+        assert res["hard_floor"] is True, res.get("violations")
+
+    def test_invalid_ratio_falls_back_to_default(self, gate):
+        agent, Message = gate
+        res = agent.handle(Message(topic="quality_gate.input",
+                                   payload={"content": MEASURED_JUNK_DOC, "task_id": "p4",
+                                            "config": {"max_placeholder_section_ratio": "很多"}}))
+        assert res["hard_floor"] is True, res.get("violations")
+
+    def test_markers_have_a_single_definition_site(self):
+        """writer 与门禁共用一处定义 —— 两处各写一份时漂移过一次（假绿的根因）。"""
+        import agents.quality_gate as qg
+        from docpipeline import degradation
+        assert qg.PLACEHOLDER_MARKERS is degradation.PLACEHOLDER_MARKERS
+        src = (Path(__file__).parent.parent / "agents" / "writer.py").read_text(encoding="utf-8")
+        assert "degradation.SECTION_PLACEHOLDER" in src, "writer 又自带字面量占位串了"
+        assert degradation.SECTION_PLACEHOLDER not in src, "writer 里不该再留第二份字面量"

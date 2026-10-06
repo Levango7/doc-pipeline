@@ -22,6 +22,7 @@ from pathlib import Path
 
 import yaml
 
+from docpipeline import degradation
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "quality_gate"
@@ -36,6 +37,7 @@ CONFIG_SCHEMA = {
     "threshold": (['int', 'float'], 70),
     "max_regenerations": ('int', 3),
     "min_output_chars": ('int', 120),
+    "max_placeholder_section_ratio": (['int', 'float'], 0.34),
 }
 AGENT_VERSION = "2.0"
 AGENT_DESC = "质量门禁 Agent v2 - Profile 模板驱动、可插拔评分"
@@ -56,8 +58,14 @@ AGENT_TAGS = ["quality", "gate"]
 
 # 产出保真底线（先于评分维度判定）
 DEFAULT_MIN_OUTPUT_CHARS = 120
-# 已知的"没内容"标志语：writer 缺素材时的占位
-PLACEHOLDER_MARKERS = ("未采集到可整合的搜索结果", "无待整合内容")
+# "没内容"的标志语与占位章节占比阈值。这些字符串是 writer ↔ 门禁之间的契约，
+# 单处定义在 docpipeline.degradation —— 两处各写一份时漂移过：writer 改发
+# 「降级声明」和「（暂无可用的相关内容）」，门禁名单里没有，于是 4/5 章节为
+# 占位符的文档被判 98.8 pass 并正常落盘（2026-10-06 实测）。
+PLACEHOLDER_MARKERS = degradation.PLACEHOLDER_MARKERS
+#: 占位章节占比超过此值即判"没有产出"。取 1/3：一份 6 节的文档空 1 节走评分，
+#: 空 4 节（实测样本 80%）不再有机会被当成成品出厂。
+DEFAULT_MAX_PLACEHOLDER_RATIO = 0.34
 
 # 默认配置文件路径
 QUALITY_DIR = Path(__file__).parent.parent / "pipelines" / "quality"
@@ -242,6 +250,22 @@ class QualityGateAgent(BaseAgent):
         for marker in markers:
             if marker and str(marker) in text:
                 violations.append(f"产出为占位内容（命中“{marker}”）")
+        # 逐节占位：writer 每有一节提取不到内容就交出一行 SECTION_PLACEHOLDER。
+        # 只看"整份有没有那两个字"会漏掉"有字的垃圾"——实测样本 3065 字节、
+        # 4/6 章节是占位符，却因长度过底线而拿到 98.8 pass。
+        try:
+            max_ratio = float(run_config.get("max_placeholder_section_ratio",
+                                             DEFAULT_MAX_PLACEHOLDER_RATIO))
+        except (TypeError, ValueError):
+            self.log_warning(f"config.max_placeholder_section_ratio 无效: "
+                             f"{run_config.get('max_placeholder_section_ratio')!r}，用默认值")
+            max_ratio = DEFAULT_MAX_PLACEHOLDER_RATIO
+        ratio = degradation.placeholder_ratio(text)
+        if ratio > max_ratio:
+            violations.append(
+                f"{degradation.placeholder_section_count(text)}/"
+                f"{degradation.section_count(text)} 个章节是占位符"
+                f"（{ratio:.0%} > {max_ratio:.0%}）")
         return violations
 
     def _resolve_run_cfg(self, run_config: dict) -> _RunCfg:

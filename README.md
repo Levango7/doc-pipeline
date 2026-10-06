@@ -642,6 +642,7 @@ python -m pytest tests/ -m e2e -v
 ```
 产出保真底线（先于评分）：内容非空 且 ≥ min_output_chars（默认 120）
                      且 不含已知占位语（"未采集到可整合的搜索结果"等）
+                     且 占位章节占比 ≤ max_placeholder_section_ratio（默认 0.34）
                      → 违反即 status=fail + hard_floor=true，
                        不重做、不因 pipeline.fail_fast=false 而放行，整条流水线 exit 1
 

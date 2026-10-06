@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed（2026-10-07）
+
+- **质量门不再放过"有字的垃圾"（FP-1，产品定义 docs/product-spec.md §6 列的前置必修）**。
+  实测现场：本机 keyless 跑 `--pipeline docgen`，落盘 3065 字节、`writer.stats.empty_sections`
+  为 4 个（共 5 节正文），正文实为 360 识图页面的导航样板文字——当时 `quality_gate` 给
+  **98.8 pass**、`checker` 只报 P3、`done` + `exit 0` 并正常出厂。
+  - 根因一：保真底线只有两条判据（非空 + `min_output_chars=120`）与两个占位语，而 writer
+    降级时写的是「降级声明」「（暂无可用的相关内容）」，都不在那份名单里 ⇒ 3000 字的垃圾
+    照样过长度线。
+  - 根因二：`run.py:349` 已经算出 `empty_sections`，却只 print 一条 WARNING，不参与判定。
+  - 根因三：评分维度被抓取噪声反向骗过（`substance=100` 因样板文字信息密度高、重复率低；
+    `topic_relevance=100` 因页面标题恰含主题词）。
+  - 处置：新增 `docpipeline/degradation.py` 作为 writer ↔ 门禁的**单处**契约（占位行、降级
+    声明、空结果自述与占比计算），两处不再各写一份字面量；底线补一条结构判据——
+    **占位章节占比 > `max_placeholder_section_ratio`（默认 0.34）即 `hard_floor` 失败**。
+    阈值取 1/3 而非"命中一次即判死"，是为了守住既有分工：偶尔一节没料属于评分该管的
+    "写得好不好"，大半交白卷才是"到底有没有内容"。
+  - 现场复验：同一命令现在 `exit 1`，报
+    `HARD_FLOOR: 产出未过保真底线: 4/7 个章节是占位符（57% > 34%）`，**且不落盘任何交付物**。
+  - 变异验证：把占比判据整块摘掉（`placeholder_ratio → 0.0`）后，同一份文档重新
+    `status=pass / score=92.9` 且无 `hard_floor` ⇒ 拦下它的确实是新判据，不是别处顺带生效。
+  - 判据：`TestPlaceholderSectionFloor` 五条（实测样本被拒 / 6 节只空 1 节不得判死 /
+    阈值可配 / 非法阈值回落默认 / writer 与门禁共用单处定义的源码护栏）。
+  - **锁文件影响**：`quality_gate` 的 `CONFIG_SCHEMA` 新增一项 ⇒ 节点有效配置变了 ⇒
+    按既有规矩对 9 条含 quality_gate 的流水线重签 `--write-lock`
+    （`_quality-tail/docgen/docgen-lean/docgen-render/docgen-verified/docreq/kb-docgen/test_pipeline/three_pass`，
+    quality_gate 的 `config_hash` 由 `e3ebdd7e47f8` 变 `db28e2c9363f`）。
+    `api-report.lock` 只差 `created_at`/`plan_id`（不参与校验），已还原以免无意义churn。
+
 ### Added（2026-10-06，未发版）
 
 - **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，

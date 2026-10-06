@@ -24,6 +24,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from docpipeline import degradation
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 from pipeline_core.cache_manager import CacheManager
 from pipeline_core.fast_json import dumps as _fast_dumps
@@ -704,7 +705,7 @@ class WriterAgent(BaseAgent):
                 "status": "ok",
                 "task_id": task_id,
                 "message": "无待整合内容，生成占位文档",
-                "content": f"# {title}\n\n> 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n未采集到可整合的搜索结果。\n",
+                "content": f"# {title}\n\n> 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n{degradation.EMPTY_RESULT_DOC}。\n",
             }
 
         self.log_info(f"任务 {task_id}: 整合 {len(results)} 条搜索摘要")
@@ -885,7 +886,7 @@ class WriterAgent(BaseAgent):
                     content_parts.append(para)
                     content_parts.append("")
             else:
-                content_parts.append("*（暂无可用的相关内容）*")
+                content_parts.append(degradation.SECTION_PLACEHOLDER)
                 content_parts.append("")
                 empty_sections.append(sec.get("heading", ""))
             all_refs.extend(filled["references"])
@@ -908,7 +909,7 @@ class WriterAgent(BaseAgent):
         # 降级声明：无 LLM 时空章节不再静默交付，在文档头部显式标记
         if empty_sections and not self._llm_api_key:
             warn_block = (
-                "> ⚠️ **降级声明**：以下章节未能从检索素材中提取到足够内容（当前为占位符）："
+                degradation.DEGRADE_BANNER + "：以下章节未能从检索素材中提取到足够内容（当前为占位符）："
                 + "、".join(s for s in empty_sections if s)
                 + "。建议配置 LLM API Key（复制 .env.example 为 .env）后重新生成。\n\n"
             )

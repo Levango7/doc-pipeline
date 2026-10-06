@@ -24,7 +24,7 @@ agents:
     pool_size: 1
     version: '2.0'
   quality_gate__quality_tail:
-    config_hash: e3ebdd7e47f8
+    config_hash: db28e2c9363f
     dependencies: []
     pool_size: 1
     version: '2.0'
@@ -50,8 +50,8 @@ agents:
     - fetcher
     pool_size: 1
     version: '2.0'
-created_at: '2026-10-06T00:54:12'
+created_at: '2026-10-06T20:19:35'
 node_count: 9
 pipeline: docgen-lean
-plan_id: 4d31c23e
+plan_id: 1dcd7779
 topology_hash: a6b8de38ebd4
