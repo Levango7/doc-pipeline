@@ -70,25 +70,42 @@ jobs:
         run: |
           set +e
           # 只审计项目声明的依赖（requirements.txt），而非整个运行环境——
-          # 后者会误报 CI runner 无关的全局包。JSON 成功且解析出真实漏洞才阻断；
-          # 进程故障（数据源/运行时）在本地已权威确认依赖安全的前提下告警不误伤。
+          # 后者会误报 CI runner 无关的全局包。
+          # 2026-10-07 起：进程故障**不再记成功**。原先 audit 跑不起来（数据源
+          # 抖动/超时）会被强制 rc=0，于是"没查"被当成"查了且干净"——安全门禁
+          # 假绿比没有门禁更糟。现在重试一次，仍失败就红，让人去查为什么查不了。
           echo "=== auditing requirements.txt ==="
-          python -m pip_audit -r requirements.txt --timeout 30 -f json -o /tmp/audit.json
+          python -m pip_audit -r requirements.txt --timeout 60 -f json -o /tmp/audit.json
           audit_rc=$?
-          if [ $audit_rc -eq 0 ]; then
-            python -c "import json,sys;d=json.load(open('/tmp/audit.json',encoding='utf-8'));bad=[(x.get('name'),x.get('version'),[z.get('id') for z in x.get('vulns',[])]) for x in d.get('dependencies',[]) if x.get('vulns')];print('VULNS:',bad);sys.exit(1 if bad else 0)"
-            rc=$?
-          else
-            echo "pip-audit process failed (rc=$audit_rc) on data-source/runtime; see stack above"
-            rc=0
+          if [ $audit_rc -ne 0 ]; then
+            echo "pip-audit 首次失败 (rc=$audit_rc)，重试一次…"
+            sleep 10
+            python -m pip_audit -r requirements.txt --timeout 60 -f json -o /tmp/audit.json
+            audit_rc=$?
           fi
-          exit $rc
+          if [ $audit_rc -ne 0 ]; then
+            echo "::error::pip-audit 无法运行 (rc=$audit_rc)——依赖漏洞扫描处于「查不了」状态，不许当成「没有漏洞」"
+            exit 1
+          fi
+          python -c "import json,sys;d=json.load(open('/tmp/audit.json',encoding='utf-8'));bad=[(x.get('name'),x.get('version'),[z.get('id') for z in x.get('vulns',[])]) for x in d.get('dependencies',[]) if x.get('vulns')];print('VULNS:',bad);sys.exit(1 if bad else 0)"
+          exit $?
 
       - name: Pipeline smoke test (docgen)
         run: |
           set +e
           python run.py --check > /tmp/check_ci.txt 2>&1
+          check_rc=$?
+          set -e
           cat /tmp/check_ci.txt
+          # --check 的退出码必须被采信。历史上它跑在 set +e 下且 rc 从不读取，
+          # CI 只用 grep 卡住 selectolax 那一行——于是自检里除那一行以外的任何
+          # 结构性故障（缺模块、目录不对、初始化炸了）都能一路绿。
+          # 缺 LLM 凭据不再算结构性故障：bootstrap 已把它降为 warn，所以这里
+          # 采信 rc 不会把 keyless 环境误判成红。
+          if [ "$check_rc" -ne 0 ]; then
+            echo "::error::启动自检失败（rc=$check_rc），见上方报告"
+            exit 1
+          fi
           # 正文提取必须落在 C 内核上。历史上 selectolax 1.0 让
           # selectolax.parser 在导入期报错，CI 静默退成正则启发式，
           # 而 --check 只探测顶层包所以照旧报 OK。
@@ -96,7 +113,6 @@ jobs:
             echo "::error::HTML 正文提取未使用 selectolax C 内核，已静默降级为正则启发式"
             exit 1
           fi
-          set -e
           # docgen 成文需要 LLM；常规 CI 作业没有模型 Secret。两种结果都可以接受，
           # 但必须是"诚实的那两种"：要么真写出成文（≥800 字节且非占位），
           # 要么被产出保真底线拦下并非零退出。历史上这里是 52 字节占位文档
@@ -112,7 +128,10 @@ jobs:
           tail -25 /tmp/docgen_ci.log
           if [ "$rc" -ne 0 ]; then
             if grep -q "HARD_FLOOR" /tmp/docgen_ci.log; then
-              echo "SMOKE OK (keyless): docgen 被保真底线拦下，没有产出占位文档"
+              # 这不是"通过"，而是"没凭据所以证明不了"。历史上这里写的是 SMOKE OK，
+              # 于是 CI 绿灯被读成「docgen 能产出文档」，而它实际只证明了会被底线拦下。
+              echo "::warning::docgen smoke SKIPPED：无 LLM 凭据，本轮未证明成文能力（仅证明保真底线会拦截）"
+              echo "docgen smoke: **SKIPPED (keyless)** — 未证明成文能力，只证明保真底线拦截生效" >> "$GITHUB_STEP_SUMMARY"
             else
               echo "::error::docgen 失败，且不是保真底线拦截（exit=$rc）"
               exit 1

@@ -150,7 +150,7 @@ python run.py test_input.md --dashboard
 | `--json-output` | 输出 JSON 结果（供 wrapper 解析） |
 | `--legacy` | （已冻结，仅兜底）按 Agent 注册元数据执行，不经 Scheduler/YAML；生产请用默认 DAG 模式 |
 | `--write-lock` | 为当前流水线生成/刷新 `pipelines/*.lock`（配置变更需显式重写锁，运行时比对 config_hash + 拓扑指纹） |
-| `--check` | 启动自检后退出：如实报告 HTML 解析内核、LLM 供应商、依赖与目录结构 |
+| `--check` | 启动自检后退出：如实报告 HTML 解析内核、LLM 供应商、依赖与目录结构。退出码只反映**结构性故障**——缺 LLM 凭据记 WARN 不记 ERROR，因此 `rc` 可被 CI 直接采信（历史上 CI 从不读这个 rc，只 grep 一行文案） |
 
 > **执行路径说明**：默认走声明式 DAG（`pipelines/*.yaml` + Scheduler，含 lockfile 校验与 per-node 配置）。
 > `--legacy` 是历史兜底路径，已冻结不再演进，两条路径的一致性由 `tests/test_dual_path_parity.py` 护栏。

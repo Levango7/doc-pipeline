@@ -55,6 +55,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 真 stdio 用例把 `DOC_PIPELINE_STATE_DIR` 指到 tmp_path：幂等库按检出绝对路径共享，
     跑在仓库 `bus_data/` 上会与真实运行串台。
 
+### Fixed（2026-10-07·续2）
+
+- **CI 三处"绿而未证"收口（FP-2，产品定义 docs/product-spec.md §6）**。这三处的共同形状
+  是"判据存在，但判定维度上没人读它的结果"，于是绿灯被当成能力证明。
+  - `Pipeline smoke test` 步骤里 `python run.py --check` 跑在 `set +e` 下，**退出码从未
+    被读取**，CI 只用 `grep -q "HTML 解析后端: selectolax:"` 卡一行文案 ⇒ 自检里除那一行
+    以外的任何结构性故障（缺模块、目录不对、初始化抛异常）都能一路绿。现在把 `rc` 读回
+    来并据此红；selectolax 那条 grep 作为**独立**断言保留（它挡的是另一类静默降级）。
+    本机 12 条 bootstrap 用例新增 `test_llm_without_credentials_is_warn_not_error` /
+    `test_llm_router_crash_stays_error` 锁住这条区分。
+  - **缺凭据与装坏了不再混为一谈**：`bootstrap` 的 `LLM 路由器 / 无可用供应商` 由 `error`
+    降为 `warn`（路由器真的抛异常仍是 `error`）。否则 keyless 环境永远 `rc=1`，CI 就
+    不敢采信退出码——这正是它当初改用 grep 的原因。实测：本机 keyless `--check` 从
+    `26 OK / 1 WARN / 1 ERROR, rc=1` 变为 `26 OK / 2 WARN / 0 ERROR, rc=0`。
+  - `pip-audit` 进程失败原先被强制 `rc=0`（"跑不起来"当成"跑了且干净"）。现在重试一次，
+    仍失败即 `::error::` + `exit 1`。本地对脚本块做三态验证：桩设为失败 ⇒ `rc=1` 并打出
+    「查不了」告警；解析出真实漏洞 ⇒ `rc=1`；**干净分支那行 python 解析逻辑与 HEAD 逐字
+    一致（去缩进比对为真），本轮未改动**，其在本地桩环境返回 127 只是本机 bash 子进程
+    PATH 里没有 `python`（CI 上由 setup-python 提供），不是门禁语义问题。
+  - keyless docgen 分支不再报 `SMOKE OK`：改为 `::warning::` + 写入 `$GITHUB_STEP_SUMMARY`
+    的 `docgen smoke: SKIPPED (keyless)`。它证明的是"保真底线会拦截"，从来没证明过
+    "能成文"，绿灯不该被读成后者。成文能力的证明归属带凭据的 e2e 腿（该腿在同一 SHA
+    `14c98b3d` 上目前为 failure，属未收口项）。
+  - 语法自证：改动后的两个 `run:` 块 YAML 解析通过（`test` 作业 10 步）且 `bash -n` 无错。
+  - **残留风险（须看第一次真实 CI 运行）**：本轮把 `--check` 的 rc 与 pip-audit 的进程
+    健康变成硬依赖，若 ubuntu runner 上存在本机没暴露的结构性问题或 PyPI 数据源抖动，
+    CI 会**如实变红**——这是修复的目的而非回归，但意味着"CI 全绿"这一条需要重取。
+
 ### Added（2026-10-06，未发版）
 
 - **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，

@@ -85,3 +85,38 @@ class TestStartupCheck:
         env_checks = [c for c in report.checks if c.name == ".env 安全"]
         assert len(env_checks) == 1
         assert env_checks[0].status == "warn"
+
+    def test_llm_without_credentials_is_warn_not_error(self, monkeypatch):
+        """CI 直接采信 --check 的退出码，所以"没配 Key"必须是 warn 而不是 error。
+
+        否则 keyless 环境永远 rc=1，CI 就只能像历史上那样不去读 rc、改用 grep
+        一行文案来判断自检——那个 grep 只挡住了 selectolax 降级这一类故障。
+        """
+        import pipeline_core.llm_router as llm
+        from pipeline_core.bootstrap import _check_llm_router
+
+        class _NoProviderRouter:
+            def get_active_providers(self):
+                return []
+
+        monkeypatch.setattr(llm, "get_router", lambda *a, **k: _NoProviderRouter())
+        report = StartupReport()
+        _check_llm_router(report)
+        check = [c for c in report.checks if c.name == "LLM 路由器"][0]
+        assert check.status == "warn", f"缺凭据不该算结构性故障：{check.status} / {check.message}"
+        assert not report.has_errors, "keyless 自检必须 rc=0，CI 才敢采信退出码"
+
+    def test_llm_router_crash_stays_error(self, monkeypatch):
+        """缺凭据降级为 warn，但路由器真的炸了仍必须是 error——两者不能混为一谈。"""
+        import pipeline_core.llm_router as llm
+        from pipeline_core.bootstrap import _check_llm_router
+
+        def _boom(*a, **k):
+            raise RuntimeError("初始化不了")
+
+        monkeypatch.setattr(llm, "get_router", _boom)
+        report = StartupReport()
+        _check_llm_router(report)
+        check = [c for c in report.checks if c.name == "LLM 路由器"][0]
+        assert check.status == "error"
+        assert report.has_errors

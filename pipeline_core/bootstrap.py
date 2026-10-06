@@ -207,8 +207,12 @@ def _check_llm_router(report: StartupReport):
             report.add(CheckResult("LLM 路由器", "ok",
                                    f"{len(active)} 个供应商可用: {', '.join(names)}"))
         else:
-            report.add(CheckResult("LLM 路由器", "error",
-                                   "无可用供应商（请检查 .env 配置）"))
+            # 缺凭据是"未配置"，不是"装坏了"：记 warn，让 --check 的退出码专门
+            # 表达结构性故障。CI 因此可以直接采信 rc，而不必再靠 grep 某一行文案
+            # 来判断自检有没有真的跑过（历史教训：ci.yml 从不读这个 rc，于是
+            # --check 里任何非 selectolax 的故障都能一路绿）。
+            report.add(CheckResult("LLM 路由器", "warn",
+                                   "无可用供应商（请检查 .env 配置）——将以无 LLM 降级模式运行"))
     except Exception as e:
         report.add(CheckResult("LLM 路由器", "error", f"初始化失败: {e}"))
 
