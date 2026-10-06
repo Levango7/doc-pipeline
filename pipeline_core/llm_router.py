@@ -2,24 +2,23 @@
 LLM Router — 多供应商 LLM 路由器
 =================================
 核心特性：
-  - 10 个 LLM 供应商自动 fallback
+  - 供应商定义表 16 家，按 `.env` 是否配齐 URL/MODEL/KEY 决定实际启用哪几家
   - 健康检查 + 自动故障转移
   - 加权选择 + 优先级排序
-  - Cloudflare Workers AI 格式自动适配
   - 从 .env 加载配置
   - 线程安全
 
-供应商列表（按 .env 配置优先级）：
-  1. Cloudflare Workers AI (Kimi K2.6)
-  2. 小米 MiMo
-  3. 美团 LongCat
-  4. 商汤 SenseNova
-  5. Agnes AI
-  6. NVIDIA NIM
-  7. 百度千帆
-  8. Dahl
-  9. SiliconFlow
-  10. 本地 Ollama（可选）
+已定义的 16 家（`_build_providers` 里的 `provider_defs`，顺序即优先级）：
+  cloudflare、openai、deepseek、moonshot、qwen、xiaomi_mimo、longcat、sensenova、
+  glm、agnes、nvidia、bailian、qianfan、dahl、siliconflow、ollama
+
+> **口径边界（务必如实理解"支持 16 家"）**：这 16 条是**端点与定价定义**，不是 16 套
+> 协议实现。请求路径只有一条 `_call_llm` / `_call_llm_async`，响应解析按 OpenAI 兼容形态
+> 取 `choices[0].message.content`，唯一的形态分支是 Cloudflare 的 `/ai/run` URL。
+> 因此配进表里的 URL 必须是该家的 **OpenAI 兼容端点**（`/api/generate` 这类原生形态
+> 在这条解析路径上取不到内容），否则配了 Key 也会在解析响应时失败。
+> 启用状态请用 `python run.py --check` 实测，别照本表推断。
+> 本段与表的一致性由 `tests/test_doc_consistency.py` 把关（条目数取自代码，不写死数字）。
 """
 import asyncio
 import atexit

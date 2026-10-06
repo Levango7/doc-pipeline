@@ -615,8 +615,11 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**1854 个测试本机全绿**（`1854 passed, 2 skipped`；CI 每个 Python 版本
-`1772 passed, 12 skipped`，coverage 86.5% / 门禁 83%），覆盖：Scheduler 解析、
+**2239 个测试本机全绿**（`2239 passed, 2 skipped, 6 deselected`，截至 2026-10-07 实测；
+现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%）。CI 的通过数可能与本机略有
+出入——渲染层/OCR/嵌入类用例带 `skipif`，取决于该 job 装了哪些可选依赖。
+数字由 `tests/test_doc_consistency.py` 与实际收集数比对把关，落后于代码即红（此前这里
+长期写 1854 而无人能证明它对不对，因为 `tests/` 里没有一条测试引用 README）。覆盖：Scheduler 解析、
 Schema 校验、Lockfile 与 edges 一致性、消息总线（含幂等去重的显式回报）、
 熔断器、限流器（含集成）、QualityGate（含产出保真底线）、Agent 集成、
 容错注入、断点续传、管理 API、并发压力、SSE 流式、执行器工厂、任务队列、
@@ -643,6 +646,8 @@ python -m pytest tests/ -m e2e -v
 产出保真底线（先于评分）：内容非空 且 ≥ min_output_chars（默认 120）
                      且 不含已知占位语（"未采集到可整合的搜索结果"等）
                      且 占位章节占比 ≤ max_placeholder_section_ratio（默认 0.34）
+                     且 正文不含抓取层原始素材签名（"下载时间:" 行 / 60 连等号分隔线；
+                         确需附原文用 allow_raw_fetch_blocks: true 显式放行）
                      → 违反即 status=fail + hard_floor=true，
                        不重做、不因 pipeline.fail_fast=false 而放行，整条流水线 exit 1
 
@@ -722,7 +727,7 @@ doc-pipeline/
 │       └── tutorial.yaml
 ├── dashboard/           # 前端仪表盘
 ├── spike/               # 渲染层可行性验证脚本与结论（见 spike/README.md）
-├── tests/               # 1600+ 个测试（另有 e2e）
+├── tests/               # 测试套件（数量见上文「测试」一节；另有 e2e 标记用例）
 ├── checkpoints/         # 断点 + 日志（自动轮转）
 ├── versions/            # 文档版本存储
 ├── run.py               # CLI 入口
@@ -746,7 +751,7 @@ doc-pipeline/
 | LLM 额度消耗 | 0（质量门控跳过，规则兜底） | mock |
 | 消息总线吞吐 | 批量 drain 50 条/轮 | — |
 | 缓存命中 | 74 万 ops/s (get_hit) | 基线（ubuntu/3.12） |
-| 测试覆盖 | 1400+ tests (+ e2e) | — |
+| 测试覆盖 | 见「测试」一节的现测数字（另有 e2e 标记用例） | — |
 
 ### 生产模式预期耗时（config.production.json）
 

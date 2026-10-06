@@ -37,8 +37,16 @@
 
 ### 2.2 LLM Key（用于 Writer 润色 / 质量增强）
 
-在 `.env` 中配置 `OPENAI_API_KEY`、`DEEPSEEK_API_KEY` 等；`llm_router.py` 支持 12 家供应商自动 fallback，
-未配置时自动降级为规则模式（骨架 + TF-IDF 匹配，不做 LLM 润色），不影响流水线完成。
+在 `.env` 中配置 `OPENAI_API_KEY`、`DEEPSEEK_API_KEY` 等；`llm_router.py` 的供应商表里定义了
+**16 家**，某家是否启用取决于它的 `*_API_URL` / `*_MODEL` / `*_API_KEY` **三项是否配齐**
+（只配 Key 不配 URL/MODEL 等于没配），未配置时自动降级为规则模式
+（骨架 + TF-IDF 匹配，不做 LLM 润色），不影响流水线完成。
+
+> **诚实边界**：这 16 家是**定价与端点定义表**，不是 16 套协议实现。路由只有一条请求路径——
+> OpenAI 兼容的 `{choices[0].message.content}` 解析（外加 Cloudflare 一个 URL 形态分支）。
+> 因此表里的 URL 必须填该家的 OpenAI 兼容端点，`/api/generate` 这类原生形态喂进这条
+> 解析路径取不到内容，表现为填了 Key 仍然失败。
+> 配好之后请跑 `python run.py --check`，它会如实列出实际启用的供应商。
 
 ### 2.3 Admin API 鉴权
 
@@ -66,8 +74,8 @@ python run.py --daemon --admin --dashboard -c config.production.json
 # API 与仪表盘: http://<host>:8910
 ```
 
-外部系统通过 `POST /tasks` 提交任务（支持同步/异步），详见 README 的管理 API 表格与
-`GET /api/openapi.json` 在线规范。
+外部系统通过 `POST /api/tasks` 提交任务（支持同步/异步）。注意 `/tasks` 只接受 GET，
+不是提交入口。详见 README 的管理 API 表格与 `GET /api/openapi.json` 在线规范。
 
 ### 3.3 MCP Server（供 Claude Desktop 等外部 Agent 调度）
 
@@ -122,7 +130,7 @@ docker run -d --name doc-pipeline \
 |------|------|------|
 | 断点与报告 | `checkpoints/` | 每日增量备份，保留 30 天 |
 | 文档版本 | `versions/` | 含 diff 和回滚能力，建议与代码库同级备份 |
-| 总线 / 任务数据库 | `bus_data/*.db` | SQLite（WAL 模式），停机后直接拷贝文件即可 |
+| 总线 / 任务数据库 | `bus_data/*.db` | SQLite（WAL 模式）。备份前**必须先停实例**，或先执行 `PRAGMA wal_checkpoint(TRUNCATE)`，并把 `*.db-wal` / `*.db-shm` 一并拷走——实例还在写的时候拷文件会得到半状态，而 WAL 侧文件缺失会让副本打开时报损坏。运行态位置可用 `DOC_PIPELINE_STATE_DIR` 重定向（默认锚在检出目录） |
 | 产出文档 | `output/` + `backups/` | SafeWriter 原子写入 + 自动备份（默认 7 天 / 20 份，可在 config 调整） |
 
 `config.production.json` 中可调项：`safe_writer.backup_ttl_days`、`safe_writer.max_backups`。
