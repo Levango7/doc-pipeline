@@ -138,7 +138,8 @@
 | `foreach` 逐项展开 | **死代码**：`scheduler.py:55 _as_foreach` 零调用点〔静态〕 | 接线（不是删） | 100 项展开受 `max_items` 护栏；幂等键按 item 分裂；item 数进 `topology_hash`；配一条真跑测试 |
 | 产出质量契约 | **有但会假绿**〔实测：4/5 章节空的产物得 98.8 pass〕 | 按 FP-1 修 | `empty_sections` 占比 / 降级声明 / 抓取元信息占比 三判据进底线，并参与 exit code |
 | 检查点与续跑 | 声明式路径的 `--resume` 原本是空转（工作区有未提交修复在飞）〔实测：diff 含 `TestDeclarativeResumeEndToEnd` 4 例〕 | 先合入 | 中断后 `--resume` 真跳过已完成节点，而非重跑 |
-| 熔断 / 限流 / Agent 池 | 已有；但 `pool_size: 2` 会把**同一条 query 跑两遍**〔实测：两个 `researcher_pool_*` 返回逐字节相同结果，33.7s 耗在无 Key 抓 HTML〕 | 池语义定义为**分片**而非复制 | 两池实例结果集不重复；成本不翻倍 |
+| 熔断 / 限流 / Agent 池 | **已改为分片**：池实例按 `all_queries[pool_idx::pool_size]` 领活；未认领 `EXTRACTS_QUERIES` 的 Agent 仍看全量（writer 这类必须看完整上下文）。查询词少于实例数时多余实例领**空活**并如实回报零结果，不再复制整条 query | 保持 | 新增的池实例不重复领取同一 query；根因只是 `len>=pool_size` 这道长度门槛，`EXTRACTS_QUERIES` 自 3674de6 已由 `agents/researcher.py` 声明并经 `AgentLoader` 进到 `AgentMeta`（`tests/test_pool_sharding.py` 五条，含接线证明） |
+| 交付物不得夹带中间格式 | **已加判据**：抓取层落盘签名（`下载时间: …` / 60 连等号分隔线）出现在正文即 `hard_floor`；可用 `allow_raw_fetch_blocks` 显式放行（字符串 `"false"` 不会被当成真） | 保持 | 本机与 CI 实测的那两类"素材直粘"文档（28.4 KB / 21.9 KB，曾拿 95.5 pass）现在 `exit 1` 且不落盘 |
 
 ### 5.2 扩展层（20x 的引擎盖）
 
@@ -178,9 +179,21 @@
 | 项 | 状态（2026-10-07） | 落点 |
 |---|---|---|
 | FP-1 质量门假绿 | **已关闭** | `4ede02b` |
-| FP-2 CI 三处静默判绿 | **已关闭，待第一次真实 CI 运行确认** | 本次提交（改的是 `.github/workflows/ci.yml`，本地只能验脚本语义） |
+| FP-1b 成品夹带抓取层原始素材 | **已关闭**（FP-1 的余波，见下方说明） | 本轮提交 |
+| FP-2 CI 三处静默判绿 | **已关闭并经真实 CI 确认** | `9ecfc12`；CI run 37504991608 在 `690c6d7` 上 5 条 required + perf 全绿，日志实证 `结果: 26 OK / 2 WARN / 0 ERROR` 与 `VULNS: []`（即 rc 被采信且没有误红） |
 | FP-3 MCP stdout 污染 | **已关闭** | `10cc2e7` |
+| FP-3b `--json-output` 的 stdout 混入过程输出 | **已关闭**：`--json-output` 时过程输出整体改接 stderr，JSON 是唯一一行 stdout（`tests/test_cli_output_channels.py`） | 本轮提交 |
 | FP-4 `foreach` 未接线 / 无时间触发 / 无人审 | **未开始**（属 P0 立项，不是修复） | §5.1 |
+
+**FP-1b 的来源（重要，因为它说明"修好一个假阳性"会暴露下一个）**：真实 CI 在 keyless 条件下产出了一份
+**21,926 字节**文档并被本步骤记为 `OUTPUT FIDELITY OK`；本机同形状产物 28.4 KB、`quality_gate` 95.5 pass。
+占比判据拦不住它——16 个章节里只有 4 个是占位符（25% < 34%），其余章节被喂进了抓取层的**原始素材块**
+（`标题:/来源:/下载时间:` + 60 连等号分隔线，`agents/fetcher.py:700-703` 的落盘格式）。
+先试过重复率与"导航行占比"两个候选指标，实测在真假样本上都没有可分离的分布（junk 样本
+`dup_para_rate=0.167`、`menu_like_rate=0.024`，与真样本几乎同量级）——**用这种指标做门禁等于再造一个假绿**。
+最终改用结构性签名：签名取自 fetcher 自己的落盘格式，不是关键词猜测。
+> 遗留（不是本轮范围）：真正该做的是 writer 不再粘原块 + 主题相关性/引用可追溯性判定，
+> 见 §5.1 与后续 P0。
 
 ### FP-1 · 质量门给空壳文档打 98.8 —— P0，代价 S
 

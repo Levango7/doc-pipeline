@@ -83,6 +83,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     健康变成硬依赖，若 ubuntu runner 上存在本机没暴露的结构性问题或 PyPI 数据源抖动，
     CI 会**如实变红**——这是修复的目的而非回归，但意味着"CI 全绿"这一条需要重取。
 
+### Fixed（2026-10-07·续3）
+
+- **成品不得夹带抓取层原始素材（FP-1 的余波，由真实 CI 暴露）**。CI run 37504991608 在
+  `690c6d7` 上 keyless 产出 **21,926 字节**文档并记为 `OUTPUT FIDELITY OK`；本机同形状产物
+  28,412 字节、`quality_gate` 给 **95.5 pass**。占比判据拦不住它——16 个章节里只有 4 个是
+  占位符（25% < 34%），其余章节被喂进了 `fetcher._save_article` 的**磁盘格式**：
+  `标题: / 来源: / 下载时间: YYYY-MM-DD HH:MM:SS / 60 连等号分隔线`（`agents/fetcher.py:700-703`）。
+  - 先试过两个候选指标：段落近重复率、导航样例行占比。实测在真假样本上都不可分离
+    （junk 样本 `dup_para_rate=0.167`、`menu_like_rate=0.024`，与真文档同量级）——
+    **拿这种指标做门禁等于再造一个假绿**，故弃用。
+  - 处置：判据取结构性签名（fetcher 自己的落盘格式），`raw_fetch_block_count() > 0` 即
+    `hard_floor`；需要附原文的场景用 `allow_raw_fetch_blocks` 显式放行，且字符串 `"false"`
+    不被 `bool()` 判真（`_flag_enabled` 只认显式真值）。
+  - 现场复验：本机 keyless docgen 由 `exit 0 + 28.4 KB 落盘` 变为 `exit 1` 并报
+    `正文泄漏 3 块抓取层原始素材…`，交付物不再写出。CI 的 keyless 分支因此回到
+    `SKIPPED`（诚实），而不是 `OUTPUT FIDELITY OK`（假）。
+  - 判据 `TestRawFetchBlockFloor` 五条：素材块头被拒 / 真文档不误伤 / 显式放行生效 /
+    `"false"` 字符串不放行 / **签名与 fetcher 落盘格式同源**（用 `inspect.getsource` 断言
+    fetcher 格式变了就必须同步改签名，防止判据单方面失效）。
+- **researcher 池化从"复制"改为"分片"**。`_build_node_payload` 的分片分支原先要求
+  `len(all_queries) >= pool_size`，查询词比池实例少时整体退回全量复制。实测后果：
+  `pool_size: 2` 的两个 `researcher_pool_*` 返回逐字节相同的结果，同一条 query 出网两遍。
+  （`EXTRACTS_QUERIES` 自 3674de6 起就由 researcher 声明、`AgentLoader` 也会把它搬进
+  `AgentMeta` —— 坏的只是这个长度门槛，不是声明缺失。）
+  - 处置：条件去掉长度门槛，`all_queries[pool_idx::pool_size]` 天然让多余实例领空活
+    （如实回报零结果）。
+  - 复验：keyless docgen 实测 `researcher_pool_0 queries=1 results=10` /
+    `researcher_pool_1 queries=0 results=0`。
+  - 判据 `tests/test_pool_sharding.py` 五条，含"未认领标记的 Agent 仍看全量"（writer 这类
+    必须看到完整上下文）与一条**接线证明**（`AgentLoader.register` 后
+    `Registry.get_meta("researcher").extracts_queries` 必须为真——模块里写了但没进 meta 等于没写）。
+- **`--json-output` 的 stdout 契约**。README 承诺它"输出 JSON 结果供 wrapper 解析"，实测
+  stdout 上先有 11 行人类可读过程输出（`[run] 加载流水线配置…`、任务头），wrapper 逐行解析
+  必炸。处置：该模式下 `sys.stdout` 整体改接 stderr，结果 JSON 由 `output_json_result`
+  显式写回 `_RESULT_OUT`（进入该模式前抓下的真 stdout；不在导入期绑死，否则 capsys 失效）；
+  `--mcp` **不做**同样重定向（MCP 的协议帧就走 `sys.stdout`）。
+  判据 `tests/test_cli_output_channels.py` 三条（单行 JSON / 过程输出没被弄丢 /
+  默认模式的人类报告仍在 stdout，防反向回归）。
+- **依赖与文档口径**：`pyproject.toml` 补 `render / ingest / ocr / embed` 四个能力 extras
+  （此前 python-docx、reportlab、pymupdf 只在 `requirements.txt` 与 Dockerfile 里，
+  `pip install .` 与 `pip install -r requirements.txt` 会装出能力不同的两份东西；
+  `paddleocr` 被 `docpipeline/ingest.py` import 却两处都没声明）。下限取自本机实测可用版本：
+  `ocr` 必须是 `paddleocr>=3.0` + `paddlex[ocr]>=3.0`（本机 paddleocr 3.7.0 / paddlex 3.7.2；
+  2.x 没有 `PPStructureV3` 这个符号，只装 paddleocr 时实例化即抛错——`paddlex` 的
+  `Provides-Extra` 里确实有 `ocr`）。`all` 有意不含 `ocr / embed`（它们拉起 PaddleX 与 torch）。
+  `docs/deployment.md` 三处硬错更正：`POST /tasks` 提交任务（该路由只有 GET，提交入口是
+  `/api/tasks`）、"llm_router 支持 12 家"（定义表 16 家，且只有一条 OpenAI 兼容请求路径）、
+  WAL 库"停机后直接拷贝即可"（须先 checkpoint 并带走 `-wal/-shm`）。
+  `pipeline_core/llm_router.py` 模块注释从"10 个供应商"改为与定义表同源并写清"16 家是端点与
+  定价定义，不是 16 套协议实现"。README 的测试数改为实测值（本机全量
+  `2239 passed, 2 skipped, 6 deselected`，截至 2026-10-07）。
+- **新增文档一致性护栏** `tests/test_doc_consistency.py`：此前 `tests/` 里没有任何一条测试
+  引用 README 或 docs，所以"1854 passed"这类数字落后于代码无人发现。三处口径（6 条用例）
+  都从代码取数（`--co` 的收集数、生成的 OpenAPI 路径、`provider_defs` 的 AST 长度），不写死常量。
+  变异验证：README 改回 1854 ⇒ 红；文档注入 `POST /tasks` ⇒ 红（两处均已还原）。
+
 ### Added（2026-10-06，未发版）
 
 - **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，
