@@ -615,7 +615,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2239 个测试本机全绿**（`2239 passed, 2 skipped, 6 deselected`，截至 2026-10-07 实测；
+**2240 个测试本机全绿**（`2240 passed, 2 skipped, 6 deselected`，2026-10-07 本机全量实测；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%）。CI 的通过数可能与本机略有
 出入——渲染层/OCR/嵌入类用例带 `skipif`，取决于该 job 装了哪些可选依赖。
 数字由 `tests/test_doc_consistency.py` 与实际收集数比对把关，落后于代码即红（此前这里

@@ -140,3 +140,24 @@ def test_llm_router_docstring_matches_provider_table():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert f"{n} 供应商定价表" in readme or f"{n} 供应商" in readme, \
         f"README 的供应商口径应与定义表一致（当前 {n}）"
+
+
+# ─── 4. CI 的产出判据必须与门禁契约同源 ─────────────────────
+
+def test_ci_step_carries_the_output_fidelity_checks():
+    """`.github/workflows/ci.yml` 的 docgen 步骤必须自己带着两条产出判据。
+
+    那份 21,926 字节的素材直粘文档就是从这一步以 `OUTPUT FIDELITY OK` 的名义过的，
+    所以这一步不能只依赖 quality_gate：判据若从 ci.yml 里消失（或被注释掉），
+    等于门禁单方面失效，这里要红。字符串取自 docpipeline.degradation，
+    不在测试里重抄一份字面量。
+    """
+    from docpipeline import degradation
+
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert degradation.EMPTY_RESULT_DOC in text, \
+        "ci.yml 不再检查占位语，交付物是否空洞就没人兜底了"
+    assert r"^下载时间: [0-9]{4}" in text, \
+        "ci.yml 不再检查抓取层原始素材签名（degradation.FETCH_TIMESTAMP_RE 的等价式）"
+    assert "OUTPUT FIDELITY OK" in text, "护栏与被检对象一并失效，先确认这一步还在"
+

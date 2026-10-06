@@ -151,6 +151,15 @@ jobs:
               echo "::error::产出是占位文档（命中“未采集到可整合的搜索结果”）"
               exit 1
             fi
+            # CI 自己再查一遍抓取层原始素材签名，不复用 quality_gate 的判定。
+            # 那份 21,926 字节的文档当初就是以 OUTPUT FIDELITY OK 的名义从这里溜过去的
+            # ——当时 gate 和这里都只查"非空 + 非已知占位语"。gate 已修，但这道重复是有意的：
+            # 判据若哪天单方面失效，宁可让 CI 红，也不要它继续替产出背书。
+            # 签名与 docpipeline/degradation.py 的 FETCH_TIMESTAMP_RE 同源。
+            if grep -qE '^下载时间: [0-9]{4}-[0-9]{2}-[0-9]{2}' /tmp/out_ci.md; then
+              echo "::error::产出夹带抓取层原始素材（命中 fetcher 落盘格式的下载时间行）"
+              exit 1
+            fi
             echo "OUTPUT FIDELITY OK ($size bytes)"
           fi
 
