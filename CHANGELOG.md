@@ -266,6 +266,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （renderer 142.5ms，此前是 ❌），落盘 `output/render_probe2.docx` 47 KB，
   重新读回 docx 后正文里非法控制字符 0 个、Title/Heading 样式照旧在（目录可跳转没退化）。
 
+### Fixed（2026-10-06·续5）
+
+- **未知检索引擎不再回落 mock，docgen smoke 从"间歇抽签"变成确定性**（#25，
+  CI run 37373808297 上 docgen smoke 判红的根因）。`docgen.yaml` 配的引擎是
+  bocha/tavily/serper，而 `researcher` 里没有这三者的实现分支，原来的兜底
+  `else: _mock_search(...)` 把它们静默换成假摘要——实测出过一次 351 字节的
+  bocha 占位稿被当成功出厂（同一 commit 重跑又全绿，近 6 次里 1 红 5 绿），
+  smoke 门禁（≥800 字节且非占位）因此一直在抽签。
+  现在 **mock 必须是显式选择**：未知引擎只告警跳过（`results = []`）⇒ 无可用
+  引擎的环境里流水线必然被产出保真底线拦下（`HARD_FLOOR`，rc=1，不落盘），
+  ci.yml 的 `rc≠0 + HARD_FLOOR` 分支成为 keyless 路径的固定走向（已加注释）。
+  dead-proxy 环境实跑复现：`错误: HARD_FLOOR: 产出未过保真底线: 内容过短（52 < 120
+  字符）；产出为占位内容（命中"未采集到可整合的搜索结果"）`，rc=1 且无产物文件。
+  判据 `TestUnknownEngineDoesNotFallBackToMock` 三条；另改写两条把 bug 写进断言的
+  旧用例（"未知引擎→mock"的期望值、以及从未命中的异常注入）。
+- **`--resume` 在声明式路径是空转**（#24，README 的 CLI 表因此领先于实现）。
+  `run.py` 默认走 `run_plan()`，而它根本没有 resume 参数——断点状态要
+  `checkpoint_manager.load()` 设到 `task._resumed_node_snapshots` 才生效，
+  只有 legacy 的 `orch.run(resume=True)` 会调 `_load_checkpoint`。现在：
+  - `run_plan(..., resume=False)` / `run_plan_async(..., resume=False)` 接断点，
+    run.py 声明式分支透传 `--resume`；`_resume_snapshots_for` 先做**归属校验**：
+    断点流水线名与当前流水线不符就拒收并告警——否则节点名对不上时静默全量重跑、
+    对得上时用错结果，两种都不是"续传"。
+  - `DAGExecutor._merge_resumed_nodes` 改成**按层增量**合并：`_execute_plan` 每层
+    现场新建 TaskNode，原先"每任务一次"的合并只能覆盖第一层，后面几层的已完成
+    状态永远合不进来，resume 退化成"除第一层全部重跑"；已合并过的节点记录在案，
+    节点重跑出新结果后不会被旧快照倒回去。
+  - 顺带对齐一处 async 差异：`run_plan_async` 此前无条件盖 DONE，声明了落盘节点
+    却没有交付物也报 done（SSE 路径），改为与同步版同一交付契约。
+  - 判据四条（`TestDeclarativeResumeEndToEnd`）：声明式 E2E（4 个已完成节点复用、
+    下游 3 节点真跑、交付物落盘且含恢复内容）、async E2E、归属拒收、async 交付
+    契约。两处变异实测转红：摘掉快照挂载 ⇒ 4 个已完成节点全部重发 bus.request；
+    注掉交付契约 ⇒ 无产物仍报 DONE。
+- **Docs**：README 的 `--resume` 行按实现改写（两条路径都生效，流水线归属不符会被拒收）。
+
 ### Added（2026-10-05，未发版）
 
 - **Phase 1 解耦——产物契约**（`pipeline_core/artifacts.py` + `config_schema.py`）：

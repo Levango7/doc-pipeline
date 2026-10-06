@@ -139,7 +139,7 @@ python run.py test_input.md --dashboard
 | `--pipeline, -p` | 流水线名称（默认 `docgen`） |
 | `--queries, -q` | 检索词（可多个） |
 | `--output, -o` | 输出文件路径 |
-| `--resume` | 从断点续传。**当前仅 `--legacy` 分支生效**：默认的声明式路径 `run_plan()` 没有 resume 参数，`--resume` 在那里是空转（已记入 CHANGELOG 待办） |
+| `--resume` | 从断点续传（声明式与 legacy 两条路径都生效），配 `--task-id` 指定要续的任务；断点属另一条流水线时会被拒收并告警，而不是合错状态 |
 | `--plan / --dry-run` | 仅预览计划，不执行 |
 | `--admin / --dashboard` | 启动管理 API / 仪表盘 |
 | `--daemon` | 执行完后保持 API 常驻 |

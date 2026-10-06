@@ -101,6 +101,10 @@ jobs:
           # 但必须是"诚实的那两种"：要么真写出成文（≥800 字节且非占位），
           # 要么被产出保真底线拦下并非零退出。历史上这里是 52 字节占位文档
           # 一路 exit 0、9 步全绿还落盘 docx/pdf。
+          # 2026-10-06 起 keyless 走向是确定的：docgen 配的引擎 bocha/tavily/serper
+          # 在 researcher 里没有实现分支，原先会静默退化成 mock 假摘要（出过一次
+          # 351 字节占位稿、同 commit 重跑又绿），现在未知引擎只跳过不回落 mock
+          # ⇒ 无检索结果 ⇒ 保真底线拦截（HARD_FLOOR + rc≠0），不再抽签。
           set +e
           python run.py test_input.md --pipeline docgen --output /tmp/out_ci.md > /tmp/docgen_ci.log 2>&1
           rc=$?

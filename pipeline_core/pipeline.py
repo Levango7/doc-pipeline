@@ -627,6 +627,27 @@ class PipelineOrchestrator:
                         self._log("warning", f"agent {name} on_restore 失败", error=str(e))
         return task  # type: ignore[no-any-return]
 
+    def _resume_snapshots_for(self, plan: ExecutionPlan, task_id: str) -> dict | None:
+        """声明式路径的断点取数：返回可合并的节点快照；无断点/归属不符返回 None。
+
+        归属校验是必须的：声明式调用方会自己拼 task_id，而断点文件属于哪条
+        流水线只有文件自己知道。把别的流水线的快照合进来，节点名对不上时
+        静默全量重跑、对上了就是用错结果——两种都不是"续传"。
+        """
+        loaded = self._load_checkpoint(task_id)
+        if loaded is None:
+            self._log("info", "未找到断点，按全新任务执行", task_id=task_id)
+            return None
+        if loaded.pipeline_name != plan.pipeline_name:
+            self._log("warning", "断点属于另一条流水线，忽略断点",
+                      task_id=task_id, checkpoint_pipeline=loaded.pipeline_name,
+                      pipeline=plan.pipeline_name)
+            return None
+        snaps = getattr(loaded, "_resumed_node_snapshots", None) or {}
+        self._log("info", "从断点恢复", task_id=task_id,
+                  pipeline=plan.pipeline_name, restored_nodes=len(snaps))
+        return snaps or None
+
     def _remove_checkpoint(self, task_id: str):
         self._checkpoint.remove(task_id)
 
@@ -841,8 +862,14 @@ class PipelineOrchestrator:
         return False
 
     def run_plan(self, plan: ExecutionPlan, input_file: str = "",
-                task_id: str | None = None, wait: bool = True) -> PipelineTask:
-        """按 Scheduler 生成的 ExecutionPlan 执行流水线"""
+                task_id: str | None = None, wait: bool = True,
+                resume: bool = False) -> PipelineTask:
+        """按 Scheduler 生成的 ExecutionPlan 执行流水线
+
+        resume=True 时从 task_id 对应的断点恢复：已完成节点直接复用产物注入
+        下游（DAGExecutor._reuse_completed_node），未完成节点重跑。此前
+        `--resume` 只在 legacy 分支生效，声明式路径静默变成全新执行。
+        """
         self.last_plan = plan  # type: ignore[assignment]
         self.last_input = input_file  # type: ignore[assignment]
 
@@ -851,6 +878,8 @@ class PipelineOrchestrator:
             raise TypeError("run_plan 需要 ExecutionPlan 实例")
 
         task_id = task_id or str(uuid.uuid4())[:8]
+        resume_snaps = self._resume_snapshots_for(plan, task_id) if resume else None
+
         task = PipelineTask(
             id=task_id,
             pipeline_name=plan.pipeline_name,
@@ -859,6 +888,8 @@ class PipelineOrchestrator:
             status=TaskStatus.RUNNING,
         )
         task.checkpoint_file = str(self.checkpoint_dir / f"{task_id}.json")
+        if resume_snaps:
+            task._resumed_node_snapshots = resume_snaps
 
         with self._lock:
             self._running_tasks[task.id] = task
@@ -931,7 +962,8 @@ class PipelineOrchestrator:
             self._trim_task_history()
 
     async def run_plan_async(self, plan: ExecutionPlan, input_file: str = "",
-                             task_id: str | None = None) -> PipelineTask:
+                             task_id: str | None = None,
+                             resume: bool = False) -> PipelineTask:
         """async 版 run_plan：在已有事件循环中直接 await，消除 asyncio.run 嵌套开销。
 
         与 run_plan(wait=True) 的区别：
@@ -947,6 +979,8 @@ class PipelineOrchestrator:
             raise TypeError("run_plan_async 需要 ExecutionPlan 实例")
 
         task_id = task_id or str(uuid.uuid4())[:8]
+        resume_snaps = self._resume_snapshots_for(plan, task_id) if resume else None
+
         task = PipelineTask(
             id=task_id,
             pipeline_name=plan.pipeline_name,
@@ -955,6 +989,8 @@ class PipelineOrchestrator:
             status=TaskStatus.RUNNING,
         )
         task.checkpoint_file = str(self.checkpoint_dir / f"{task_id}.json")
+        if resume_snaps:
+            task._resumed_node_snapshots = resume_snaps
 
         with self._lock:
             self._running_tasks[task.id] = task
@@ -1025,7 +1061,16 @@ class PipelineOrchestrator:
                     break
 
             if task.status != TaskStatus.FAILED and task.status != TaskStatus.CANCELLED:
-                task.status = TaskStatus.DONE
+                # 交付契约与同步版一致：声明了落盘节点就必须真拿出交付物，
+                # 否则 SSE 触发的任务在没有产物时报 done，报表与用户都被骗过
+                if self._sink_declared(plan) and not self._delivered(task, plan):
+                    reason = "声明了落盘节点却没有交付物（无 output_path/内容）"
+                    task.error = f"{task.error}；{reason}" if task.error else reason
+                    task.status = TaskStatus.FAILED
+                    self._log("error", "交付契约未满足：没有交付物，不能算 done",
+                              task_id=task.id, error=task.error)
+                else:
+                    task.status = TaskStatus.DONE
 
         except Exception as e:
             task.status = TaskStatus.FAILED

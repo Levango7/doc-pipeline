@@ -353,8 +353,15 @@ class ResearcherAgent(BaseAgent):
                     results = self._sogou_search(query)
                 elif engine == "360":
                     results = self._360_search(query)
-                else:
+                elif engine == "mock":
                     results = self._mock_search(query, engine)
+                else:
+                    # 名字不在内置实现里 ≠ 可以拿 mock 顶上：CI 实测过一次 351 字节
+                    # 的 bocha mock 占位稿被当成功出厂（docgen 配了 bocha/tavily/serper，
+                    # 这三个在本文件里没有实现分支，原本全部静默退化成假摘要）。
+                    # mock 必须是显式选择，不能是兜底。
+                    self.log_warning(f"未知检索引擎 {engine!r}：跳过，不回落 mock")
+                    results = []
                 all_results.extend(results)
             except Exception as e:
                 self.log_error(f"{engine} 搜索失败: {e}")

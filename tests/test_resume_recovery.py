@@ -326,6 +326,133 @@ class TestResumeEndToEnd:
         assert "Resumed Doc" in text
 
 
+# ── 声明式路径续传（run_plan(resume=True)） ─────────────────────────────
+
+class TestDeclarativeResumeEndToEnd:
+    """#24：--resume 此前只在 legacy 分支生效，而 run.py 默认走声明式路径，
+    于是 `--resume` 静默变成全新执行——每个已完成节点都重跑一遍。
+    run_plan 补 resume 后：已完成节点复用产物且不重发 bus.request，
+    未完成节点照常执行，交付物照写。"""
+
+    def _craft_checkpoint(self, orch, task_id: str, nodes: dict,
+                          pipeline_name: str = "test_pipeline") -> None:
+        craft = PipelineTask(id=task_id, pipeline_name=pipeline_name,
+                             input_file=INPUT_FILE, config={})
+        craft.checkpoint_file = str(Path(orch._checkpoint.checkpoint_dir) / f"{task_id}.json")
+        for name, res in nodes.items():
+            n = TaskNode(name=name, agent_name=name)
+            n.status = "success"
+            n.attempts = 1
+            n.result = res
+            craft.dag_nodes[name] = n
+        orch._checkpoint.save(craft, full_state=True)
+
+    def test_run_plan_resume_reuses_completed_levels(self, orch, docgen_plan, tmp_path):
+        task_id = "resume_decl_e2e"
+        out_file = tmp_path / "decl_resumed_doc.md"
+        content = ("# Resumed Declarative\n\n## 背景\n\n这是从断点恢复的正文内容，用于验证声明式续传后文档非空。\n\n"
+                   "## 要点\n\n- 已完成节点复用产物\n- 未完成节点照常执行\n\n引用 [1] 说明。\n")
+        crafted = {
+            "researcher": {"results": [{"title": "t", "url": "u", "snippet": "s"}]},
+            "fetcher": {"articles": [{"title": "t", "text": "正文"}]},
+            "writer": {"content": content},
+            "quality_gate": {"scores": {"overall": 90}, "overall_score": 90},
+        }
+        self._craft_checkpoint(orch, task_id, crafted)
+        docgen_plan.raw.setdefault("pipeline", {})["output"] = str(out_file)
+
+        orig_request = orch.bus.request
+        calls = []
+
+        def spy(*args, **kwargs):
+            calls.append(kwargs.get("to_a"))
+            return orig_request(*args, **kwargs)
+
+        orch.bus.request = spy
+        try:
+            task = orch.run_plan(plan=docgen_plan, input_file=INPUT_FILE,
+                                 task_id=task_id, wait=True, resume=True)
+        finally:
+            orch.bus.request = orig_request
+
+        assert task.status == TaskStatus.DONE, f"task ended {task.status}: {task.error}"
+        resent = [c for c in calls if c in crafted]
+        assert not resent, f"已完成节点被重发 bus.request: {resent} (all={calls})"
+        assert task.result["writer"]["content"] == content
+        for name in ("checker", "layout", "safe_writer"):
+            assert name in calls, f"{name} 未执行 (calls={calls})"
+        assert out_file.exists() and out_file.stat().st_size > 0
+        assert "Resumed Declarative" in out_file.read_text(encoding="utf-8")
+
+    def test_run_plan_async_resume_reuses_completed_levels(self, orch, docgen_plan, tmp_path):
+        import asyncio
+        task_id = "resume_decl_async"
+        out_file = tmp_path / "decl_async_doc.md"
+        content = ("# Resumed Async\n\n## 背景\n\n声明式 async 入口的续传验证正文，用于确认复用可跨入口生效。\n\n"
+                   "## 要点\n\n- 已完成节点复用产物\n\n引用 [1] 说明。\n")
+        crafted = {
+            "researcher": {"results": [{"title": "t", "url": "u", "snippet": "s"}]},
+            "fetcher": {"articles": [{"title": "t", "text": "正文"}]},
+            "writer": {"content": content},
+            "quality_gate": {"scores": {"overall": 90}, "overall_score": 90},
+        }
+        self._craft_checkpoint(orch, task_id, crafted)
+        docgen_plan.raw.setdefault("pipeline", {})["output"] = str(out_file)
+
+        orig_request = orch.bus.request
+        calls = []
+
+        def spy(*args, **kwargs):
+            calls.append(kwargs.get("to_a"))
+            return orig_request(*args, **kwargs)
+
+        orch.bus.request = spy
+        try:
+            task = asyncio.run(orch.run_plan_async(
+                plan=docgen_plan, input_file=INPUT_FILE,
+                task_id=task_id, resume=True))
+        finally:
+            orch.bus.request = orig_request
+
+        assert task.status == TaskStatus.DONE, f"task ended {task.status}: {task.error}"
+        resent = [c for c in calls if c in crafted]
+        assert not resent, f"已完成节点被重发 bus.request: {resent} (all={calls})"
+        assert out_file.exists() and out_file.stat().st_size > 0
+
+    def test_run_plan_async_requires_deliverable_for_done(self, orch, scheduler):
+        """async 入口此前无条件盖 DONE，声明了落盘节点却没有产物时报 done——
+        SSE 触发的那条路径上，报表与用户都会被骗过。与同步版对齐为交付契约。"""
+        import asyncio
+        plan = _build_dep_plan(scheduler, [("safe_writer", [])], [["safe_writer"]])
+
+        async def noop_level(task, level, input_file, plan_):
+            return True
+
+        orig = orch._executor.execute_level_async
+        orch._executor.execute_level_async = noop_level
+        try:
+            task = asyncio.run(orch.run_plan_async(
+                plan=plan, input_file=INPUT_FILE, task_id="async_nodeliver"))
+        finally:
+            orch._executor.execute_level_async = orig
+
+        assert task.status == TaskStatus.FAILED
+        assert "没有交付物" in (task.error or "")
+
+    def test_resume_rejects_foreign_pipeline_checkpoint(self, orch, docgen_plan):
+        """task_id 由调用方拼，断点归属未必是当前流水线：归错会静默全量重跑
+        （节点名对不上）或用错结果（对得上），所以必须按流水线名拒收。"""
+        self._craft_checkpoint(orch, "foreign_ckpt", {"researcher": {"results": [1]}},
+                               pipeline_name="other_pipeline")
+        assert orch._resume_snapshots_for(docgen_plan, "foreign_ckpt") is None
+        assert orch._resume_snapshots_for(docgen_plan, "missing_ckpt") is None
+
+    def test_resume_looks_up_checkpoint_by_task_id(self, orch, docgen_plan):
+        self._craft_checkpoint(orch, "own_ckpt", {"researcher": {"results": [1]}})
+        snaps = orch._resume_snapshots_for(docgen_plan, "own_ckpt")
+        assert snaps and snaps["researcher"]["status"] == "success"
+
+
 # ── P1 audit B4：error 字典判业务失败 ─────────────────────────────
 
 class TestErrorDictBusinessFailure:

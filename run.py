@@ -436,6 +436,7 @@ def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
             input_file=args_args.input,
             task_id=task_id,
             wait=not args_args.dry_run,
+            resume=args_args.resume,
         )
 
     if args_args.dry_run:

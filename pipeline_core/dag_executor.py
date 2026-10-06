@@ -656,18 +656,27 @@ class DAGExecutor:
         self._circuit_breaker_success(node)
 
     def _merge_resumed_nodes(self, task) -> None:
-        """断点续传：把 checkpoint 恢复的节点状态合并进重建后的 DAG（每任务一次）"""
-        if getattr(task, "_resume_merge_done", False):
-            return
+        """断点续传：把 checkpoint 恢复的节点状态合并进重建后的 DAG。
+
+        合并是**按层增量**而不是"每任务一次"：`_execute_plan` 每层现场新建 TaskNode，
+        一次性合并只能覆盖第一层建好的那几个节点，后面几层的已完成状态永远合不进来，
+        resume 于是退化成"除了第一层，全部重跑"。已合并过的节点名记下来，
+        免得节点重跑出新结果后被旧快照倒回去。
+        """
         snaps = getattr(task, "_resumed_node_snapshots", None)
-        task._resume_merge_done = True
         if snaps is None:
             return
-        task._resumed_from_checkpoint = True
+        merged = getattr(task, "_resume_merged_nodes", None)
+        if merged is None:
+            merged = task._resume_merged_nodes = set()
+            task._resumed_from_checkpoint = True
         for name, snap in (snaps or {}).items():
+            if name in merged:
+                continue
             dag_node = task.dag_nodes.get(name)
             if dag_node is None:
-                continue
+                continue        # 这一层还没建出来，等它成为当前层时再合
+            merged.add(name)
             dag_node.attempts = int(snap.get("attempts", 0) or 0)
             dag_node.error = str(snap.get("error", "") or "")
             dag_node.result = snap.get("result") or {}

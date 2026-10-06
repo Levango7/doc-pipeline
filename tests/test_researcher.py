@@ -41,6 +41,42 @@ class TestSearchResult:
         assert "fetched_at" in d
 
 
+class TestUnknownEngineDoesNotFallBackToMock:
+    """引擎名不在内置实现里 ≠ 可以拿 mock 顶上。
+
+    CI 实测过一次 351 字节的 "bocha 搜索结果摘要…" 占位稿被当成功出厂：docgen 配了
+    bocha / tavily / serper，而回退链只实现到 bing/sogou/360，于是这三个全部静默
+    退化成假数据——假检索结果进了交付文档，比报错难查一个量级。
+    """
+
+    def _offline_agent(self, engines):
+        from types import SimpleNamespace
+
+        agent = _make_agent(search_engines=engines)
+        # 跳过 SearchEngineManager：from_env 会注册真实引擎并触发外网抓取
+        agent._search_manager = SimpleNamespace(is_available=lambda: False,
+                                                get_engine_names=lambda: [])
+        return agent
+
+    def test_unknown_engine_contributes_no_results(self):
+        agent = self._offline_agent(["no-such-engine"])
+        out = agent._search("测试查询", task_id="t1", engines=["no-such-engine"])
+        assert out == [], out
+
+    def test_ci_engine_list_without_keys_yields_no_fabricated_rows(self):
+        """复刻 docgen 出厂清单里那三个没有内置实现的引擎。"""
+        agent = self._offline_agent(["bocha", "tavily", "serper"])
+        out = agent._search("测试查询", task_id="t3",
+                            engines=["bocha", "tavily", "serper"])
+        assert out == [], out
+
+    def test_explicit_mock_still_returns_demo_rows(self):
+        """mock 必须是显式选择才生效——test_pipeline 与离线演示都靠它。"""
+        agent = self._offline_agent(["mock"])
+        out = agent._search("测试查询", task_id="t2", engines=["mock"])
+        assert len(out) == 1 and out[0].source == "mock", out
+
+
 class TestConfig:
     def test_nested_researcher_config(self):
         agent = _make_agent(researcher={"search_engines": ["bing"]})
@@ -160,21 +196,43 @@ class TestSearch:
         mgr.search_with_sites.assert_called_once()
 
     def test_fallback_to_builtin_engines(self):
+        """回退链只认真正实现了的引擎；未知名字一律不贡献结果。
+
+        这里原本断言的是"未知引擎走 else → _mock_search"——那是把假检索数据
+        当成果出厂的规格（CI 上 351 字节 bocha mock 占位稿就这么报的 done）。
+        """
         agent = _make_agent(search_engines=["unknown_engine"])
         agent._search_manager = None
         with patch("pipeline_core.search_engines.SearchEngineManager.from_env",
                    side_effect=RuntimeError("no mgr")):
-            out = agent._search("查询", "t4")
-        # 未知引擎走 else 分支 → _mock_search
-        assert len(out) == 1 and out[0].source == "unknown_engine"
+            out = agent._search("未知引擎查询", "t4")
+        assert out == [], out
 
-    def test_engine_exception_continues(self):
-        agent = _make_agent(search_engines=["boom_engine"])
-        with patch.object(agent, "_mock_search", side_effect=RuntimeError("eng down")), \
+    def test_fallback_actually_calls_a_builtin_engine(self):
+        """判据必须还能命中：实现了的引擎在回退链里真的被调用并贡献结果。"""
+        agent = _make_agent(search_engines=["bing"])
+        agent._search_manager = None
+        hit = SearchResult(title="t", url="u", snippet="s", source="bing",
+                           query="q", score=0.6)
+        with patch.object(agent, "_bing_search", return_value=[hit]) as called, \
                 patch("pipeline_core.search_engines.SearchEngineManager.from_env",
                       side_effect=RuntimeError("no mgr")):
-            out = agent._search("查询", "t5")
-        assert out == []
+            out = agent._search("内置引擎查询", "t4b")
+        assert called.called and len(out) == 1 and out[0].source == "bing", out
+
+    def test_engine_exception_continues(self):
+        """一个引擎抛错不能中断其余引擎：异常落在真实引擎上，而不是落在
+        一个根本不会被调到的 mock 分支上（那样断言恒真）。"""
+        agent = _make_agent(search_engines=["bing", "sogou"])
+        agent._search_manager = None
+        got = SearchResult(title="t2", url="u2", snippet="s2", source="sogou",
+                           query="q", score=0.6)
+        with patch.object(agent, "_bing_search", side_effect=RuntimeError("eng down")), \
+                patch.object(agent, "_sogou_search", return_value=[got]), \
+                patch("pipeline_core.search_engines.SearchEngineManager.from_env",
+                      side_effect=RuntimeError("no mgr")):
+            out = agent._search("异常继续查询", "t5")
+        assert [r.source for r in out] == ["sogou"], out
 
 
 class TestProsearch:

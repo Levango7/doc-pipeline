@@ -47,6 +47,36 @@ def _as_inputs(value: object, who: str = "") -> dict:
     return dict(value)
 
 
+#: foreach 展开项的默认上限。逐项展开会产生 N 次投递：没有上限时，一次上游
+#: 数据异常（接口返回了整库）就能把流水线放大成成千上万次调用。
+DEFAULT_FOREACH_MAX_ITEMS = 64
+
+
+def _as_foreach(value: object, who: str = "") -> dict | None:
+    """规范化/校验 foreach 声明：`{over: <路径>, max_items: N}`。
+
+    `over` 是解析期唯一必填键，路径语法与 `when` 的点号取值同源，运行时在
+    节点自己的条件上下文里解析（artifacts.* / upstream.* / inputs.* ...）。
+    `max_items` 超限报错而不是截断——截断会让"少跑了几项"这种静默缺失
+    混进正常产物，正是一路在关的那类洞。
+    """
+    label = f"[{who}] " if who else ""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{label}foreach 必须是映射 {{over, max_items}}，实际: {value!r}")
+    unknown = set(value) - {"over", "max_items"}
+    if unknown:
+        raise ValueError(f"{label}foreach 含未知键 {sorted(unknown)}（只认 over / max_items）")
+    over = value.get("over")
+    if not isinstance(over, str) or not over.strip():
+        raise ValueError(f"{label}foreach.over 必须是非空路径字符串，实际: {over!r}")
+    max_items = value.get("max_items", DEFAULT_FOREACH_MAX_ITEMS)
+    if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items < 1:
+        raise ValueError(f"{label}foreach.max_items 必须是 ≥1 的整数，实际: {max_items!r}")
+    return {"over": over.strip(), "max_items": max_items}
+
+
 @dataclass
 class AgentConfig:
     """Agent 配置"""
