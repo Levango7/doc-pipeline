@@ -209,7 +209,6 @@ python run.py test_input.md --dashboard
 | `pipeline_core/version_manager.py` | 文档版本管理（自动版本号/diff/回滚） |
 | `pipeline_core/cache_manager.py` | 统一缓存（memory/file/multi 三级） |
 | `pipeline_core/llm_router.py` | 多供应商 LLM 路由器（16 供应商定义，按 .env 启用） |
-| `pipeline_core/search_engines.py` | 统一搜索引擎接口（10 引擎 + mock 测试桩 + LRU+TTL 缓存） |
 | `pipeline_core/cost_tracker.py` | LLM 成本追踪（16 供应商定价表 + 预算熔断） |
 | `pipeline_core/alert_manager.py` | 告警机制（熔断/DLQ/限流/预算超限通知） |
 | `pipeline_core/quality_feedback.py` | 质量评分历史 + 弱项模式分析 + 写作建议 |
@@ -219,7 +218,7 @@ python run.py test_input.md --dashboard
 | `pipeline_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
 | `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
 | `docpipeline/renderer.py` | 渲染层：Markdown → docx（OOXML）/ pdf（ReportLab），双后端可选依赖 |
-| `artesian`（独立库，自本仓 `pipeline_core/` 迁出） | `fast_json`（orjson 优先、stdlib 回退）+ HTML 解析内核兼容层（modest/lexbor 按可用性选，降级显式记录）+ 嵌入层（hash 内置 / local 模型 / API，auto 自动回落）+ 知识库（切块 → 向量化 → SQLite 持久化 → 向量检索） |
+| `artesian`（独立库，自本仓 `pipeline_core/` 迁出） | `fast_json`（orjson 优先、stdlib 回退）+ HTML 解析内核兼容层（modest/lexbor 按可用性选，降级显式记录）+ 嵌入层（hash 内置 / local 模型 / API，auto 自动回落）+ 知识库（切块 → 向量化 → SQLite 持久化 → 向量检索）+ 统一搜索引擎接口（10 引擎 + mock 测试桩 + 自带 LRU+TTL 缓存） |
 | `pipeline_core/state_paths.py` | 运行态路径解析（`DOC_PIPELINE_STATE_DIR` / `DOC_PIPELINE_VERSIONS_DIR`），测试与真实运行不再共用一份幂等键历史 |
 | `docpipeline/ingest.py` | 摄入层：PDF/图片/文本 → 结构化 Markdown（PDF 按字号推断标题层级） |
 | `docpipeline/document_enhancer.py` | 文档增强：对已有 Markdown 逐章节 LLM 深化 + ASCII 图修复 + 导出 |
@@ -659,11 +658,12 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2194 个测试本机全绿**（`2194 passed, 1 skipped, 6 deselected`，2026-10-07 本机全量实测；
+**2104 个测试本机全绿**（`2104 passed, 1 skipped, 6 deselected`，2026-10-07 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
+搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
-本轮实测 87.93%）。CI 的通过数可能与本机略有
+本轮实测 87.90%）。CI 的通过数可能与本机略有
 出入——渲染层/OCR/嵌入类用例带 `skipif`，取决于该 job 装了哪些可选依赖。
 数字由 `tests/test_doc_consistency.py` 与实际收集数比对把关，落后于代码即红（此前这里
 长期写 1854 而无人能证明它对不对，因为 `tests/` 里没有一条测试引用 README）。覆盖：Scheduler 解析、
@@ -742,7 +742,6 @@ doc-pipeline/
 │   ├── version_manager.py # 文档版本管理
 │   ├── cache_manager.py # 统一缓存
 │   ├── llm_router.py    # LLM 多供应商路由
-│   ├── search_engines.py # 10 引擎统一接口 + 缓存
 │   ├── cost_tracker.py  # LLM 成本追踪 + 预算熔断
 │   ├── alert_manager.py # 告警机制
 │   ├── quality_feedback.py # 质量闭环学习

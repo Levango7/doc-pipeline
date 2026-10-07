@@ -320,7 +320,7 @@ class FetcherAgent(BaseAgent):
         self._parser_backend = selectolax_compat.resolve_backend() or "regex"
         self._parser_fallbacks = 0
         # Firecrawl 网页提取增强（可选，优先于 HTML 下载 + 正则提取）
-        from pipeline_core.search_engines import FirecrawlExtractor
+        from artesian.search_engines import FirecrawlExtractor
         self._firecrawl = FirecrawlExtractor(
             api_key=config.get("firecrawl_api_key", "")
         )

@@ -54,7 +54,7 @@ skip_no_llm = pytest.mark.skipif(
 @skip_no_env
 def test_search_bocha_real():
     """真实 Bocha 搜索 — 验证 SearchEngineManager 能调通 API"""
-    from pipeline_core.search_engines import SearchEngineManager
+    from artesian.search_engines import SearchEngineManager
 
     mgr = SearchEngineManager.from_env(str(ENV_FILE))
     results = mgr.search("Python asyncio 教程", max_results=3, engines=["bocha"])
@@ -70,7 +70,7 @@ def test_search_bocha_real():
 @skip_no_env
 def test_search_tavily_real():
     """真实 Tavily 搜索 — 验证英文技术文档搜索质量"""
-    from pipeline_core.search_engines import SearchEngineManager
+    from artesian.search_engines import SearchEngineManager
 
     mgr = SearchEngineManager.from_env(str(ENV_FILE))
     results = mgr.search("React useEffect cleanup", max_results=3, engines=["tavily"])
@@ -82,7 +82,7 @@ def test_search_tavily_real():
 @skip_no_env
 def test_search_multi_engine_fallback():
     """多引擎 fallback — 第一个引擎失败时自动切换"""
-    from pipeline_core.search_engines import SearchEngineManager
+    from artesian.search_engines import SearchEngineManager
 
     mgr = SearchEngineManager.from_env(str(ENV_FILE))
     results = mgr.search("Docker compose 部署", max_results=5,

@@ -21,8 +21,9 @@ import tempfile
 import time
 from pathlib import Path
 
+from artesian.search_engines import SearchEngineManager
+
 from pipeline_core.llm_router import get_router
-from pipeline_core.search_engines import SearchEngineManager
 
 logger = logging.getLogger(__name__)
 

@@ -3,9 +3,10 @@
 PyYAML>=6.0
 requests>=2.28.0
 
-# 取数/知识底座：工具层（fast_json + HTML 解析兼容）与嵌入层/知识库
-# （embeddings + knowledge_base）已先后迁至独立库 artesian
-# （相关实现与判据都在那边，本仓不再留副本）。
+# 取数/知识底座：工具层（fast_json + HTML 解析兼容）、嵌入层/知识库
+# （embeddings + knowledge_base）、搜索引擎统一接口（search_engines，含其自带的
+# LRU+TTL 缓存与 .env 读取）已分三波迁至独立库 artesian（相关实现与判据都在那边，
+# 本仓不再留副本）。
 # 尚未发布 PyPI，开发期先 `pip install -e ../artesian`；发布后在此改为版本约束。
 # 依赖方向：本仓 -> artesian；artesian 不得反向 import 本仓。
 

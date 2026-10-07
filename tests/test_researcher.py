@@ -203,7 +203,7 @@ class TestSearch:
         """
         agent = _make_agent(search_engines=["unknown_engine"])
         agent._search_manager = None
-        with patch("pipeline_core.search_engines.SearchEngineManager.from_env",
+        with patch("artesian.search_engines.SearchEngineManager.from_env",
                    side_effect=RuntimeError("no mgr")):
             out = agent._search("未知引擎查询", "t4")
         assert out == [], out
@@ -215,7 +215,7 @@ class TestSearch:
         hit = SearchResult(title="t", url="u", snippet="s", source="bing",
                            query="q", score=0.6)
         with patch.object(agent, "_bing_search", return_value=[hit]) as called, \
-                patch("pipeline_core.search_engines.SearchEngineManager.from_env",
+                patch("artesian.search_engines.SearchEngineManager.from_env",
                       side_effect=RuntimeError("no mgr")):
             out = agent._search("内置引擎查询", "t4b")
         assert called.called and len(out) == 1 and out[0].source == "bing", out
@@ -229,7 +229,7 @@ class TestSearch:
                            query="q", score=0.6)
         with patch.object(agent, "_bing_search", side_effect=RuntimeError("eng down")), \
                 patch.object(agent, "_sogou_search", return_value=[got]), \
-                patch("pipeline_core.search_engines.SearchEngineManager.from_env",
+                patch("artesian.search_engines.SearchEngineManager.from_env",
                       side_effect=RuntimeError("no mgr")):
             out = agent._search("异常继续查询", "t5")
         assert [r.source for r in out] == ["sogou"], out

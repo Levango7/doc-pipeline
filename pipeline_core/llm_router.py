@@ -24,7 +24,6 @@ import asyncio
 import atexit
 import contextlib
 import logging
-import os
 import re
 import sys
 import threading
@@ -32,8 +31,8 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 
+from artesian.env import load_env
 from artesian.fast_json import dumps as _fast_dumps
 from artesian.fast_json import loads as _fast_loads
 
@@ -611,44 +610,10 @@ class LLMRouter:
         return cls(providers)
 
 
-def _load_env(env_path: str = None) -> dict:
-    """加载 .env 文件（支持注释行）"""
-    if env_path is None:
-        # 向上查找 .env
-        cwd = Path.cwd()
-        for p in [cwd] + list(cwd.parents):
-            candidate = p / ".env"
-            if candidate.exists():
-                env_path = str(candidate)
-                break
-
-    env = {}
-    if not env_path or not Path(env_path).exists():
-        # 回退到环境变量
-        return dict(os.environ)
-
-    try:
-        with open(env_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                if value:
-                    env[key] = value
-    except Exception as e:
-        logger.warning(f"加载 .env 失败: {e}")
-
-    # 合并系统环境变量（系统优先，但空值不覆盖 .env 中的有效值）
-    for k, v in os.environ.items():
-        if v:
-            env[k] = v
-
-    return env
+# _load_env 的实现已迁至 artesian.env.load_env（单一事实来源，搜索层与路由层共用）。
+# 保留 _load_env 这个名字：本模块调用点、测试的 patch 目标与
+# `from pipeline_core.llm_router import _load_env` 都指向它。
+_load_env = load_env
 
 
 # ─── 便捷函数 ──────────────────────────────────

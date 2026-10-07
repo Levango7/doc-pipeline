@@ -47,7 +47,6 @@ from .pipeline import NodeConfig, PipelineOrchestrator, PipelineTask, StepResult
 from .quality_feedback import QualityFeedback, get_quality_feedback, record_quality
 from .registry import AgentMeta, AgentPriority, AgentStats, AgentStatus, Registry
 from .scheduler import AgentConfig, ExecutionNode, ExecutionPlan, Scheduler
-from .search_engines import SearchEngineManager, SearchItem
 from .streaming import (
     StreamCallback,
     StreamEvent,
@@ -69,7 +68,6 @@ __all__ = [
     "Scheduler", "ExecutionPlan", "ExecutionNode", "AgentConfig",
     "AgentLoader", "DAGExecutor", "CheckpointManager",
     "LLMRouter", "get_router", "reset_router",
-    "SearchEngineManager", "SearchItem",
     "CacheManager", "get_cache", "clear_all_caches", "all_stats",
     "StreamEvent", "StreamCallback", "StreamMetrics",
     "register_callback", "get_callback", "unregister_callback",

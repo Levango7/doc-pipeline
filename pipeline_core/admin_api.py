@@ -1122,7 +1122,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 
         # 4. 搜索引擎
         try:
-            from pipeline_core.search_engines import SearchEngineManager
+            from artesian.search_engines import SearchEngineManager
             mgr = SearchEngineManager.from_env()
             engines = mgr.list_engines() if hasattr(mgr, "list_engines") else []
             result["components"]["search_engines"] = {

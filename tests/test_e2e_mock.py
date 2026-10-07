@@ -14,7 +14,7 @@ PROJECT = Path(__file__).parent.parent
 
 
 def _mock_search_result(title="T", url="https://example.com/x", snippet="snippet"):
-    from pipeline_core.search_engines import SearchItem
+    from artesian.search_engines import SearchItem
     return SearchItem(title=title, url=url, snippet=snippet, source="mock", query="q")
 
 
@@ -70,7 +70,7 @@ class TestMockE2E:
         writer_cls = sys.modules["agents.writer"].WriterAgent
         gate_cls = sys.modules["agents.quality_gate"].QualityGateAgent
 
-        with patch("pipeline_core.search_engines.SearchEngineManager.from_env") as mock_mgr, \
+        with patch("artesian.search_engines.SearchEngineManager.from_env") as mock_mgr, \
              patch.object(writer_cls, "handle", _mock_writer_handle()), \
              patch.object(gate_cls, "handle", _mock_quality_gate_handle()):
 

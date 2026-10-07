@@ -220,7 +220,7 @@ def _check_llm_router(report: StartupReport):
 def _check_search_engines(report: StartupReport):
     """检查搜索引擎"""
     try:
-        from pipeline_core.search_engines import SearchEngineManager
+        from artesian.search_engines import SearchEngineManager
         mgr = SearchEngineManager.from_env()
         available = {name: info["available"] for name, info in mgr.status()["engines"].items()}
         active = [k for k, v in available.items() if v]

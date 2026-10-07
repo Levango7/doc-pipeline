@@ -32,6 +32,9 @@ DOC = PROJECT / "docpipeline"
 FIRST_PARTY = {"pipeline_core", "scripts"}
 DECLARED_OPTIONAL = {"docx", "reportlab", "pymupdf"}     # requirements.txt 里声明
 RUNTIME_PROBED = {"paddleocr", "mineru"}                 # 重型 OCR，有意不进 requirements
+# 取数/知识底座：与本仓同盘的另一座仓，靠 `pip install -e ../artesian` 装，
+# 还没进 PyPI 所以不能写进 requirements 的包名行——由下面那条判据盯住"过渡装法有留痕"。
+LOCAL_LIBRARY = {"artesian"}
 IMPORT_TO_DIST = {"docx": "python-docx", "reportlab": "reportlab", "pymupdf": "pymupdf"}
 
 
@@ -122,10 +125,23 @@ class TestDependencyDirection:
             for _rel, imported in _scan(DOC)
             if imported not in _stdlib_names() and imported != "__future__"
         }
-        assert found == FIRST_PARTY | DECLARED_OPTIONAL | RUNTIME_PROBED, (
+        assert found == FIRST_PARTY | DECLARED_OPTIONAL | RUNTIME_PROBED | LOCAL_LIBRARY, (
             f"docpipeline 依赖集变了：实际 {sorted(found)}；"
-            f"登记的是 {sorted(FIRST_PARTY | DECLARED_OPTIONAL | RUNTIME_PROBED)}"
+            f"登记的是 {sorted(FIRST_PARTY | DECLARED_OPTIONAL | RUNTIME_PROBED | LOCAL_LIBRARY)}"
         )
+
+    def test_local_library_install_is_documented(self):
+        """登记成本地库的依赖，requirements.txt 必须写清怎么装。
+
+        artesian 不在 PyPI 上，`_requirements_names()` 只认非注释行，所以它天然
+        进不了"已声明"那一类；这条判据补上缺的那半：**过渡装法要有留痕**，
+        否则新环境照 requirements 装完只会得到 ImportError。
+        """
+        text = (PROJECT / "requirements.txt").read_text(encoding="utf-8")
+        undocumented = {name for name in LOCAL_LIBRARY
+                        if f"pip install -e ../{name}" not in text.replace("_", "-")}
+        assert undocumented == set(), (
+            f"这些本地库没在 requirements.txt 里写明安装方式: {sorted(undocumented)}")
 
     def test_declared_optional_backends_are_in_requirements(self):
         """登记为"可选但已声明"的后端，必须真在 requirements.txt 里。

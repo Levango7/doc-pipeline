@@ -611,7 +611,7 @@ class TestHealthDeepAndCaches:
         mgr = MagicMock()
         mgr.list_engines.return_value = []
         with patch("pipeline_core.llm_router.get_router", return_value=router), \
-                patch("pipeline_core.search_engines.SearchEngineManager.from_env",
+                patch("artesian.search_engines.SearchEngineManager.from_env",
                       return_value=mgr):
             handler._handle_health_deep()
         data = handler._json.call_args[0][0]
@@ -627,7 +627,7 @@ class TestHealthDeepAndCaches:
         handler.orch._cb_registry.list.return_value = []
         with patch("pipeline_core.llm_router.get_router",
                    side_effect=RuntimeError("no router")), \
-                patch("pipeline_core.search_engines.SearchEngineManager.from_env",
+                patch("artesian.search_engines.SearchEngineManager.from_env",
                       side_effect=RuntimeError("no mgr")):
             handler._handle_health_deep()
         data = handler._json.call_args[0][0]

@@ -304,7 +304,7 @@ class ResearcherAgent(BaseAgent):
         # 优先尝试 SearchEngineManager（多引擎统一接口 + Metaso API）
         # 性能优化：缓存 manager 实例，避免每次查询都重建（含引擎初始化、环境变量读取）
         try:
-            from pipeline_core.search_engines import SearchEngineManager
+            from artesian.search_engines import SearchEngineManager
             if self._search_manager is None:
                 self._search_manager = SearchEngineManager.from_env()
             manager = self._search_manager

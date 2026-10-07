@@ -261,6 +261,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     本批两仓仍均只作本地提交（artesian `ee9a689` + `05c6375`）。`run.py --check`
     与全量测试在本机（已装 artesian）均为绿，CI 差异仅此一条。
 
+### Changed（2026-10-07·续7，搜索引擎迁出·迁出边界收口）
+
+- **`search_engines` 迁至 `artesian`（第三波，规划的 5 个模块至此全部落地）**，
+  本仓不再留副本。为把两处仓内耦合断掉，新库另落两件底座：`artesian.cache`
+  （线程安全 LRU+TTL）与 `artesian.env`（`.env` 读取与系统环境合并）。
+  - **引用重定向 15 处 / 9 文件**：`agents/fetcher.py`、`agents/researcher.py`、
+    `docpipeline/document_enhancer.py`、`pipeline_core/admin_api.py`、
+    `pipeline_core/bootstrap.py` 各 1 处；`tests/test_e2e_real.py` 3、
+    `tests/test_researcher.py` 3、`tests/test_e2e_mock.py` 2、
+    `tests/test_admin_api_ext.py` 2（后四处含 `patch("…SearchEngineManager.from_env")`
+    的**字符串目标**——这类目标改错不会 ImportError，只会让 mock 打空、用例照绿，
+    故逐处按"恰好命中 N 次"断言后替换）。
+    另有 `pipeline_core/__init__.py` 删两行再导出（`SearchEngineManager` / `SearchItem`
+    实测无任何消费方走包级路径，全部走 submodule）。
+  - **耦合一（`_load_env`）——归一而非复制**：实现搬进 `artesian.env.load_env`，
+    `llm_router._load_env` 改为它的**别名**（`_load_env = load_env`）。这样本仓调用点、
+    `patch("pipeline_core.llm_router._load_env")`、`from pipeline_core.llm_router import
+    _load_env` 三方口径都不变（实测 `lr._load_env.__module__ == "artesian.env"`）。
+    语义细节随实现一起搬走：`.env` 空值不算配置、系统**非空**值优先、
+    系统空值不得抹掉文件里的有效值。
+  - **耦合二（CacheManager）——换成库内 LRUCache，并去掉一条不可能分支**：
+    原 `SearchEngineManager.__init__` 用 `try: from .cache_manager import CacheManager`
+    做"可选依赖装不上就降级无缓存"。缓存实现进了同一个包之后这条分支不再可能发生，
+    留着就是给覆盖率报一个永不执行的分支：改为无条件构造 `LRUCache(max_size, ttl)`，
+    并把"关掉缓存"做成显式能力 `SearchEngineManager(cache_ttl=-1)`（LRUCache 的
+    负 TTL＝读写皆空转）。判据换成带**正对照**的一条：关缓存时两次搜索都真打引擎
+    且 `size()==0`，默认开缓存时 `size()==1`——只断言"缓存为空"在两种实现下都会成立。
+    - **可观测性核对**：`admin_api` 的缓存统计走 `cache_manager.all_stats()`，而
+      `_registry` 只由 `get_cache()` 写入、`CacheManager.__init__` 不登记
+      （`cache_manager.py:400-409`）⇒ 搜索缓存此前就不在这份账里，本次换实现**没有**
+      丢统计。
+  - **行为变更（唯一一处对外可见）**：`ProSearchEngine` 不再内置两条本机绝对路径
+    （`F:\Program Files\QClaw\…` 与 `F:\Program Files (x86)\qclaw\…`）。改为
+    `PROSEARCH_PATH`（单条）/ `ARTESIAN_PROSEARCH_PATHS`（os.pathsep 分隔候选）/
+    `ProSearchEngine(script_paths=[...])` 三种显式注入，`PROSEARCH_SCRIPT_PATH`
+    的旧覆盖语义保留。**本机实测这两条路径都不存在** ⇒ 本机可用性不变（该引擎此前
+    就自动跳过）。`.env.example` 已补逃生门说明；新库另加一条源码护栏判据
+    "模块里不得出现盘符路径字面量"，并用合成变异验过它不误报 `https://`。
+  - **分层护栏被自己触发了一次**：`tests/test_layering.py` 的"docpipeline 外部依赖
+    必须逐条登记"如期判红（`artesian` 未在册）。处置是新增 `LOCAL_LIBRARY={"artesian"}`
+    类别，并补一条同源判据 `test_local_library_install_is_documented`——登记为本地库的
+    依赖必须在 `requirements.txt` 写明 `pip install -e ../artesian`，否则新环境按
+    requirements 装完只会得到 ImportError（artesian 不在 PyPI，进不了包名行，
+    这条判据就是那一类的替代品）。
+  - **判据去向**：`tests/test_search_engines.py`（30 条）与 `tests/test_search_engines_ext.py`
+    （61 条）随库走；新库里分别为 31 / 61 条（补了 `FirecrawlExtractor.is_available`
+    ——此前由本仓 agents 用例顺带覆盖，模块迁出后那层不在库的覆盖范围里，判据得自带），
+    另新写 `tests/test_cache_and_env.py` 30 条（LRU 逐出顺序、TTL 三档、`.env` 合并
+    优先级、ProSearch 注入面）。`_fake_aiohttp_module` 原先从 `tests.test_writer`
+    import，随库走时改为文件内自带（去掉搜索面用不到的流式分支）。
+  - **测试口径**：`2194 passed → 2104 passed`（-91 条随库移出、+1 条新分层判据），
+    README 计数护栏同批更新并复跑为绿；本仓 coverage 88.26%→87.93%→**87.90%**
+    （门禁 83% 不变），mypy 口径 58 文件 → 57 文件；CI 镜像 mypy/ruff 均绿，
+    `run.py --check` 的引擎行与迁移前一致（`5 个引擎可用: bing, baidu, sogou, 360,
+    duckduckgo`）。新库 artesian：**248 条**（本机 `247 passed, 1 skipped`），
+    coverage **97.06%**（cache/env/fast_json/embeddings/selectolax_compat 100%，
+    search_engines/knowledge_base 96%）。
+  - **迁出后的遗留议题**（不在本批处置）：2026-07-22 评审旧账 #5（HTML 引擎与
+    Firecrawl 对可控 URL 无私网防护）随模块一起归 artesian——本仓 `url_guard.py`
+    并未随迁，该判据要在库侧另立，属下一议题。**CI 阻塞项不变**：artesian 仍未发布，
+    本批两仓均只本地提交（artesian `ee9a689`/`05c6375` 之后的第三笔）。
+
 ### Added（2026-10-06，未发版）
 
 - **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，

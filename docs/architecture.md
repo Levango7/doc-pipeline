@@ -39,7 +39,7 @@
 
 横切组件：circuit_breaker.py / rate_limiter.py / cache_manager.py /
          observability.py(日志+Metrics) / event_hook.py(webhook) /
-         llm_router.py / search_engines.py / cost_tracker.py /
+         llm_router.py / cost_tracker.py /
          alert_manager.py / quality_feedback.py / version_manager.py
 ```
 
@@ -70,8 +70,9 @@ import 和 `importlib.import_module("...")` 字面量，而不只是文件头部
 四条判据都做过注入式正例验证（往 core 塞一句 `from docpipeline import renderer`
 即转红），否则"0 违规"只是扫描器空转，不算结论。
 
-> `docpipeline` 只依赖 `pipeline_core` 的 `llm_router` / `search_engines`
-> （`document_enhancer` 用到），这两个仍是引擎级横切组件，没有跟着搬。
+> `docpipeline` 只依赖 `pipeline_core` 的 `llm_router`（`document_enhancer` 用到），
+> 它仍是引擎级横切组件，没有跟着搬。原先与它并列的 `search_engines` 已迁至独立库
+> `artesian`：现在是第三方依赖，不再出现在这条"core 不认识领域"的清单里。
 
 ### 1.2 两种 skipped，别混
 

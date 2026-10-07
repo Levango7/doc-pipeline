@@ -51,7 +51,7 @@ python -m pytest tests/ -q -m "not e2e" --cov --cov-report=term-missing
 
 ### 异常处理
 
-- **防御性 catch 是合理的**：`search_engines`（失败 fallback）、`admin_api`（HTTP 500 防护）、`agent.handle`（上报 ERROR 不崩溃）里的 `except Exception` 是刻意设计，**不要机械窄化**
+- **防御性 catch 是合理的**：`admin_api`（HTTP 500 防护）、`agent.handle`（上报 ERROR 不崩溃）里的 `except Exception` 是刻意设计，**不要机械窄化**。搜索引擎"失败自动切下一个"同属这一族，但实现与判据已随 `search_engines` 迁至 artesian 库
 - **禁止静默吞错**：核心写操作（`message_store.save_message`、`checkpoint_manager.save`）让异常自然上浮，调用方决定处理
 - **记录后 re-raise**：`base_agent.py:231` 模式（log + raise）是标准做法
 
