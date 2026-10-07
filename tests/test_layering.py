@@ -130,18 +130,31 @@ class TestDependencyDirection:
             f"登记的是 {sorted(FIRST_PARTY | DECLARED_OPTIONAL | RUNTIME_PROBED | LOCAL_LIBRARY)}"
         )
 
-    def test_local_library_install_is_documented(self):
-        """登记成本地库的依赖，requirements.txt 必须写清怎么装。
+    def test_local_library_has_reproducible_install_source(self):
+        """登记成本地库的依赖，requirements.txt 里必须有**真能装上**的那一行。
 
-        artesian 不在 PyPI 上，`_requirements_names()` 只认非注释行，所以它天然
-        进不了"已声明"那一类；这条判据补上缺的那半：**过渡装法要有留痕**，
-        否则新环境照 requirements 装完只会得到 ImportError。
+        CI 与 Dockerfile 都只跑 `pip install -r requirements.txt`——一句
+        "开发期请 pip install -e ../artesian" 的注释对它们是无效的：装完就
+        ImportError。所以只接受两种形态：
+        ① 可复现的直接引用 `name @ git+https://…@<40 位 sha>`（未发布 PyPI 时）；
+        ② PyPI 版本约束 `name>=x` / `name==x`（发布之后）。
+        pin 必须是完整提交号：分支名会让同一份清单在不同时间装出不同的库。
         """
         text = (PROJECT / "requirements.txt").read_text(encoding="utf-8")
-        undocumented = {name for name in LOCAL_LIBRARY
-                        if f"pip install -e ../{name}" not in text.replace("_", "-")}
-        assert undocumented == set(), (
-            f"这些本地库没在 requirements.txt 里写明安装方式: {sorted(undocumented)}")
+        declared = _requirements_names()
+        for name in LOCAL_LIBRARY:
+            pin = re.search(
+                rf"^\s*{re.escape(name)}\s*@\s*git\+https?://[^\s@]+@([0-9a-fA-F]+)\s*$",
+                text, re.M)
+            on_pypi = name.lower().replace("-", "_") in declared
+            if pin:
+                assert len(pin.group(1)) == 40, (
+                    f"{name} 的 git pin 必须是完整 40 位提交号，"
+                    f"收到 {pin.group(1)!r}（分支/标签名会让同一份清单装出不同的库）")
+            else:
+                assert on_pypi, (
+                    f"{name} 在 requirements.txt 里没有可安装的来源：既不是 sha pin 的"
+                    f" git 直接引用，也没有 PyPI 版本约束行——CI/镜像照这份清单装不出它")
 
     def test_declared_optional_backends_are_in_requirements(self):
         """登记为"可选但已声明"的后端，必须真在 requirements.txt 里。

@@ -634,12 +634,11 @@ Webhook 使用独立事件循环异步发送（aiohttp 连接池），不阻塞�
 
 ## Docker
 
-> **当前前置条件（2026-10-07 实测）**：`docker build` 依赖 `pip install -r requirements.txt`
-> 能装到独立库 `artesian`（见「核心模块」表末行）。它尚未发布 PyPI、也还没推远端，
-> 因此现在构建出的镜像会在容器启动时 `ModuleNotFoundError: artesian`——
-> `pipeline_core/__init__.py` 是**导入期**就要它（挡住 artesian 后 `import pipeline_core`
-> 立刻报 `No module named 'artesian.fast_json'`，本机实测）。requirements.txt 里补上
-> 可安装的 pin（`artesian @ git+https://…@<sha>` 或发布后的版本号）之后，本节命令才成立。
+> **构建前置（2026-10-07 起已就绪）**：镜像里要 import 的取数底座 `artesian` 由
+> `requirements.txt` 的**直接引用 pin** 提供（`artesian @ git+https://github.com/Levango7/artesian.git@<sha>`），
+> CI 与 Dockerfile 都只跑 `pip install -r requirements.txt`，靠的就是这一行。
+> 库侧每次改动都要把 sha 换成新的；`tests/test_layering.py` 钉住"必须是完整 40 位提交号"
+> （分支名会让同一份清单在不同时间装出不同的库）。
 
 ```bash
 # 构建并启动常驻 Admin API 服务（生产配置，绑定 0.0.0.0:8910；

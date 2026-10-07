@@ -85,12 +85,11 @@ python run.py --mcp
 
 ### 3.4 Docker
 
-> **前置条件（2026-10-07）**：镜像构建走 `pip install -r requirements.txt`，而取数底座
-> `artesian` 目前既未发布 PyPI 也未推远端，所以这一段现在照做会在容器启动时
-> `ModuleNotFoundError: artesian`。先决条件：requirements.txt 里给出可安装的 pin
-> （`artesian @ git+https://github.com/<owner>/artesian.git@<sha>`，或发布后的版本号）。
-> 依赖是**导入期**的（`pipeline_core/__init__.py` → `llm_router` → `artesian.fast_json`），
-> 不是跑到某个功能才炸。
+> **依赖来源（2026-10-07 起）**：取数底座 `artesian` 走 requirements.txt 里的
+> `artesian @ git+https://github.com/Levango7/artesian.git@<sha>` 直接引用安装，
+> 因此镜像构建（第 20 行 `pip install -r requirements.txt`）会自动带上它。
+> 该依赖是**导入期**的（`pipeline_core/__init__.py` → `llm_router` → `artesian.fast_json`），
+> 装不齐就在容器启动时立刻炸，不会拖到某个功能才被发觉。
 
 ```bash
 docker build -t doc-pipeline .

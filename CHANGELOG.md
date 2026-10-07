@@ -353,6 +353,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `artesian>=0.1.0`（无 git 依赖，但发布近似不可撤；`artesian` 这个包名 2026-10-07
   实测 PyPI 上未被占用，查询返回 404）。
 
+### Changed（2026-10-07·续9，接线落地：公开仓 + git 直接引用 pin）
+
+- **选了①并已落地**：`Levango7/artesian` 建为**公开仓**（`gh api` 核对 `public=true`、
+  默认分支 `main`），5 笔提交推上去后远端 `refs/heads/main` == 本地 HEAD
+  （`24130232e20b9106fb556e10877f62bebd4a407f`，匿名 `git ls-remote` 与 codeload 都是 200）。
+  requirements.txt 因此加上一行直接引用：
+
+  ```
+  artesian @ git+https://github.com/Levango7/artesian.git@24130232e20b9106fb556e10877f62bebd4a407f
+  ```
+
+  **为什么写在这里而不是 CI 里加一步**：CI 与 Dockerfile 的安装动作是同一句
+  `pip install -r requirements.txt`（`ci.yml:37/193/272`、`Dockerfile:20`），
+  一行同时救两侧；而且照 README/CONTRIBUTING 装环境的用户也天然装得到——
+  依赖是导入期的，缺它就在 `import pipeline_core` 当场炸。
+- **判据跟着换**（`tests/test_layering.py`）：`test_local_library_install_is_documented`
+  → `test_local_library_has_reproducible_install_source`。旧的那条认的是
+  "注释里留一句 `pip install -e ../artesian`"，而注释对 CI/镜像无效——正是这次要治的病。
+  新判据只接受两种形态：sha pin 的 git 直接引用（且必须**完整 40 位**，分支名会让同一份
+  清单在不同时间装出不同的库），或发布 PyPI 之后的版本约束行。
+  六例合成变异验过它不空转（现状 PASS／分支名 FAIL／7 位短 sha FAIL／只有注释 FAIL／
+  什么都没有 FAIL／`artesian>=0.1.0` PASS）——调的是判据本身，不是复刻的逻辑。
+- **真机把 CI 那条路走通了一遍**：新 venv 里 `pip install --no-deps
+  "artesian @ git+https://github.com/Levango7/artesian.git@<sha>"` 成功，
+  `artesian.__file__` 落在 site-packages（非 editable）、9 个文件含 `py.typed` 齐全；
+  用该解释器跑本仓消费方套件（kb 接线 / HTML 后端 / researcher / 分层 / llm_router /
+  文档一致性）**162 passed**。产物侧另核过 wheel 与 sdist 内容一致。
+- **一条如实的副作用**：`pip-audit -r requirements.txt` 现在会为满足这个 VCS 需求去
+  clone 仓库——本机实测 rc=0，并顺带把 artesian 的传递依赖 `orjson` 纳入了审计；
+  但对 `artesian` 自身，审计结果是 `version=None / vulns=[]`，即**它不在漏洞数据源里**。
+  ⇒ "第三方漏洞扫描覆盖了取数底座"这句话不成立，别这么读；要覆盖它得先发布 PyPI。
+- **本机网络事实（影响复现 CI 的手法）**：`github.com:443` 直连被拦
+  （`Failed to connect to github.com port 443 after 21098 ms`），全局
+  `url.https://gh-proxy.com/...insteadOf https://github.com/` 的镜像改写才是本机通途。
+  第一次我为了"忠实模拟 CI"把 `GIT_CONFIG_GLOBAL` 指到空文件，结果拿到的是**假红**
+  （clone 连不上）；GitHub runner 上没有这层改写，不受此影响。差异记下来免得下次再踩。
+- 部署两处口径（`README.md` Docker 一节、`docs/deployment.md` §3.4）由"目前做不到"
+  改回"已就绪"，并保留 sha 更新义务与导入期依赖这两点提醒。
+
 ### Added（2026-10-06，未发版）
 
 - **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，
