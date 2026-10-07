@@ -144,6 +144,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   都从代码取数（`--co` 的收集数、生成的 OpenAPI 路径、`provider_defs` 的 AST 长度），不写死常量。
   变异验证：README 改回 1854 ⇒ 红；文档注入 `POST /tasks` ⇒ 红（两处均已还原）。
 
+### Added（2026-10-07·续4）
+
+- **`foreach` 逐项展开接线完成（FP-4）**。此前主干里只有一个解析期助手
+  `scheduler._as_foreach`——**零调用点**，而 `naming.py:6` 把 foreach 写成目标能力，
+  正是"已声明未接线"那一类。这一轮把它接到底：
+  - 解析期（`pipeline_core/scheduler.py`）：新增 `AgentConfig.foreach` /
+    `ExecutionNode.foreach`，`_build_plan` 真调用 `_as_foreach` 做规范化
+    （`over` 必填非空字符串、只认 `over`/`max_items`、`max_items` 必须 ≥1 整数、缺省 64），
+    并拒绝两种组合：`foreach` 与 `call` 同用（并入原有 call 节点配置黑名单）、
+    `foreach` 与 `pool_size>1` 同用（"把一个 Agent 拆成多次执行"的两种机制叠加，
+    分配语义没有唯一答案）。展开契约进 `topology_hash`（条目形如 `{node}%{json}`），
+    改 `over` 或 `max_items` 不重锁即报拓扑漂移。
+  - 运行期（`pipeline_core/dag_executor.py`）：投递段抽出 `_request_node_once`
+    （普通节点与每一项**共用同一套**"幂等键撞历史 / 空响应"判据，避免长出
+    "普通节点报错、逐项放行"的分裂标准），新增 `_execute_foreach`：`over` 在节点自己的
+    `when` 上下文里解析（路径语法同源；取不到值 / 非列表 / 空列表 / 超 `max_items`
+    全部显式报错，不截断也不静默少跑），逐项深拷贝载荷并注入引擎自有键
+    `item`/`index`/`count`（已加入 `artifacts.ENGINE_OWNED_KEYS`），逐项幂等键后缀 `#{i}`、
+    逐项领限流令牌，`stop_event` 置位即中止；对声明 `REGENERATION_*` 或 `WRITES_OUTPUT`
+    的件直接拒绝，且**拒绝发生在任何投递之前**。
+  - **展开声明只认映射**（`isinstance(spec, dict)`，不是判真值）。首轮全量实测暴露了这个
+    缺陷：`tests/test_fidelity_gate.py` 的两条用例用 `MagicMock()` 当节点，而 mock 的任意
+    属性恒为真值，于是它们被卷进 `_execute_foreach`，报出"writer 同时声明 foreach 与质量
+    重做"而不是原本的"未执行：幂等键"。改成只认真映射后两条复绿（解析期产出的规格本来
+    只会是 dict 或 None，按类型判不损失任何声明），并在 `tests/test_foreach.py` 里留下
+    自己的守卫 `TestDuckTypedNodesStayOnTheOldPath`（含"mock 节点只投递一次"的断言），
+    不去改别人的判据。
+  - 聚合（`_aggregate_foreach`）：`{status, count, items: [逐项原始结果], ...按 PRODUCES
+    聚合的产物}`，str 按行拼接、list 首尾相接、其余收成列表（不给"取最后一项"这种
+    覆盖语义——覆盖在逐项展开里等于只剩第 N 项）；`hard_floor` 逐项累积；
+    **任一项业务失败或返回 None ⇒ 整个节点 error**。`count`/`items` 在产物之后写入，
+    谁声明同名产物也顶不掉。
+  - 出厂消费者 `pipelines/api-digest.yaml` + `api-digest.lock`
+    （`topology_hash=001d667537bd`）：GitHub issues 列表接口 → `transform` 声明
+    `foreach: {over: artifacts.response, max_items: 5}` 逐项渲染 → `safe_writer` 落盘。
+    `agents/transform_agent.py` 的 `_context` 补 `index`/`count`，逐项模板才能写
+    "第 {{index}}/{{count}} 条"；但三元组**只在真的存在且非 None 时**才放进上下文——
+    无条件 `payload.get(key)` 会让没展开的节点把 `{{index}}` 渲染成字面量 `None`、
+    把 `{{item.x}}` 渲染成空，等于"少了一列却照样出件"（本仓反复在关的那类静默）。
+  - 判据 `tests/test_foreach.py` 46 条：解析期形状与组合拒绝、`topology_hash` 随
+    `max_items` 变化且锁拒漂移、逐项载荷/引擎键/幂等键分裂、聚合三型规则、单项失败与
+    None 超时均判失败、`hard_floor` 传播、四条边界各自报错且**不发出任何投递**、
+    限流超时、`stop_event` 中止、同名产物顶不掉引擎键、`item/index/count ∈
+    ENGINE_OWNED_KEYS` 且 `merge_artifact` 拒收、一条盯 `_as_foreach` 调用点的 AST 守卫
+    （防它再退回死代码），外加三条离线真跑（3 项渲染 3 行并落盘 / 6 项超上限 ⇒
+    `failed` 且不落盘 / 空列表 ⇒ `failed`）；另有 mock 节点仍走单跳投递的守卫一条，
+    以及真件 `TransformAgent` 消费三元组的四条（渲染出"第 2/5 条"、没展开时取不到值报错、
+    显式 None 不许渲染成字面量 `None`、`0`/`False`/`""` 这类合法项值不误伤）。
+  - 变异对照六处，全部被抓住、无 ESCAPED：去掉 `#{i}` 后缀 ⇒ 幂等键测试红
+    （三项拿到同一个键 `T:transform:0`）；删掉 `per_payload["item"] = one` ⇒ 载荷测试红；
+    `max_items` 判据短路 ⇒ 护栏测试与 E2E 红（`DID NOT RAISE`）；把单项失败洗成成功 ⇒
+    `test_any_failed_item_fails_the_node` 红；foreach 不进 hash ⇒ 拓扑测试红
+    （`assert '4fb8cf7766e9' != '4fb8cf7766e9'`）；`_as_foreach` 调用点改回 `foreach=None` ⇒
+    死代码守卫红（"_as_foreach 又变成死代码了"）。六处逐一还原后 40/40 复绿。
+- 文档：README 新增「逐项展开（`foreach`）」小节、场景分级补 `api-report` / `api-digest`
+  两行、特性表新增「组合」一行、`call` 节点黑名单补 `foreach`；
+  `docs/product-spec.md` §5.1 与 §6 的 FP-4 状态由"死代码 / 未开始"改为已接线（附本轮实测）。
+  README 的测试口径改为本轮实测：`2286 passed, 2 skipped, 6 deselected`、coverage 88.19%
+  （`--co` 收集 2288，与"passed+skipped"逐项对得上）。
+
 ### Added（2026-10-06，未发版）
 
 - **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，

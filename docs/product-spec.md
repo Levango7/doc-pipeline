@@ -135,7 +135,7 @@
 | 功能 | 现状 | v1 目标 | 验收判据 |
 |---|---|---|---|
 | 声明式 DAG + `when` 条件节点 + `call` 子流水线内联 | **已有**〔实测〕 | 保持 | 零文档语义探针继续通过；内置流水线 lockfile 指纹不变 |
-| `foreach` 逐项展开 | **死代码**：`scheduler.py:55 _as_foreach` 零调用点〔静态〕 | 接线（不是删） | 100 项展开受 `max_items` 护栏；幂等键按 item 分裂；item 数进 `topology_hash`；配一条真跑测试 |
+| `foreach` 逐项展开 | **已接线**（2026-10-07·续4）：解析期 `_as_foreach` 有调用点并进 `topology_hash`，运行期 `_execute_foreach` 逐项投递与聚合〔实测：`tests/test_foreach.py` 46 条，六处变异对照全被抓住〕。原记录"死代码：`scheduler.py:55 _as_foreach` 零调用点〔静态〕"是 10-07 上午的状态，保留备查 | 保持 | 100 项展开受 `max_items` 护栏（实测：6 项 > `max_items=5` ⇒ `failed` 且不落盘）；幂等键按 item 分裂（实测后缀 `#0/#1/#2`，去掉后缀则测试红）；展开契约进 `topology_hash`；真跑测试 = `pipelines/api-digest.yaml` 离线跑通 Scheduler → DAGExecutor → safe_writer |
 | 产出质量契约 | **有但会假绿**〔实测：4/5 章节空的产物得 98.8 pass〕 | 按 FP-1 修 | `empty_sections` 占比 / 降级声明 / 抓取元信息占比 三判据进底线，并参与 exit code |
 | 检查点与续跑 | 声明式路径的 `--resume` 原本是空转（工作区有未提交修复在飞）〔实测：diff 含 `TestDeclarativeResumeEndToEnd` 4 例〕 | 先合入 | 中断后 `--resume` 真跳过已完成节点，而非重跑 |
 | 熔断 / 限流 / Agent 池 | **已改为分片**：池实例按 `all_queries[pool_idx::pool_size]` 领活；未认领 `EXTRACTS_QUERIES` 的 Agent 仍看全量（writer 这类必须看完整上下文）。查询词少于实例数时多余实例领**空活**并如实回报零结果，不再复制整条 query | 保持 | 新增的池实例不重复领取同一 query；根因只是 `len>=pool_size` 这道长度门槛，`EXTRACTS_QUERIES` 自 3674de6 已由 `agents/researcher.py` 声明并经 `AgentLoader` 进到 `AgentMeta`（`tests/test_pool_sharding.py` 五条，含接线证明） |
@@ -183,7 +183,7 @@
 | FP-2 CI 三处静默判绿 | **已关闭并经真实 CI 确认** | `9ecfc12`；CI run 37504991608 在 `690c6d7` 上 5 条 required + perf 全绿，日志实证 `结果: 26 OK / 2 WARN / 0 ERROR` 与 `VULNS: []`（即 rc 被采信且没有误红） |
 | FP-3 MCP stdout 污染 | **已关闭** | `10cc2e7` |
 | FP-3b `--json-output` 的 stdout 混入过程输出 | **已关闭**：`--json-output` 时过程输出整体改接 stderr，JSON 是唯一一行 stdout（`tests/test_cli_output_channels.py`） | 本轮提交 |
-| FP-4 `foreach` 未接线 / 无时间触发 / 无人审 | **未开始**（属 P0 立项，不是修复） | §5.1 |
+| FP-4 `foreach` 未接线 / 无时间触发 / 无人审 | `foreach` **已接线并出厂**（2026-10-07·续4：`tests/test_foreach.py` 46 条 + `pipelines/api-digest.yaml`，六处变异对照全被抓住）；**时间触发、人审节点仍为 0**（本轮实测：产品内 grep cron/APScheduler 与 approval/manual_review 均 0 命中） | §5.1 |
 
 **FP-1b 的来源（重要，因为它说明"修好一个假阳性"会暴露下一个）**：真实 CI 在 keyless 条件下产出了一份
 **21,926 字节**文档并被本步骤记为 `OUTPUT FIDELITY OK`；本机同形状产物 28.4 KB、`quality_gate` 95.5 pass。
@@ -226,6 +226,15 @@
 〔静态〕`scheduler.py:52-76` 的 `_as_foreach` 零调用点（`DEFAULT_FOREACH_MAX_ITEMS` 只在自己函数内用），而 `naming.py:6` 把 foreach 写成目标能力。全仓无 cron/时间触发、`grep approval|human|manual_review` 0 命中。
 处置：**接线**（按"已声明未接线要么接要么删"的规矩）。`foreach` 是相对 MAOP 的差异化表达力。代价 M（3–5 天）：幂等键按 item 分裂 + 上限护栏 + item 数进 `topology_hash` 与锁文件。
 附带立项：**人审 / approval 节点**（当前完全没有），因为"取数 → 核查 → **待批** → 交付"是运行时类产品的常见诉求。
+
+> **进展（2026-10-07·续4，实测）**：`foreach` 一项已接线完成——解析期 `_as_foreach` 有了调用点
+> （`AgentConfig.foreach` / `ExecutionNode.foreach`，并拒绝 `foreach`+`call`、`foreach`+`pool_size>1`），
+> 运行期 `_execute_foreach` 按项投递（引擎自有键 `item`/`index`/`count`、逐项幂等键后缀 `#{i}`、
+> 逐项限流、空列表/非列表/取不到值/超 `max_items` 均显式报错、任一项失败即节点失败），
+> 展开契约进了 `topology_hash`；出厂消费者 `pipelines/api-digest.yaml`（+ lock，
+> `topology_hash=001d667537bd`）；判据 `tests/test_foreach.py` 46 条，含一条盯调用点的 AST 守卫，
+> 六处变异对照全部被抓住。**同一节里剩下的两项仍是零**：全仓无 cron/时间触发，
+> 也仍无 `approval` / 人审节点——本轮不占口径，别把"foreach 已接线"读成"FP-4 已关闭"。
 
 ---
 

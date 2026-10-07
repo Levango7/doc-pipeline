@@ -14,6 +14,8 @@
 | **主打** | **文档生成 + 多格式渲染** | `--pipeline docgen-render` | 追加 renderer 节点，产出 **docx / pdf**（可编辑 Word / 可打印归档） |
 | **主打** | **本地资料 → 知识库接地文档** | `--pipeline kb-docgen` | 摄入自己的 PDF/图片/文本 → 切块向量入库 → 检索命中驱动写作；离线可跑（无 LLM 时如实产出抽取式草稿） |
 | **实验性** | 需求分析 | `--pipeline docreq` | requirements_analyzer 输出结构化 DocumentSpec |
+| **通用** | 任意 JSON 接口 → 报告 | `--pipeline api-report` | 无领域节点：`http_request` 取接口 → `transform` 挑字段渲染 → 落盘 |
+| **通用** | 接口列表 → **逐项摘要** | `--pipeline api-digest` | 同一个 Agent 按 `foreach` 逐项跑 N 次，聚合产物再落盘（列表长度超 `max_items` 直接报错） |
 | **实验性** | 文档增强 | `--enhance <input>` | 逐章节 LLM 深化 + 搜索补充 |
 | **实验性** | MCP Server | `--mcp` | JSON-RPC 2.0 over stdio，供外部 Agent 调度 |
 
@@ -69,6 +71,7 @@ kb.search("本季度营收增长多少", top_k=3)        # 向量检索
 | 类别 | 能力 |
 |------|------|
 | **编排** | DAG 并行执行、断点续传、可视化执行计划、SQLite 任务队列恢复 |
+| **组合** | `when` 条件节点（不成立就跳过、下游照跑）、`call` 子流水线内联（同一 Agent 可在一张图里出现多次）、`foreach` 逐项展开（按上游列表把同一个 Agent 跑 N 次：幂等键按项分裂、产物按声明聚合、**任一项失败即节点失败**） |
 | **通用工作流** | 领域无关的 `http_request`（出网走 SSRF 校验、超限不截断、重定向不跟随）+ `transform`（声明式取数/过滤/模板，不执行表达式），出厂流水线 `api-report` 就是它们的消费者：换一种任务类型仍然成立 |
 | **需求** | **requirements_analyzer 需求分析器**（输入 → 结构化 DocumentSpec：类型/范围/读者/深度，置信度评分 + 追问建议，`--pipeline docreq`） |
 | **检索** | Bocha + Tavily + Serper + Metaso + Bing + Sogou + 360 等 10 引擎、LRU+TTL 跨任务缓存 |
@@ -342,8 +345,8 @@ agents:
 - 内联进来的节点带别名：`checker` → `checker__review`，所以**同一个 Agent 可以在一张
   图里出现多次**而互不覆盖；`agent_of()` 仍还原成 `checker` 去查注册表。
 - 环与深度在解析期拒绝：`a → b → a` 报"循环引用"，超过 3 层（含叶子）报"嵌套超过上限"。
-- `call` 节点不接受 `config` / `when` / `pool_size` / `rate_limit` —— 配置属于子流水线，
-  父子各写一份会变成两处真相。
+- `call` 节点不接受 `config` / `when` / `pool_size` / `rate_limit` / `foreach` —— 配置属于
+  子流水线，父子各写一份会变成两处真相；`foreach` 更是没有对象（展开后"本节点"不存在）。
 - **被引子流水线改了，调用方的 lockfile 会报拓扑漂移**（展开后的图算指纹，
   `inputs` 的实参也算），必须 `--write-lock`。
 
@@ -371,6 +374,49 @@ docgen-render / docreq / kb-docgen）、`{true, 0}`（docgen-verified，无条�
 `list_pipelines` / run.py 三处口径一致），但仍能被 `call` 加载；片段必须与引用它的
 YAML 同目录。它自带默认值，所以也能单独解析与加锁。版本锁定靠调用方的 lockfile：
 片段的节点、连线、配置哈希与实参都进了父图的 `topology_hash` / `config_hash`。
+
+### 逐项展开（`foreach`）
+
+`when` 决定"这个节点跑不跑"，`foreach` 决定"这个节点跑几次"——按上游列表**逐项**调用
+同一个 Agent，再把 N 份结果聚合成一份产物：
+
+```yaml
+agents:
+  - name: http_request
+    config:
+      url: https://api.github.com/repos/apache/kafka/issues?state=open
+      expect: json
+  - name: digest
+    dependencies: [http_request]
+    foreach:
+      over: artifacts.response    # 与 when 同一套点号路径；取不到值就报错
+      max_items: 5                # 默认 64；超限报错而不是截断
+    config:
+      template: "- [#{{item.number}}] {{item.title}}（第 {{index}}/{{count}} 条）"
+```
+
+- 展开发生在**一次节点执行内部**：DAG 里仍是一个节点（不新增节点身份、不改层级），
+  lockfile、检查点、重试、熔断都按节点粒度照旧。
+- 每一项拿到三个引擎自有键：`item`（当前项）、`index`（序号）、`count`（总项数）。
+  它们是引擎自有键，谁声明成同名产物都顶不掉——被顶掉之后每一项看到的是同一份数据，
+  渲染出 N 份相同内容却一声不响。
+- 每一项一个独立幂等键（后缀 `#{i}`）。共用前缀的话第 2 项起会命中第 1 项的缓存 ——
+  表现是"展开了 N 次、只执行了 1 次"，而产物看起来是完整的。
+- 限流按项领令牌：一次节点执行现在等于 N 次对外调用，只领一次等于把作者设的速率整倍放大。
+- 聚合结果 `{status, count, items: [逐项原始结果], ...按 PRODUCES 聚合的产物}`。
+  str 产物按行拼接、list 产物首尾相接、其余类型收成列表 —— 不给"取最后一项"这种
+  覆盖语义，覆盖在逐项展开里等于"只剩第 N 项"。
+- **任一项失败 ⇒ 整个节点失败**（含订阅者返回 None 的超时项）；`hard_floor` 逐项累积。
+  零项展开、非列表、`over` 取不到、超过 `max_items` 都是显式错误：静默少跑比失败难查。
+- 不与 `pool_size>1` / `call` / 质量重做（`REGENERATION_*`）/ 落盘（`WRITES_OUTPUT`）同用。
+  前两者的展开分配语义没有唯一答案，后两者的操作对象是"整份产物"，逐项展开里没这个东西；
+  要落盘就把落盘节点排在 foreach 之后，让它拿聚合产物。
+- 展开契约（`over` 与 `max_items`）进 `topology_hash`：改了必须 `--write-lock`，否则运行时
+  报拓扑漂移。锁的是**声明**而不是运行期解析出的项数——项数来自数据，每次跑都可能不同。
+
+出厂消费者 `pipelines/api-digest.yaml`（HTTP 列表接口 → `transform` 逐项渲染 → `safe_writer`
+落盘），判据与回归见 `tests/test_foreach.py`（含离线跑通整条 Scheduler → DAGExecutor 链的
+真跑用例）。
 
 ### 通用 Agent（`http_request` / `transform`）
 
@@ -615,8 +661,9 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2240 个测试本机全绿**（`2240 passed, 2 skipped, 6 deselected`，2026-10-07 本机全量实测；
-现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%）。CI 的通过数可能与本机略有
+**2286 个测试本机全绿**（`2286 passed, 2 skipped, 6 deselected`，2026-10-07 本机全量实测，
+含本轮 `foreach` 接线的 46 条判据；现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
+本轮实测 88.19%）。CI 的通过数可能与本机略有
 出入——渲染层/OCR/嵌入类用例带 `skipif`，取决于该 job 装了哪些可选依赖。
 数字由 `tests/test_doc_consistency.py` 与实际收集数比对把关，落后于代码即红（此前这里
 长期写 1854 而无人能证明它对不对，因为 `tests/` 里没有一条测试引用 README）。覆盖：Scheduler 解析、
@@ -719,6 +766,7 @@ doc-pipeline/
 │   ├── docreq.yaml      # 需求分析增强（requirements_analyzer 开头）
 │   ├── kb-docgen.yaml   # 本地资料 → 知识库接地（ingest/kb/writer 已接线）
 │   ├── api-report.yaml  # 通用件示例：JSON API → transform 挑字段 → 落盘（无文档领域节点）
+│   ├── api-digest.yaml  # foreach 消费者：列表接口 → 同一个 Agent 逐项渲染 → 聚合落盘
 │   ├── three_pass.yaml  # 三阶段流水线（尾巴阈值/重试与片段不同，故不引用片段）
 │   ├── test_pipeline.yaml
 │   └── *.lock           # 版本锁定：config_hash + 拓扑指纹，漂移即拒绝执行
