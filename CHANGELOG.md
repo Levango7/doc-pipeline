@@ -423,6 +423,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   是**空的**，必须等 run 终态；② `actions/workflows/<id>/jobs` 这类列表接口在本机
   经镜像会 404，`gh run list --json` + `actions/runs/<run_id>/jobs` 才是稳的路子。
   另外 `run_number` 与 API 要的 `run_id` 不是一回事（拿 `runs/1` 查会 404）。
+- **复验（2026-10-07 同日，`371140d`）**：run 37637367530（#103）`completed/success`，268s。
+  `docker` job 5/5 步绿（真实 `docker build` 过了）；`test (3.11/3.12/3.13/3.14)` 四条矩阵
+  全 success——3.12 正文 `2095 passed, 10 skipped, 6 deselected`、
+  `Total coverage: 87.34%`（门禁 83%）；`perf-regression` success，`refresh-baseline` skipped。
+  CI 收集数 2105 与本机一致，只是 skip 分配不同（本机 1 条、CI 10 条：渲染/OCR/嵌入类
+  `skipif` 取决于该 job 装了哪些可选依赖），这正是 README 测试一节预留的那句出入。
+  artesian 侧 run 37632571610（#1）三档矩阵各 10/10 步绿，正文 `247 passed, 1 skipped`、
+  coverage 96.99%。
 
 ### Added（2026-10-06，未发版）
 
