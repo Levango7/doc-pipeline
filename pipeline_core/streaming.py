@@ -19,7 +19,7 @@ import threading
 import time
 from typing import Any
 
-from .fast_json import dumps as _fast_dumps
+from artesian.fast_json import dumps as _fast_dumps
 
 
 class StreamEvent:

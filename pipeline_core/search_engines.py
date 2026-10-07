@@ -33,8 +33,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
-from .fast_json import dumps as _fast_dumps
-from .fast_json import loads as _fast_loads
+from artesian.fast_json import dumps as _fast_dumps
+from artesian.fast_json import loads as _fast_loads
 
 logger = logging.getLogger(__name__)
 

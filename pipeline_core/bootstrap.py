@@ -154,7 +154,7 @@ def _check_dependencies(report: StartupReport):
     # selectolax 1.0 起 selectolax.parser 在导入期即 raise ImportError，
     # 旧的 importlib.import_module("selectolax") 检查会误报 OK。
     try:
-        from pipeline_core.selectolax_compat import resolve_backend
+        from artesian.selectolax_compat import resolve_backend
     except ImportError as e:  # pragma: no cover - 兼容层自身缺失
         report.add(CheckResult("HTML 解析后端", "error", f"探测失败: {e}"))
     else:

@@ -219,7 +219,7 @@ python run.py test_input.md --dashboard
 | `pipeline_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
 | `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
 | `docpipeline/renderer.py` | 渲染层：Markdown → docx（OOXML）/ pdf（ReportLab），双后端可选依赖 |
-| `pipeline_core/selectolax_compat.py` | HTML 解析内核兼容层（modest/lexbor 按可用性选，降级显式记录） |
+| `artesian`（独立库，自本仓 `pipeline_core/` 迁出） | `fast_json`（orjson 优先、stdlib 回退）+ HTML 解析内核兼容层（modest/lexbor 按可用性选，降级显式记录） |
 | `pipeline_core/state_paths.py` | 运行态路径解析（`DOC_PIPELINE_STATE_DIR` / `DOC_PIPELINE_VERSIONS_DIR`），测试与真实运行不再共用一份幂等键历史 |
 | `docpipeline/ingest.py` | 摄入层：PDF/图片/文本 → 结构化 Markdown（PDF 按字号推断标题层级） |
 | `docpipeline/document_enhancer.py` | 文档增强：对已有 Markdown 逐章节 LLM 深化 + ASCII 图修复 + 导出 |
@@ -661,9 +661,10 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2286 个测试本机全绿**（`2286 passed, 2 skipped, 6 deselected`，2026-10-07 本机全量实测，
-含本轮 `foreach` 接线的 46 条判据；现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
-本轮实测 88.19%）。CI 的通过数可能与本机略有
+**2268 个测试本机全绿**（`2268 passed, 1 skipped, 6 deselected`，2026-10-07 本机全量实测；
+工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
+现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
+本轮实测 88.26%）。CI 的通过数可能与本机略有
 出入——渲染层/OCR/嵌入类用例带 `skipif`，取决于该 job 装了哪些可选依赖。
 数字由 `tests/test_doc_consistency.py` 与实际收集数比对把关，落后于代码即红（此前这里
 长期写 1854 而无人能证明它对不对，因为 `tests/` 里没有一条测试引用 README）。覆盖：Scheduler 解析、

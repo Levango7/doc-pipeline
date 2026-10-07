@@ -203,6 +203,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/product-spec.md` §5.1 与 §6 的 FP-4 状态由"死代码 / 未开始"改为已接线（附本轮实测）。
   README 的测试口径改为本轮实测：`2286 passed, 2 skipped, 6 deselected`、coverage 88.19%
   （`--co` 收集 2288，与"passed+skipped"逐项对得上）。
+  **（留痕说明：此条为迁出前口径，工具层迁出后见下方 Changed 条目，勿再引用这里的数字。）**
+
+### Changed（2026-10-07·续5，工具层迁出）
+
+- **`fast_json` 与 `selectolax_compat` 迁至独立库 `artesian`，本仓不再留副本**。
+  两个模块本就是领域无关的取数/工具层——留在 `pipeline_core` 里既让"引擎不认识领域"
+  的分层叙事多两块无主地带，也让新项目（取数/知识底座）没有落地处。单一事实来源
+  迁至 `F:\Nexus\artesian`（本地仓，未推送、未发布 PyPI）。
+  - **引用重定向 19 处、12 文件**：`from .fast_json import ...`（admin_api/llm_router/
+    mcp_server/message_store/search_engines/task_queue 六文件各 2 行、streaming 1 行）、
+    `from pipeline_core.fast_json import ...`（writer 2 行）、
+    `from pipeline_core import selectolax_compat`（fetcher / benchmark / test_html_backend）、
+    `bootstrap.py` 启动自检里的懒导入。全部改为 `artesian.*`；替换脚本逐处断言
+    "恰好命中 1 次"后才写盘，重排由 ruff `I` 规则完成并人工复核 diff。
+  - **行为变更（唯一一处）**：HTML 后端固定用的环境变量由 `DOC_PIPELINE_HTML_BACKEND`
+    改名为 `ARTESIAN_HTML_BACKEND`，**旧名不再被识别**。旧名原字面量只出现在
+    `selectolax_compat.py` 定义处（测试经 `compat.ENV_OVERRIDE` 常量引用，不受影响）；
+    全仓（含 CI/文档）已确认无其它使用点。依赖旧环境变量固定内核的部署需同步改名。
+  - **判据去向**：`tests/test_fast_json.py`（19 条）随库走，并在新库加强到 35 条
+    （补了"无 orjson 环境"强制重载真跑、selectolax 适配面逐接口、导入失败留痕等）；
+    `tests/test_html_backend.py` 留在本仓（fixture 依赖 FetcherAgent），仅改导入指向，
+    断言未弱化。新库自带 coverage 门禁（fail_under=90，首轮实测 100%）。
+  - **安装过渡**：artesian 未发布 PyPI，开发期需 `pip install -e ../artesian`
+    （requirements.txt 顶部已注明）；发布后改为版本约束依赖。依赖方向：本仓 -> artesian。
+    **CI 尚未接线（推送前阻塞项）**：`.github/workflows/ci.yml` 的 Install 步骤只装
+    requirements.txt，装不到 artesian；本批刻意不推（两仓都在本地），推之前必须先让
+    artesian 可安装（推仓后 CI 加 `pip install git+https://...@<sha>`，或先发 PyPI）。
+    `run.py --check` 与全量测试在本机（已装 artesian）均为绿，CI 差异仅此一条。
+  - **测试口径**：`2286 passed → 2268 passed`（-18 条随库移出、-1 条 skipif 随库移出），
+    覆盖 `tests/test_doc_consistency.py` 的 README 计数护栏已同批更新。
 
 ### Added（2026-10-06，未发版）
 

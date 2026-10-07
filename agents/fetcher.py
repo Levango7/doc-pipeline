@@ -20,7 +20,8 @@ import time
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-from pipeline_core import selectolax_compat
+from artesian import selectolax_compat
+
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 from pipeline_core.url_guard import validate_public_http_url
 

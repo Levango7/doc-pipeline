@@ -13,9 +13,9 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from artesian import selectolax_compat as compat
 
 from agents import fetcher as fetcher_mod
-from pipeline_core import selectolax_compat as compat
 
 ARTICLE_HTML = (
     "<html><head><script>var secret_token=1;</script><style>p{color:red}</style></head><body>"

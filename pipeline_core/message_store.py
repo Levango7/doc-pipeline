@@ -20,9 +20,10 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 
+from artesian.fast_json import dumps as _fast_dumps
+from artesian.fast_json import loads as _fast_loads
+
 from . import state_paths
-from .fast_json import dumps as _fast_dumps
-from .fast_json import loads as _fast_loads
 
 # ─── 常量 ─────────────────────────────────────
 

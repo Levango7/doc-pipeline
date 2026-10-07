@@ -163,7 +163,7 @@ def bench_html_extraction():
     # selectolax —— 按内核可用性取解析器（历史上这里写死
     # `from selectolax.parser import HTMLParser`，在 selectolax 1.0 上必然
     # ImportError，于是本项长期记为 null，等于没测）
-    from pipeline_core import selectolax_compat as compat
+    from artesian import selectolax_compat as compat
 
     if compat.resolve_backend() is None:
         results["selectolax"] = None

@@ -24,11 +24,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from artesian.fast_json import dumps as _fast_dumps
+from artesian.fast_json import loads as _fast_loads
+
 from docpipeline import degradation
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 from pipeline_core.cache_manager import CacheManager
-from pipeline_core.fast_json import dumps as _fast_dumps
-from pipeline_core.fast_json import loads as _fast_loads
 from pipeline_core.streaming import StreamCallback
 
 # ─── 章节级并行 LLM 润色 ──────────────────────────────

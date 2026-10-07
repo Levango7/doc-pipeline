@@ -3,8 +3,14 @@
 PyYAML>=6.0
 requests>=2.28.0
 
-# JSON 序列化（pipeline_core.fast_json 全局 3-10x 加速；无 orjson 时回退标准 json，
-# 但 admin/消息总线热路径性能下降明显——硬依赖）
+# 取数/知识底座：工具层（fast_json + HTML 解析兼容）已迁至独立库 artesian
+# （与 fast_json/selectolax_compat 相关的实现与判据都在那边，本仓不再留副本）。
+# 尚未发布 PyPI，开发期先 `pip install -e ../artesian`；发布后在此改为版本约束。
+# 依赖方向：本仓 -> artesian；artesian 不得反向 import 本仓。
+
+# JSON 序列化（artesian.fast_json 全局 3-10x 加速；无 orjson 时回退标准 json，
+# 但 admin/消息总线热路径性能下降明显——硬依赖；artesian 亦声明此依赖，
+# 本行保留以显式锁定本仓环境下限）
 orjson>=3.0
 
 # 搜索引擎（可选，未安装时 researcher 自动降级为 bing/sogou/360）
@@ -13,7 +19,7 @@ duckduckgo-search>=4.0.0
 # 异步 I/O（可选，未安装时 fetcher 降级为同步）
 aiohttp>=3.8.0
 
-# HTML 解析后端（fetcher 经 pipeline_core/selectolax_compat 自动选内核：
+# HTML 解析后端（fetcher 经 artesian.selectolax_compat 自动选内核：
 #   <=0.10 用 selectolax.parser(modest)，0.11+/1.0 用 selectolax.lexbor；
 #   两个都取不到时 fetcher 如实记降级计数，不再静默走正则）
 selectolax>=0.3.0
