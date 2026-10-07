@@ -470,6 +470,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI 复验**：artesian run 37641435745（#2）`completed/success`，三档矩阵各 10/10 步，
   3.12 正文 `308 passed, 1 skipped`、coverage 97.01%——本地跳转服务那条判据在
   Linux runner 上也是真跑的（监听套接字没被沙箱挡）。
+  本仓 run 37643026175（#105）`completed/success`：`test (3.11/3.12/3.13/3.14)`、
+  `docker`、`perf-regression` 全绿，3.12 正文 `2043 passed, 10 skipped, 6 deselected`、
+  coverage 87.28%；这一笔的 requirements 装的就是 `203987a`，所以 CI 侧的
+  `artesian.url_guard` 与逐跳护栏是**从 GitHub 取来的那份**在跑，不是本机 editable 的副本。
+- **顺手把"CI 比本机少 1 条"归因清楚**（不拿"环境差异"糊过去）：按 nodeid 做集合差
+  时先要堵两个坑——本仓 `addopts` 带 `-v` 会把 `--co -q` 变成树形（要用 `-o addopts=` 关掉），
+  日志里的用例行带 ANSI 颜色码（不剥就漏 9 条）。真差异只有一条：
+  `tests/test_html_backend.py::TestKernelExtraction::test_kernel_meets_extraction_invariants[modest]`。
+  它的参数来自 `parametrize("backend", _available_kernels())`——**条数由可选依赖决定**：
+  本机 `modest`+`lexbor` 两个内核都能 import（2 条），runner 上只有 `lexbor`（1 条），
+  而那条在 CI 是 PASSED。本机 2054 selected / CI 2053 selected，差 1 ⇒ 计数护栏的
+  ±10 容忍覆盖得到，两侧都绿是正当结果而不是掩盖。
 
 ### Added（2026-10-06，未发版）
 
