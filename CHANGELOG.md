@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-08·续14，artesian 发布流水线就位（等一次性 PyPI 配置））
+
+- artesian 加了 `.github/workflows/release.yml` + `tools/verify_dist.py`：
+  **只在 GitHub Release 被 published 时才上传**，`workflow_dispatch` 默认 `dry_run=true`
+  只构建与校验；用 Trusted Publishing（OIDC），仓库里不存长期 token。
+  `publish` 搬运 `verify` 产出的那份 artifact 字节，不重新构建——否则"校验过的"
+  与"发出去的"不是同一批东西。
+- `verify` 的四道（都在 runner 上实测过，见下）：build → 产物校验（版本在
+  文件名/`pyproject`/`__version__`/包元数据四处必须一致；wheel 内容逐个文件对齐
+  `src/artesian/`；`py.typed` 必须在 wheel 与 sdist 两处都在）→ `twine check --strict`
+  → **把 wheel 装进干净 venv，再从仓库外面跑一遍测试**（源码全绿不代表 wheel 里那份能用）。
+- **干跑抓到一条真 bug**：dispatch 没有 tag 时 `${WANT}` 展开成**空串参数**，脚本把空串
+  当成"给了版本号"，报"tag 要发 ，但 pyproject 的 version 是 0.1.0"直接把 verify 打红
+  （run 37694108621，`verify` failure／`publish` skipped——跳过是对的，说明条件表达式也没写错）。
+  本机手测时传的是显式版本，**正好绕过这条**：又是一次"本地路径覆盖不到 CI 的参数形态"。
+  修完把判据常驻成 `tests/test_verify_dist.py`（8 条：1 正例 + 7 反向对照，含空串这条），
+  并做了一次变异——把那行修复还原，空串用例立刻转红。
+- 复验（全部在 runner 上，不是本机）：Release run 37694975220（#2）`verify` 12 步 success，
+  正文 `Checking …whl/…tar.gz: PASSED`、`Successfully installed artesian-0.1.0 orjson-3.13.0`、
+  从仓库外面跑 `314 passed, 3 skipped`；CI run（同 sha）也 success。
+  总数两边一致（317），runner 多出的 2 条 skip 是那步只装了 wheel + pytest，
+  `selectolax`/嵌入类可选依赖不在场 ⇒ skipif 生效。**注意这条口径**：
+  装包那一步验的是**裸安装**形态，带可选依赖的路径仍由 `ci.yml`（`.[html,dev]`）覆盖。
+- **还差的那一步只能你来做**（我这边没有 PyPI 凭据，也不该有）：PyPI 上把 `artesian`
+  登记为 Trusted Publisher（provider=GitHub、仓库 `Levango7/artesian`、workflow
+  `release.yml`、environment `pypi`），GitHub 侧建同名 environment（要人工闸门就勾
+  Required reviewers）。做完发版就是"改 version → 打 tag → 发 Release"三步
+  （步骤已写在 artesian README「发布」一节，顺序反了会被版本一致性判红）。
+  发布成功后本仓把 `artesian @ git+…@<sha>` 换成 `artesian>=x.y.z`，
+  **手工跟 sha 这条成本随之消失**，`pip-audit` 也才第一次真能扫到它
+  （现在它是 `version=None/vulns=[]` 的空账——续13 记过）。
+
 ### Fixed（2026-10-08·续13，收回一条说过头的话：迁出的代码当时其实没被任何 SAST 扫）
 
 - **发现**：续8 里写过一句"被删模块自然脱离这些 glob，属预期（实现与判据已在
