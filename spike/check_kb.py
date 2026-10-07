@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pipeline_core.knowledge_base import KnowledgeBase, chunk_markdown  # noqa: E402
+from artesian.knowledge_base import KnowledgeBase, chunk_markdown  # noqa: E402
 
 DOCS = {
     "异步编程指南": """# 异步编程指南

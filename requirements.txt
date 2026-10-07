@@ -3,8 +3,9 @@
 PyYAML>=6.0
 requests>=2.28.0
 
-# 取数/知识底座：工具层（fast_json + HTML 解析兼容）已迁至独立库 artesian
-# （与 fast_json/selectolax_compat 相关的实现与判据都在那边，本仓不再留副本）。
+# 取数/知识底座：工具层（fast_json + HTML 解析兼容）与嵌入层/知识库
+# （embeddings + knowledge_base）已先后迁至独立库 artesian
+# （相关实现与判据都在那边，本仓不再留副本）。
 # 尚未发布 PyPI，开发期先 `pip install -e ../artesian`；发布后在此改为版本约束。
 # 依赖方向：本仓 -> artesian；artesian 不得反向 import 本仓。
 
@@ -35,8 +36,8 @@ reportlab>=5.0.0
 # 未安装时 ingest 仅支持纯文本，PDF 明确报错而非静默失败）
 pymupdf>=1.24.0
 
-# 嵌入层（可选：知识库的语义检索。都不装则用内置 hash 后端 ——
-# 特征哈希，词法相似而非语义，离线可用）
+# 嵌入层（可选：知识库的语义检索。实现已迁至 artesian.embeddings，判断口径不变：
+# 都不装则用内置 hash 后端 —— 特征哈希，词法相似而非语义，离线可用）
 #   sentence-transformers：本地语义模型（模型权重需联网下载一次）
 #   EMBEDDING_API_KEY + EMBEDDING_BASE_URL：走 OpenAI 兼容 /embeddings 接口
 # sentence-transformers>=2.2.0

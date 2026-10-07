@@ -400,7 +400,7 @@ class TestEmbedderAutoProbeIsOffline:
         所以 auto 必须先看"本地有没有缓存"，没有就**根本不构造**，
         而不是把希望寄托在 HF_HUB_OFFLINE 上。
         """
-        from pipeline_core import embeddings as emb
+        from artesian import embeddings as emb
 
         calls = {"constructed": 0}
 
@@ -420,7 +420,7 @@ class TestEmbedderAutoProbeIsOffline:
         assert "未缓存" in emb.auto_fallback_reasons().get("local", "")
 
     def test_cached_model_still_probes_under_offline_env(self, monkeypatch):
-        from pipeline_core import embeddings as emb
+        from artesian import embeddings as emb
 
         seen = {}
 
@@ -440,7 +440,7 @@ class TestEmbedderAutoProbeIsOffline:
 
     def test_explicit_local_stays_online(self, monkeypatch):
         """显式 embedder: local 是用户的选择，允许联网下载。"""
-        from pipeline_core import embeddings as emb
+        from artesian import embeddings as emb
 
         seen = {}
 

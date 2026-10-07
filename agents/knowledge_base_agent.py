@@ -17,10 +17,11 @@
 """
 from pathlib import Path
 
+from artesian import embeddings as emb_core
+from artesian.knowledge_base import KnowledgeBase
+
 from docpipeline import ingest as ingest_core
-from pipeline_core import embeddings as emb_core
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
-from pipeline_core.knowledge_base import KnowledgeBase
 
 AGENT_NAME = "knowledge_base"
 # 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
@@ -280,7 +281,8 @@ class KnowledgeBaseAgent(BaseAgent):
             return {"status": "error", "message": "未指定查询词"}
 
         self.report(AgentStatus.RUNNING, f"检索: {query}")
-        res = self.kb.search(
+        # artesian 未安装/未带类型时自定义导入是 Any；显式标注钉住契约形状
+        res: dict = self.kb.search(
             query,
             top_k=int(payload.get("top_k", self._default_top_k)),
             min_score=float(payload.get("min_score", 0.0)),

@@ -10,8 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pipeline_core import embeddings as E  # noqa: E402
-from pipeline_core.knowledge_base import KnowledgeBase  # noqa: E402
+from artesian import embeddings as E  # noqa: E402
+from artesian.knowledge_base import KnowledgeBase  # noqa: E402
 
 DOC = """# 产品运营手册
 

@@ -234,6 +234,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **测试口径**：`2286 passed → 2268 passed`（-18 条随库移出、-1 条 skipif 随库移出），
     覆盖 `tests/test_doc_consistency.py` 的 README 计数护栏已同批更新。
 
+### Changed（2026-10-07·续6，嵌入层与知识库迁出）
+
+- **`embeddings` 与 `knowledge_base` 迁至 `artesian`，本仓不再留副本**（第二波，承续5）。
+  两者与 doc-pipeline 领域零耦合（迁移前按 import 与字面量双重探明），归位后
+  `pipeline_core` 只剩引擎与状态设施；下一波 `search_engines`（1223 行）的路由此铺平。
+  - **引用重定向 9 处、5 文件**：`agents/knowledge_base_agent.py` 2 行、
+    `tests/test_kb_pipeline_wiring.py` 3 行、`spike/check_embeddings.py` /
+    `spike/check_kb.py` / `spike/check_kb_rebuild.py` 共 4 行；替换脚本逐处断言
+    "恰好命中 1 次"后才写盘，ruff `I` 规则重排后人工复核 diff。
+  - **行为变更：无**。环境变量（EMBEDDING_API_KEY / OPENAI_API_KEY / *_BASE_URL /
+    HF_HUB_OFFLINE）与续5 的 HTML 后端不同，均未改名——本就与 doc-pipeline 无关。
+  - **迁移引入的唯一回归及修复**：artesian 无 PEP 561 标记时消费方 mypy 视其为 Any，
+    `KnowledgeBase.search` 的返回形状失守，CI 口径 mypy 报
+    `agents/knowledge_base_agent.py:298: [no-any-return]`。双侧处置：artesian 随包发
+    `py.typed`（已核 wheel 产物确含该文件），调用点显式标注 `res: dict` 钉住契约形状；
+    修复后 CI 镜像 mypy（pipeline_core/ docpipeline/ agents/，58 文件）零 issue。
+  - **判据去向**：`tests/test_knowledge_base.py`（74 条）随库走，并在新库加强到
+    91 条（local/api 后端用假模块注入逐分支真跑、model_is_cached 五分支、
+    离线探测环境变量还原、auto 回落原因），全程不联网、不下载模型权重；
+    新库 coverage 实测 98.29%。
+  - **测试口径**：`2268 passed → 2194 passed`（-74 条随库移出；README 句式为
+    "2194 passed, 1 skipped, 6 deselected"），`tests/test_doc_consistency.py`
+    计数护栏已同批更新并复跑为绿；coverage 本仓实测 88.26% → 87.93%（门禁 83% 不变）。
+  - **CI 阻塞项不变（推送前阻塞）**：artesian 未发布 PyPI 且未推远端，CI 装不到；
+    本批两仓仍均只作本地提交（artesian `ee9a689` + `05c6375`）。`run.py --check`
+    与全量测试在本机（已装 artesian）均为绿，CI 差异仅此一条。
+
 ### Added（2026-10-06，未发版）
 
 - **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，
