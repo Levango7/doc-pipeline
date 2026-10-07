@@ -30,10 +30,15 @@ STRATEGIES = (MERGE_LAST, MERGE_LIST, MERGE_FIRST)
 
 # 引擎自己拥有的载荷键：上游产物永远不得覆盖，否则一次检索就会把
 # 引擎算好的查询词/任务身份冲掉（旧实现靠键名白名单回避这个问题）。
+# item/index/count 是 foreach 逐项展开时引擎注入的"当前项"三元组（见
+# dag_executor._execute_foreach）：它们属于执行上下文，不属于数据，
+# 谁声明成产物都不许把它们顶掉——顶掉之后每一项都会看同一份数据，
+# 渲染出 N 份相同内容却一声不响。
 ENGINE_OWNED_KEYS = frozenset({
     "task_id", "input_file", "config", "pipeline", "node",
     "dependencies_results", "upstream", "queries", "query",
     "target_file", "target", "gate_feedback", "generation_count",
+    "item", "index", "count",
 })
 
 

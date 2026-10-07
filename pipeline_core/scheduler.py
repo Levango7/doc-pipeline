@@ -99,6 +99,8 @@ class AgentConfig:
     #: 子流水线参数。写在 `call` 节点上 = 这次调用传的实参；写在普通节点上 = 该节点
     #: 自己的默认值，仅当它的 `when` 读到 `inputs.*` 才允许（配了没人读就是幻觉）。
     inputs: dict = field(default_factory=dict)
+    #: 逐项展开（`{over, max_items}`，见 `_as_foreach`）。None = 不展开，行为不变。
+    foreach: dict | None = None
 
     def __post_init__(self):
         if self.pool_size < 1:
@@ -114,7 +116,10 @@ class ExecutionNode:
         例如 ``writer_pool_0``、``writer_pool_1``。
       - 当 pool_size == 1 时，agent_name 即原始 agent 名称，无 _pool_ 后缀。
       - 所有依赖展开、schema 校验、lockfile 生成均遵循此约定，
-        反向解析统一走 `naming.agent_of()`（还包含内联别名段）。
+        反向解析统一走 `naming.agent_of()`（还包含内联别名段 `__{alias}`）。
+      - `foreach` **不新增节点身份**：展开发生在一次节点执行内部（同一 topic、
+        同一 DAG 节点、每项一个幂等键后缀 `#{i}`），所以层级、锁文件、
+        上游闭包都照旧只看这一个节点。
     """
     agent_name: str
     agent_config: AgentConfig
@@ -125,6 +130,8 @@ class ExecutionNode:
     initial_delay: float = 1.0
     #: 执行条件（从 AgentConfig.when 复制，便于锁文件与执行器都只看节点）
     when: dict | None = None
+    #: 逐项展开规格（从 AgentConfig.foreach 复制，同 `when` 的理由）
+    foreach: dict | None = None
     #: 本节点可见的子流水线参数：自己的默认值 + 调用方实参中它 `when` 确实会读的那些
     inputs: dict = field(default_factory=dict)
 
@@ -360,6 +367,7 @@ class Scheduler:
                 when=merged.get("when"),
                 call=str(merged.get("call", "") or "").strip(),
                 inputs=_as_inputs(merged.get("inputs"), str(merged.get("name", "unknown"))),
+                foreach=_as_foreach(merged.get("foreach"), str(merged.get("name", "unknown"))),
             )
             # 条件写法非法要在解析期炸掉：放到运行时才发现，节点会被静默跳过，
             # 流水线照样 done —— 那正是本项目一路在关的静默绿。
@@ -371,12 +379,22 @@ class Scheduler:
             if cfg.call:
                 # 子流水线节点只负责"引谁"，配置属于子流水线自己。
                 # 允许 config/when 会让父子两处各有一份真相，展开后行为难以推断。
-                blocked = [k for k in ("config", "when", "pool_size", "rate_limit")
+                # foreach 同理：call 节点展开后"本节点"就不存在了，逐项展开没有对象。
+                blocked = [k for k in ("config", "when", "pool_size", "rate_limit", "foreach")
                            if merged.get(k)]
                 if blocked:
                     raise ValueError(
                         f"[{cfg.name}] 是 call 节点（子流水线 {cfg.call!r}），"
                         f"不接受 {blocked}；请把配置写进被引用的流水线里")
+            elif cfg.foreach and cfg.pool_size > 1:
+                # 两种"把一个 Agent 拆成多次执行"的机制同时开：每项跑遍整个池？
+                # 还是池各领一部分项？语义没有唯一答案，解析期就拒，
+                # 不留到运行期靠实现猜（那种猜最后都变成静默少跑）。
+                raise ValueError(
+                    f"[{cfg.name}] foreach 不能与 pool_size>1 同用"
+                    f"（当前 pool_size={cfg.pool_size}）：池化是"
+                    f"把同一份输入分给多个实例，foreach 是把一份列表拆成多次调用，"
+                    f"两者叠加的分配语义未定义；请只留一种")
             elif cfg.inputs:
                 # 普通节点上的 inputs 是"默认实参"，只有自己的 when 读到它才有意义；
                 # 没人读还写，就是配了不生效的那类静默坑。
@@ -454,6 +472,7 @@ class Scheduler:
                         backoff=cfg.retry.get("backoff", "exponential"),
                         initial_delay=cfg.retry.get("initial_delay", 1.0),
                         when=cfg.when,
+                        foreach=cfg.foreach,
                         # call 节点的 inputs 是"这次调用传给子流程的实参"，属于它自己；
                         # 普通节点的 inputs 是自己的默认值，被内联时由调用方覆盖。
                         inputs=(cfg.inputs if cfg.call else {**cfg.inputs, **scoped}),
@@ -747,10 +766,10 @@ class Scheduler:
     def _topology_hash(plan: ExecutionPlan) -> str:
         """拓扑指纹（W4）：锁定连线条目（node→dep 有序集合），防改 YAML 连线绕过校验
 
-        节点上挂的 `when` 与调用方传的 `inputs` 也算拓扑：改了条件或实参，执行的
-        就是不同分支，锁必须察觉。两者都为空的节点不贡献条目，所以不用条件/片段
-        的流水线（docreq、three_pass、kb-docgen、test_pipeline）指纹依旧不变；
-        用上它们的流水线在引入那天重锁一次，此后一字不改。
+        节点上挂的 `when`、调用方传的 `inputs`、以及 `foreach` 展开契约也算拓扑：改了
+        条件、实参或展开来源/上限，执行的就是不同分支，锁必须察觉。三者都为空的节点
+        不贡献条目，所以不用条件/片段/foreach 的流水线（docreq、three_pass、kb-docgen、
+        test_pipeline）指纹依旧不变；用上它们的流水线在引入那天重锁一次，此后一字不改。
         """
         edges = sorted(
             f"{node.agent_name}->{dep}"
@@ -771,6 +790,16 @@ class Scheduler:
             for level in plan.levels
             for node in level
             if getattr(node, "inputs", None)
+        )
+        # foreach 的展开契约同样进锁：`over` 换来源、`max_items` 换上限，
+        # 一次执行里的投递次数就变了，属于"跑的不是同一件事"。
+        # （注意锁的是**声明**，不是运行期解析出的项数 —— 项数来自上游数据，
+        # 每次跑都可能不同，把它写进锁等于让锁依赖数据文件。）
+        edges += sorted(
+            f"{node.agent_name}%{json.dumps(node.foreach, ensure_ascii=False, sort_keys=True)}"
+            for level in plan.levels
+            for node in level
+            if getattr(node, "foreach", None)
         )
         return hashlib.sha256(
             json.dumps(edges, ensure_ascii=False).encode()

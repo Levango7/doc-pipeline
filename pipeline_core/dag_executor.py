@@ -14,7 +14,9 @@ from typing import Any
 from .artifacts import collect_artifacts, normalize_declaration, output_artifact_name
 from .cache_manager import CacheManager
 from .circuit_breaker import backoff_with_jitter
+from .conditions import UNRESOLVED
 from .conditions import evaluate as _evaluate_condition
+from .conditions import resolve as _resolve_path
 from .naming import agent_of, family_of
 
 # ─── 模块级函数：支持 ProcessPoolExecutor pickle ──────────────────
@@ -450,41 +452,34 @@ class DAGExecutor:
         try:
             msg_payload = self._build_node_payload(task, node, input_file, plan,
                                                      base_agent, pool_idx, pool_size)
+            # meta 上移到投递之前：foreach 分支要在发出任何一项之前就知道这个 Agent
+            # 的声明（是否落盘、是否带质量重做），否则"发出去才发现语义冲突"就晚了。
+            meta = self.registry.get_meta(base_agent)
 
             node_state = task.dag_nodes[node.agent_name]
             idempotency_key = f"{task.id}:{node.agent_name}:{node_state.attempts}"
             if getattr(node_state, "_bypass_idempotency", False):
                 idempotency_key = f"{idempotency_key}:r{uuid.uuid4().hex[:8]}"
 
-            result = self.bus.request(
-                topic=f"{base_agent}.input",
-                from_a="orchestrator",
-                to_a=base_agent,
-                payload=msg_payload,
-                timeout=node.timeout,
-                idempotency_key=idempotency_key,
-            )
-
-            # 幂等键命中历史 → 订阅者根本没被触达，不能算执行成功
-            if isinstance(result, dict) and \
-                    result.get("error") == "duplicate_idempotency_key":
-                raise RuntimeError(
-                    f"节点 {node.agent_name} 未执行：幂等键 "
-                    f"{result.get('idempotency_key')} 已存在于消息库历史中。"
-                    f"常见原因是复用了历史 task_id，而 bus_data/ 的幂等记录"
-                    f"按 checkout 绝对路径共享（message_store.py:28）；"
-                    f"换新 task_id 或确认这是 --resume 场景")
-
-            if result is None:
-                self._log("warning",
-                          f"节点 {node.agent_name} 返回空响应（订阅者返回 None 或超时）",
-                          task_id=task.id, node=node.agent_name)
+            # ── 投递：普通节点一跳；声明了 foreach 就按项展开成 N 跳再聚合 ──
+            # 只认"真映射"：节点在这里是被鸭子类型的（既有测试与 process 模式都喂过
+            # MagicMock 节点，其任意属性恒为真），判真值会把每一个 mock 节点都推进
+            # 逐项展开，把不相干的用例改造成 foreach 用例。解析期产出的规格只会是
+            # dict 或 None（见 scheduler._as_foreach），所以按类型判不损失任何声明。
+            foreach_spec = getattr(node, "foreach", None)
+            if isinstance(foreach_spec, dict) and foreach_spec:
+                result = self._execute_foreach(
+                    task, node, plan, msg_payload, base_agent, meta,
+                    idempotency_key, foreach_spec)
+            else:
+                result = self._request_node_once(
+                    task, node, base_agent, msg_payload,
+                    timeout=node.timeout, idempotency_key=idempotency_key)
 
             # ── 质量重做循环（外提为独立方法）──
             # 必须按 Agent 名取 meta：内联进来的节点叫 `quality_gate__tail`，
             # 拿它查注册表会得到 None，于是 supports_regeneration / writes_output
             # 一起失效——质量门不再重做、交付契约认为没有产物，且一声不响。
-            meta = self.registry.get_meta(base_agent)
             if getattr(meta, "supports_regeneration", False) and isinstance(result, dict):
                 target = getattr(meta, "regeneration_target", "")
                 # 复检目标也要还原成 Agent 名：topic 与 RPC 目标都按 base 寻址，
@@ -515,6 +510,171 @@ class DAGExecutor:
         except Exception:
             self.registry.set_status(base_agent, AgentStatus.ERROR)
             raise
+
+    def _request_node_once(self, task, node, base_agent: str, payload: dict,
+                           timeout: float, idempotency_key: str):
+        """投递一跳，并判定两种"其实根本没执行"：幂等键撞历史、订阅者空响应。
+
+        普通节点与 foreach 的每一项共用这里 —— 分成两处写就会长出
+        "普通节点报错、逐项放行"这种分裂判据，而逐项放行正是静默少跑。
+        """
+        result = self.bus.request(
+            topic=f"{base_agent}.input",
+            from_a="orchestrator",
+            to_a=base_agent,
+            payload=payload,
+            timeout=timeout,
+            idempotency_key=idempotency_key,
+        )
+
+        # 幂等键命中历史 → 订阅者根本没被触达，不能算执行成功
+        if isinstance(result, dict) and \
+                result.get("error") == "duplicate_idempotency_key":
+            raise RuntimeError(
+                f"节点 {node.agent_name} 未执行：幂等键 "
+                f"{result.get('idempotency_key')} 已存在于消息库历史中。"
+                f"常见原因是复用了历史 task_id，而 bus_data/ 的幂等记录"
+                f"按 checkout 绝对路径共享（message_store.py:28）；"
+                f"换新 task_id 或确认这是 --resume 场景")
+
+        if result is None:
+            self._log("warning",
+                      f"节点 {node.agent_name} 返回空响应（订阅者返回 None 或超时）",
+                      task_id=task.id, node=node.agent_name)
+        return result
+
+    def _execute_foreach(self, task, node, plan, msg_payload: dict, base_agent: str,
+                          meta, idempotency_key: str, spec: dict) -> dict:
+        """foreach：把 `over` 解析出的列表逐项交给同一个 Agent，再把结果聚合。
+
+        展开发生在**一次节点执行内部**（同一个 DAG 节点、同一层级、同一 topic），
+        所以 DAG 结构、锁文件、上游闭包都不用改。真正变的只有三件事：
+
+        - 载荷：每项一份深拷贝 + 引擎注入的 `item`/`index`/`count`
+          （它们是引擎自有键，见 artifacts.ENGINE_OWNED_KEYS）；
+        - 幂等键：每项后缀 `#{i}`。不加后缀，第 2 项起全部命中第 1 项的缓存 ——
+          表现是"展开了 N 次、只执行了 1 次"，而产物看起来是完整的；
+        - 结果：按 Agent 的 PRODUCES 聚合，**任一项失败整个节点失败**。
+
+        `max_items` 与空列表都是显式错误而不是"少跑一点"：作者要的是一整份，
+        给一份短的都是静默缺失。
+        """
+        if getattr(meta, "supports_regeneration", False):
+            raise RuntimeError(
+                f"节点 {node.agent_name} 同时声明 foreach 与质量重做"
+                f"（REGENERATION_TARGET）：重做的对象是“整份产物”，逐项展开里"
+                f"没有这个东西；请把 foreach 放在质量门之前的节点上")
+        if getattr(meta, "writes_output", False):
+            raise RuntimeError(
+                f"节点 {node.agent_name} 同时声明 foreach 与 WRITES_OUTPUT："
+                f"每一项写的是同一个 target_file，最后只剩第 N 项（前 N-1 项静默蒸发）；"
+                f"请把落盘节点放在 foreach 之后，让它拿聚合后的产物")
+
+        over = str(spec.get("over") or "")
+        ctx = self._condition_context(task, node, plan)
+        items = _resolve_path(over, ctx)
+        if items is UNRESOLVED:
+            raise RuntimeError(
+                f"节点 {node.agent_name} 的 foreach.over={over!r} 在上下文里取不到值"
+                f"（路径语法与 when 同源，可用顶层键: {sorted(ctx)}）")
+        if not isinstance(items, list):
+            raise RuntimeError(
+                f"节点 {node.agent_name} 的 foreach.over={over!r} 解析出 "
+                f"{type(items).__name__}，不是列表：foreach 只按列表逐项展开")
+        if not items:
+            raise RuntimeError(
+                f"节点 {node.agent_name} 的 foreach.over={over!r} 是空列表："
+                f"零项展开只会产出一份“什么都没做”的空聚合，下游却照样报 done")
+        max_items = int(spec.get("max_items") or 0)
+        if len(items) > max_items:
+            raise RuntimeError(
+                f"节点 {node.agent_name} 的 foreach 要展开 {len(items)} 项，超过 "
+                f"max_items={max_items}：超限报错而不是截断，截断等于静默少跑")
+
+        timeout = node.timeout
+        total = len(items)
+        self._log("info", f"节点 {node.agent_name} foreach 展开 {total} 项",
+                  task_id=task.id, node=node.agent_name, over=over)
+
+        results: list = []
+        for idx, one in enumerate(items):
+            if task.stop_event.is_set() or (self._stop_event and self._stop_event.is_set()):
+                raise RuntimeError(
+                    f"节点 {node.agent_name} 的 foreach 在第 {idx}/{total} 项处中止（任务已取消）")
+            # 限流按项领令牌：一次节点执行现在等于 total 次对外调用，
+            # 只领一次等于把作者设的速率整倍放大（真被打的是下游端点，不是引擎）
+            if not self._acquire_rate_limit(base_agent, node.agent_config.rate_limit,
+                                            timeout=timeout or 30):
+                raise RuntimeError(
+                    f"节点 {node.agent_name} 的 foreach 第 {idx}/{total} 项取限流令牌超时")
+
+            per_payload = copy.deepcopy(msg_payload)
+            per_payload["item"] = one
+            per_payload["index"] = idx
+            per_payload["count"] = total
+            # 每项一个幂等键后缀：见 docstring —— 没有它，展开会退化成"只跑第一项"
+            results.append(self._request_node_once(
+                task, node, base_agent, per_payload,
+                timeout=timeout, idempotency_key=f"{idempotency_key}#{idx}"))
+
+        return self._aggregate_foreach(base_agent, results)
+
+    def _aggregate_foreach(self, base_agent: str, results: list) -> dict:
+        """把逐项结果合成一份节点结果。
+
+        产物形状只按类型给确定规则：str 换行拼接、list 首尾相接、其余收成列表。
+        不给"取最后一项"这类覆盖语义 —— 覆盖在逐项展开里等于"只留第 N 项"，
+        而那正是这里要避免的那类静默缺失。
+        `count`/`items` 是引擎聚合键，在产物之后写入：谁把它们声明成 PRODUCES
+        也顶不掉（同 ENGINE_OWNED_KEYS 的道理）。
+        """
+        agg: dict[str, Any] = {}
+        ok = [r for r in results if isinstance(r, dict)]
+
+        produced: list[str] = []
+        for r in ok:
+            for name in self._artifacts_from(base_agent, r):
+                if name not in produced:
+                    produced.append(name)
+        for name in produced:
+            vals = [r[name] for r in ok
+                    if name in r and r[name] not in (None, "", [], {})]
+            if not vals:
+                continue
+            if all(isinstance(v, str) for v in vals):
+                agg[name] = "\n".join(vals)
+            elif all(isinstance(v, list) for v in vals):
+                flat: list = []
+                for v in vals:
+                    flat.extend(v)
+                agg[name] = flat
+            else:
+                agg[name] = vals
+
+        # 保真底线按项累积：任何一项被判 hard_floor，整个节点就是硬失败
+        floors = [r for r in ok if r.get("hard_floor")]
+        if floors:
+            agg["hard_floor"] = True
+            agg["violations"] = [str(v) for r in floors for v in (r.get("violations") or [])]
+
+        failed: list[str] = []
+        for idx, one in enumerate(results):
+            if not isinstance(one, dict):
+                failed.append(f"#{idx} 空响应（订阅者返回 None 或超时）")
+                continue
+            is_fail, err = self._business_failure(one)
+            if is_fail:
+                failed.append(f"#{idx} {err or one.get('status')}")
+
+        agg["count"] = len(results)
+        agg["items"] = results
+        if failed:
+            agg["status"] = "error"
+            agg["error"] = (f"foreach {len(failed)}/{len(results)} 项失败："
+                            + "；".join(failed[:5]))
+        else:
+            agg["status"] = "ok"
+        return agg
 
     def _handle_regeneration(self, task, node, result: dict,
                              msg_payload: dict,
