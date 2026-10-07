@@ -1,0 +1,88 @@
+# foreach 出厂消费者：接口列表 → 逐项渲染 → 聚合成一份交付物
+#
+# 这条流水线存在的唯一理由是**接线证明**：`foreach` 只在 scheduler 里有一个
+# 解析助手、没有任何流水线用它，就等于这个能力不存在（docs/product-spec.md
+# 的 FP-4 就是这么记的）。声明式语言要能表达"对每一项做同一件事"，靠的只有
+# 这一条真跑的路径，而不是单测里手搓的 plan。
+#
+# 形状：http_request 拿回一个 JSON 数组 → transform 声明 foreach，引擎按数组
+# 逐项调用同一个 Agent（每项拿到 item/index/count）→ 引擎把每一项的 text/content
+# 按行拼成一份产物 → safe_writer 落盘。
+#
+# 离线可测：只把 requests 换成罐头响应，其余全走真件（见 tests/test_foreach.py
+# 的 TestApiDigestEndToEnd）。
+# 用法: python run.py test_input.md --pipeline api-digest -o output/api_digest.md
+_name: api-digest
+_version: "1.0"
+description: 通用工作流示例：JSON 列表接口 → foreach 逐项渲染 → 聚合成一份 Markdown 摘要
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: http_request
+    version: "1.0"
+    timeout: 60
+    dependencies: []
+    config:
+      # 返回 JSON 数组的接口即可；GitHub 未认证也能读公开仓的 issues
+      url: https://api.github.com/repos/apache/kafka/issues?state=open&per_page=5
+      method: GET
+      expect: json
+      timeout_s: 15
+      max_bytes: 400000
+      headers:
+        Accept: application/vnd.github+json
+        User-Agent: doc-pipeline-engine
+
+  - name: transform
+    version: "1.0"
+    timeout: 60
+    dependencies: ["http_request"]
+    # 展开声明：over 的路径语法与 when 同源，在这里指 http_request 声明的产物
+    # response。max_items 是显式上限：接口哪天返回 1000 条时这里报错，
+    # 而不是悄悄只渲染前 5 条（少跑几项属于最难查的那种失真）。
+    foreach:
+      over: artifacts.response
+      max_items: 5
+    config:
+      # 逐项展开时不读 items：每一项就是 foreach 交进来的那个对象
+      items: ""
+      template: "- [#{{item.number}}] {{item.title}}（{{item.state}}）"
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["transform"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+topology:
+  type: dag
+  levels:
+    - [http_request]
+    - [transform]
+    - [safe_writer]
+
+  edges:
+    - [http_request, transform]
+    - [transform, safe_writer]
+
+pipeline:
+  timeout: 300
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false
