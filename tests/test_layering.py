@@ -156,6 +156,39 @@ class TestDependencyDirection:
                     f"{name} 在 requirements.txt 里没有可安装的来源：既不是 sha pin 的"
                     f" git 直接引用，也没有 PyPI 版本约束行——CI/镜像照这份清单装不出它")
 
+    def test_vcs_requirements_are_installable_in_the_image(self):
+        """requirements 里出现 `git+` 直接引用，镜像构建就必须**先**有 git。
+
+        2026-10-07 实测：pip 满足 VCS 依赖时要调用 git 可执行文件，而
+        `python:3.12-slim` 不带它，CI 的 docker job 当场红在
+        `ERROR: Cannot find command 'git'`。GitHub runner 自带 git，
+        所以这条只需要盯镜像这条路——但它是"依赖清单"与"Dockerfile"两个口径的
+        耦合点，改一侧不动另一侧就会只在构建时炸。
+        判据绑的是**顺序**：装 git 必须排在装 requirements 之前，排在后面等于没装。
+        """
+        req_text = (PROJECT / "requirements.txt").read_text(encoding="utf-8")
+        vcs_lines = re.findall(r"^\s*\S+\s*@\s*git\+", req_text, re.M)
+
+        # 这一半与 VCS 无关，恒成立：镜像确实是从同一份 requirements 装的
+        docker_text = (PROJECT / "Dockerfile").read_text(encoding="utf-8")
+        logical = re.sub(r"\\\s*\n", " ", docker_text)  # 续行折成一行再比顺序
+        steps = [ln for ln in logical.splitlines() if ln.strip()]
+        pip_at = next((i for i, ln in enumerate(steps) if "-r requirements.txt" in ln), None)
+        assert pip_at is not None, (
+            "Dockerfile 里找不到 `pip install -r requirements.txt` 那一步——"
+            "镜像的安装来源换了口径，这条判据就先失明")
+
+        if not vcs_lines:
+            return
+
+        git_at = next((i for i, ln in enumerate(steps)
+                       if "apt-get install" in ln and re.search(r"\bgit\b", ln)), None)
+        detail = f"（git 装在第 {git_at + 1} 步，晚于第 {pip_at + 1} 步的 pip 安装）" \
+            if git_at is not None and git_at > pip_at else ""
+        assert git_at is not None and git_at < pip_at, (
+            f"requirements.txt 有 {len(vcs_lines)} 条 git+ 直接引用，"
+            f"但 Dockerfile 没在装 requirements 之前安装 git{detail}")
+
     def test_declared_optional_backends_are_in_requirements(self):
         """登记为"可选但已声明"的后端，必须真在 requirements.txt 里。
 

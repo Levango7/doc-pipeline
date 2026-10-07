@@ -15,7 +15,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /build
 
-# Install build tools (none needed — pure Python deps)
+# requirements.txt 里有 `artesian @ git+https://…` 这种 VCS 直接引用，
+# pip 为满足它必须调用 git——而 python:3.12-slim **不带 git**
+# （CI 实测报 `Cannot find command 'git'`，2026-10-07）。
+# 所以这里确实要装构建工具，只装在 builder 阶段：运行阶段是 COPY venv，
+# apt 包不会跟着进最终镜像。
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 

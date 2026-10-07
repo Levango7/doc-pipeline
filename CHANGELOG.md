@@ -392,6 +392,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 部署两处口径（`README.md` Docker 一节、`docs/deployment.md` §3.4）由"目前做不到"
   改回"已就绪"，并保留 sha 更新义务与导入期依赖这两点提醒。
 
+### Fixed（2026-10-07·续10，续9 的 pin 把镜像构建打红：slim 基础镜像没有 git）
+
+- **现象**：推上去的 `37240e0` 触发 run 37635875679，`docker` job 红在
+  `Docker build validation` 一步，正文是
+  `ERROR: Cannot find command 'git' - do you have 'git' installed and in your PATH?`
+  （紧接着 `Collecting artesian@ git+https://github.com/Levango7/artesian.git@2413…` →
+  `Error [Errno 2] No such file or directory: 'git' while executing command git version`）。
+  上一笔 main `e4c02b4`（2026-10-06）同一 job 是 success ⇒ **是本批 pin 引入的**，不是环境抖动。
+  同一次 run 里其余 job 全绿（`test (3.11/3.12/3.13/3.14)` 各 0 个失败步、
+  `perf-regression` success、`refresh-baseline` skipped）——runner 自带 git，
+  只有容器里没有；这四条矩阵同时也是"三波迁出 + git pin"在干净环境下的通过证据。
+- **根因**：pip 满足 VCS 直接引用要**调用 git 可执行文件**，而 `python:3.12-slim`
+  不带 git；Dockerfile 里那句 `# Install build tools (none needed — pure Python deps)`
+  正是这次被证伪的前提——三波迁出之后依赖已经不"纯 Python"了。
+- **处置**：builder 阶段先 `apt-get install --no-install-recommends -y git`（同一条 RUN 里
+  `apt-get update` + 清 `lists`），注释改成实情。放在 builder 是有意的：运行阶段只
+  `COPY --from=builder /opt/venv`，apt 包不进最终镜像。**没有**改用
+  `artesian @ https://…/archive/<sha>.tar.gz` 绕开 git——那种形态在本机反而更糟：
+  pip 走 urllib 直连 github.com:443（本机被拦），而 git 那条路经全局 `url.insteadOf`
+  镜像改写是通的（本机实测 pin 安装成功）。
+- **判据（防同源漂移再犯）**：新增 `tests/test_layering.py::
+  test_vcs_requirements_are_installable_in_the_image`——requirements 里只要出现 `git+`
+  直接引用，Dockerfile 就必须在"装 requirements 的那一步"**之前**装 git。
+  判据绑的是顺序而不是"文件里有没有 git 这个词"（装在后面等于没装）。
+  五例合成变异验过它不空转：修法 PASS／git 装晚 FAIL／压根没装 FAIL／
+  无 VCS 依赖时不适用 PASS／Dockerfile 里找不到 pip 行 FAIL（这条还顺带钉住
+  "镜像确实从同一份 requirements 装"这个前提，口径换了判据先失明）。
+- **取证过程中的两条手法账**（都实测过）：① run 未结束时 `gh run view --log/--log-failed`
+  是**空的**，必须等 run 终态；② `actions/workflows/<id>/jobs` 这类列表接口在本机
+  经镜像会 404，`gh run list --json` + `actions/runs/<run_id>/jobs` 才是稳的路子。
+  另外 `run_number` 与 API 要的 `run_id` 不是一回事（拿 `runs/1` 查会 404）。
+
 ### Added（2026-10-06，未发版）
 
 - **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，
