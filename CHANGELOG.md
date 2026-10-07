@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed（2026-10-08·续13，收回一条说过头的话：迁出的代码当时其实没被任何 SAST 扫）
+
+- **发现**：续8 里写过一句"被删模块自然脱离这些 glob，属预期（实现与判据已在
+  artesian 侧，**那边有自己的门禁**）"。对 ruff/mypy/coverage 成立，**对 SAST 不成立**：
+  本仓 bandit 的口径是 `-r pipeline_core docpipeline agents`，而 artesian 的 CI 当时
+  只有 ruff / mypy / pytest 三步——于是三波迁出去的那 **2561 行**（含 `urlopen`、
+  `subprocess`、以及我们刚写的 SSRF 逻辑）**两边都不扫**。这是"搬包会静默脱离
+  按目录 glob 的门禁"的教科书复发，而且这次是我自己在清点时漏掉的一条。
+- **处置**：artesian CI 加 `Security scan (bandit)`，与消费方同口径（`-ll`：MEDIUM+ 即红），
+  `dev` extras 补 `bandit>=1.7.0`（不装就会变成"这一步在 CI 里根本没跑"）。
+  另钉一条 **LOW 级棘轮**：把种类集合锁成 `{B404, B603, B607}`（全在 `ProSearchEngine`
+  的子进程调用——argv 列表无 shell、`node` 由 PATH 解析、脚本路径只能显式注入），
+  以后新增 LOW 必须回这里显式改账，不允许被 `-ll` 的阈值静默吸收。
+- **一条必须写明白的旁注**：artesian 的 MEDIUM+ 之所以是 0，**不是"扫出了 0 个问题"**——
+  搜索层出网从 `urllib.request.urlopen` 换成 `build_opener().open()` 之后，
+  bandit 的 B310 是按**入口名**匹配的，告警随名字一起消失。所以真正有信息量的是
+  那条 LOW 棘轮，而不是 `-ll` 的绿。
+- **本仓口径同步更正**（`pyproject.toml` 的 `[tool.bandit]` 注释）：原写"全部 11 处均为
+  调用固定的 https 端点"。实测两处不准：① 迁出前（`e4c02b4`）scope 内只有 **10** 处
+  （`search_engines` 7 + `writer` 2 + `llm_router` 1），其中 7 处已随库走，现在剩 **3** 处；
+  ② 这 3 处的 URL 是**运维配置**决定的（env 的 `*_API_URL` / config 的 `llm_api_url`），
+  不是"固定 https 端点"——指向内网的本地推理端点（如 `http://127.0.0.1:11434`）
+  是有意支持的场景，所以这里豁免 B310 而**不做**阻断；真吃外部 URL 的两条路各自有闸
+  （webhook → `event_hook` 调 `artesian.url_guard`，抓页面 → fetcher）。
+  顺带说明这条豁免不是死账：不加 skip 时 `-ll` 下 B310 会以 MEDIUM 响 3 条。
+- **验证**（本机 + runner 双侧）：`bandit -ll -r src` rc=0；全量 LOW 恰为 `{B404,B603,B607}`；
+  把期望改窄或多塞一条探针（临时 `_probe_low.py`，跑完即删并核零残留）都会判红；
+  `set +e` 那段也按 runner 的 `bash -e` 跑过正反两形状——不写 `set +e` 时整块被 errexit
+  掐死（rc=1、零输出），正是历史上那种"红得没有正文"的成因。
+  artesian run 37691564832（#4）`completed/success`，三档矩阵各 **11/11 步**，
+  runner 正文真打了 `LOW 级告警集合: ['B404', 'B603', 'B607']`。
+- **pin 跟随**：按 续12 定的"追 main"政策，requirements 的直接引用抬到
+  `1a83b77`（本笔只是 CI/dev-extra 改动，库代码未变）。这是新政策下的第一次跟随，
+  也是"未发布 ⇒ 每次库改动都要消费方动手"的活样本。
+
 ### Changed（2026-10-08·续12，直接引用改为追 artesian main）
 
 - requirements.txt 的 `artesian @ git+…@<sha>` 从 `203987a`（v0.1.0 那一笔）

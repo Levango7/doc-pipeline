@@ -109,6 +109,14 @@ module = ["yaml"]
 ignore_missing_imports = true
 
 [tool.bandit]
-# B310: urllib 访问 URL —— 全部 11 处均为调用固定的 https 搜索引擎/LLM API 端点，
-# scheme 不受外部输入控制（webhook 类 SSRF 已在 event_hook 单独防护），故项目级豁免。
+# B310（urllib.urlopen）在本仓 scope 内实测 3 处：llm_router 1 + writer 2。
+# 三处的目标 URL 都是**运维配置**决定的（`llm_router` 从 env 取 `*_API_URL`、
+# writer 取 config 的 `llm_api_url`），不受请求方/搜索结果等外部输入控制，
+# 所以这里不阻断；反过来也别把它改成 SSRF 阻断——指向内网的本地推理端点
+# （如 http://127.0.0.1:11434）是有意支持的配置场景。真正吃外部 URL 的两条路
+# 各自有闸：webhook 走 event_hook 的 artesian.url_guard，抓页面走 fetcher。
+# 数字口径要回来改：这条注释原写"11 处"，而迁出前（e4c02b4）实测只有 10 处
+# （search_engines 7 + writer 2 + llm_router 1）——数字本身早就漂了一次；
+# 其中 7 处随 search_engines 迁至 artesian，那边另立了 bandit 门禁（含 LOW 级棘轮），
+# 不是没人扫了。
 skips = ["B310"]
