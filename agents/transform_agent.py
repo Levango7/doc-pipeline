@@ -88,16 +88,26 @@ def _resolve(path: str, ctx: dict):
 
 
 def _context(payload: dict, cfg: dict) -> dict:
-    """与 `when` 的上下文同形，作者不必学第二套取数规则。"""
-    return {
+    """与 `when` 的上下文同形，作者不必学第二套取数规则。
+
+    `item`/`index`/`count` 只在节点被 `foreach` 展开时存在（引擎逐项注入的三元组，
+    见 dag_executor._execute_foreach）。**没展开就不放这三个键**，而不是放三个 None：
+    键存在但值为 None 时，`{{index}}` 会渲染成字面量 "None"、`{{item.x}}` 渲染成空——
+    那正是"看起来正常却少了一列"的静默形状；让它取不到值、直接报错才对。
+    """
+    ctx = {
         "artifacts": payload.get("upstream") or {},
         "upstream": payload.get("dependencies_results") or {},
         "config": dict(cfg or {}),
         "inputs": dict(payload.get("inputs") or {}),
-        "item": payload.get("item"),
         "pipeline": payload.get("pipeline"),
         "task": payload.get("task_id"),
     }
+    for key in ("item", "index", "count"):
+        # 连显式 None 都不放：放进来就等于让 `{{index}}` 渲染出字面量 "None"
+        if payload.get(key) is not None:
+            ctx[key] = payload[key]
+    return ctx
 
 
 class TransformAgent(BaseAgent):
