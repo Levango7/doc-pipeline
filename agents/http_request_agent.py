@@ -6,7 +6,7 @@
 
 安全三条硬规矩（这一条 Agent 是全引擎唯一主动出网的地方，默认收紧）：
 
-1. **URL 必须过 SSRF 校验**，复用 `pipeline_core.url_guard.validate_public_http_url`
+1. **URL 必须过 SSRF 校验**，复用 `artesian.url_guard.validate_public_http_url`
    （DNS 全记录解析 + 私网/环回/链路本地/元数据段拒绝）。URL 可以来自配置，也可以
    来自上游产物——工作流引擎必须由数据决定调用哪个接口，但**两条路都走同一个校验**，
    没有"关掉校验"的配置项。要访问内网服务只能显式列 `allow_hosts`，命中时结果里
@@ -23,9 +23,9 @@ import json
 from urllib.parse import urlparse
 
 import requests
+from artesian.url_guard import validate_public_http_url
 
 from pipeline_core.base_agent import BaseAgent, Message
-from pipeline_core.url_guard import validate_public_http_url
 
 AGENT_NAME = "http_request"
 AGENT_VERSION = "1.0"

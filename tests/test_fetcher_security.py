@@ -16,7 +16,7 @@ PUBLIC_IP = "93.184.216.34"
 
 def _allow_dns(monkeypatch, mapping=None):
     """把 fetcher 所用 url_guard 的 DNS 解析替换为确定性映射"""
-    import pipeline_core.url_guard as url_guard
+    import artesian.url_guard as url_guard
     mapping = mapping or {}
 
     def fake_getaddrinfo(host, *args, **kwargs):

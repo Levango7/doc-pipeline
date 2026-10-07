@@ -432,6 +432,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   artesian 侧 run 37632571610（#1）三档矩阵各 10/10 步绿，正文 `247 passed, 1 skipped`、
   coverage 96.99%。
 
+### Changed（2026-10-07·续11，url_guard 归位 + 搜索层 SSRF 防线；库侧首发 v0.1.0）
+
+- **第 6 个模块 `url_guard` 归位 artesian**（迁出边界从 5 个模块扩到 6 个）。动机是
+  2026-07-22 评审旧账 #5 随 `search_engines` 落到了库侧，而它要用的校验函数还在本仓——
+  两边都缺一个共同的家。搬完后单一来源在 `artesian.url_guard`，本仓三处产品码
+  （`agents/fetcher.py`、`agents/http_request_agent.py`、`pipeline_core/event_hook.py`）
+  与两处测试改为引用库路径，共 **5 文件 6 处**（含 `http_request_agent` 顶部那条
+  写着旧路径的规范注释）；`pipeline_core/url_guard.py` 与 `tests/test_url_guard.py`
+  删除，实现零改动（只把 docstring 里点名的消费方改成中性表述）。
+- **库侧新增防线（行为变更都在 artesian，本仓无感）**：
+  ① 搜索层 7 处出网统一走 `_guarded_urlopen`，**重定向每一跳**重新过 SSRF 校验；
+  校验只作用于重定向、首发 URL 仍由调用方/运维配置决定 ⇒ 自托管 Firecrawl、
+  内网代理这类合法端点不被误伤。② `FirecrawlExtractor.scrape(url)` 的目标 URL
+  按**不可信输入**处理（它来自搜索结果），先校验再发，拒绝时沿用既有错误字典形态
+  返回且一个包都不发。本仓 fetcher 拿到 `success=False` 后自然回落普通下载路径，
+  而那条路本来就有 SSRF 校验 ⇒ 没有新的崩溃面，也没有"防护一换就漏一段"的空档。
+- **判据**：52 条随库走；库侧新写 9 条（handler 单测 + **真 socket 本地跳转服务**
+  端到端 + Firecrawl 拒绝路径）。端到端那条带正对照——同一跳板用原生 `urlopen`
+  必须真把"内网机密"取回来，否则"被拦下"在"服务压根没重定向"的夹具下也成立。
+  放行侧也各有对照（公网字面量 IP 照常请求 / 照常发包），防的是"恒拒绝"实现照样绿。
+- **一条手法账（本仓 editable 安装造成的 split-brain）**：搬完之后 artesian 里
+  4 条 url_guard 用例红得莫名其妙（`calls == []` 对上 `[IPv4Address('8.8.8.8')]`、
+  `KeyError: 'ttl.com'`）。根因是那份测试里有 **12 处函数体内的
+  `import pipeline_core.url_guard as url_guard`**——本仓以 editable 方式装着，
+  旧模块仍在 `sys.path` 上，于是这些用例一边调新模块的函数、一边 patch/检查
+  旧模块的状态，验的是另一份副本。按行首 `^from|^import` 扫的引用清单会整类漏掉
+  这种写法。**做法改成**：搬完先 `grep -c <旧包名>` 全量数一遍（不限行首形态），
+  并**删掉旧文件后重跑**来逼出隐式引用；本次据此把 12 处收敛成模块级一次导入。
+- **测试口径**：`2104 → 2053 passed`（-52 随库走、+1 上一波新增的分层判据），
+  coverage 87.90%→**87.84%**（门禁 83%），mypy 口径仍 57 文件。
+- **artesian 首发 `v0.1.0`**：annotated tag 打在 `203987a`（== 本批 requirements 的
+  pin），并建 GitHub Release（含模块清单、安装形态、质量口径与"已知边界"三条）。
+  requirements.txt 的直接引用同步换 sha；本机按新 sha 重新安装核实过：装出来的包里
+  有 `url_guard.py`、`_guarded_urlopen`/`_SsrfRedirectHandler` 都在，且 Firecrawl
+  对 `169.254.169.254` 的拒绝日志确实来自那份安装产物。
+- **CI 复验**：artesian run 37641435745（#2）`completed/success`，三档矩阵各 10/10 步，
+  3.12 正文 `308 passed, 1 skipped`、coverage 97.01%——本地跳转服务那条判据在
+  Linux runner 上也是真跑的（监听套接字没被沙箱挡）。
+
 ### Added（2026-10-06，未发版）
 
 - **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，

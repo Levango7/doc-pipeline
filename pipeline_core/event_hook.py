@@ -38,7 +38,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import urljoin
 
-from .url_guard import validate_public_http_url
+from artesian.url_guard import validate_public_http_url
 
 _logger = logging.getLogger(__name__)
 

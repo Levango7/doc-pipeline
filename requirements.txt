@@ -12,7 +12,7 @@ requests>=2.28.0
 # `pip install -r requirements.txt`，所以必须由这一行喂到；库侧每次改动都要
 # 换 sha（改成版本约束是发布 PyPI 之后的事）。开发期想跟着本地库跑，可以
 # 再额外 `pip install -e ../artesian` 覆盖这份直接引用。
-artesian @ git+https://github.com/Levango7/artesian.git@24130232e20b9106fb556e10877f62bebd4a407f
+artesian @ git+https://github.com/Levango7/artesian.git@203987ac7f8a47e9216753623408fc7fb868395a
 
 # JSON 序列化（artesian.fast_json 全局 3-10x 加速；无 orjson 时回退标准 json，
 # 但 admin/消息总线热路径性能下降明显——硬依赖；artesian 亦声明此依赖，

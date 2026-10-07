@@ -57,7 +57,7 @@ python -m pytest tests/ -q -m "not e2e" --cov --cov-report=term-missing
 
 ### 性能关键路径
 
-- **DNS 解析**：`url_guard.validate_public_http_url` 带 TTL 缓存（正 300s / 负 60s），不要绕过
+- **DNS 解析**：`artesian.url_guard.validate_public_http_url` 带 TTL 缓存（正 300s / 负 60s），不要绕过——实现与判据都在 artesian 库（本仓 fetcher / http_request / event_hook 与库内搜索层共用这一份）
 - **SQLite 连接**：`thread-local` 模式，**绝不跨线程 close**（会 SIGSEGV）
 - **正则预编译**：热路径正则提为模块级 `re.compile`（fetcher/researcher 已实施）
 

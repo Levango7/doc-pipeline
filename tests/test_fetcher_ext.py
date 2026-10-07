@@ -18,10 +18,10 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import artesian.url_guard as url_guard
 import pytest
 
 import agents.fetcher as fetcher_mod
-import pipeline_core.url_guard as url_guard
 from agents.fetcher import (
     FetcherAgent,
     _DownloadAbort,

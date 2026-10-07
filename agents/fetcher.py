@@ -21,9 +21,9 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 from artesian import selectolax_compat
+from artesian.url_guard import validate_public_http_url
 
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
-from pipeline_core.url_guard import validate_public_http_url
 
 # Async I/O 支持（可选）
 try:
