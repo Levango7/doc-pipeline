@@ -323,6 +323,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     并未随迁，该判据要在库侧另立，属下一议题。**CI 阻塞项不变**：artesian 仍未发布，
     本批两仓均只本地提交（artesian `ee9a689`/`05c6375` 之后的第三笔）。
 
+### Docs（2026-10-07·续8，三波迁出后的口径清点与镜像阻塞项）
+
+- **清点结论：静态门禁没有因删模块而失明**。CI 的四处口径全是按目录走的 glob——
+  `py_compile pipeline_core/*.py docpipeline/*.py agents/*.py run.py`（`ci.yml:52`）、
+  `mypy pipeline_core/ docpipeline/ agents/`（`:57`）、`bandit -r pipeline_core
+  docpipeline agents`（`:67`）、coverage `include`（pyproject，四个目录）；
+  被删模块自然脱离这些 glob，属预期（实现与判据已在 artesian 侧，那边有自己的门禁）。
+  本机复跑 `run.py --check`：rc=0，且 CI 用来防"静默降级"的那条
+  `grep "HTML 解析后端: selectolax:"` 仍命中（`:112`）⇒ 门禁语义未被迁移削弱。
+- **发现一条新的推送前阻塞项（此前只记了 CI 那半）**：`Dockerfile:19-20` 只
+  `pip install -r requirements.txt`，第 45 行再 `COPY . .`——镜像里不会有 `artesian`，
+  而依赖发生在**导入期**：本机把 `sys.modules["artesian"]=None` 后
+  `import pipeline_core` 立刻 `ModuleNotFoundError: No module named 'artesian.fast_json'`
+  ⇒ 现构建出的镜像在 ENTRYPOINT 就死。`README.md` 的 Docker 一节与
+  `docs/deployment.md` §3.4 教的 `docker build` 因此在补齐安装源之前不成立，
+  两处已就地写明前置条件（没有删部署章节，也没有把它写成"能用"）。
+- **修法已在真机验证过形态，只缺一次授权**：把 pin 写进 requirements.txt 一行即可
+  同时救活 CI 与镜像（两边的安装步骤都是 `pip install -r requirements.txt`）。
+  机制本机验通：`pip install --no-deps git+file:///F:/Nexus/artesian@2413023…`
+  安装成功后，用该 venv 解释器跑消费方套件 `162 passed`，再跑分层/KB 接线
+  `42 passed`；`artesian.__file__` 落在 site-packages（非 editable），`py.typed`
+  随包到位。产物核对：wheel 与 sdist 均含 8 个文件
+  （`__init__ / fast_json / selectolax_compat / embeddings / knowledge_base /
+  search_engines / cache / env` + `py.typed`）。
+- **待拍板的两条路**（择一，另一条留作后续）：① artesian 建公开仓 →
+  `artesian @ git+https://github.com/Levango7/artesian.git@<sha>`（pin 要随库改动更新；
+  私有仓则 CI 需要额外凭据，`pip` 匿名读不了）；② 发 PyPI 0.1.0 →
+  `artesian>=0.1.0`（无 git 依赖，但发布近似不可撤；`artesian` 这个包名 2026-10-07
+  实测 PyPI 上未被占用，查询返回 404）。
+
 ### Added（2026-10-06，未发版）
 
 - **子流水线参数化（`call.inputs` + `when.value_from`）**：`call` 节点可以向片段传实参，

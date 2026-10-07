@@ -4,6 +4,8 @@ pipeline_core v3 - 工作流引擎层（领域无关）
 DAG 编排、消息总线、重试/熔断/限流、检查点与 Agent 加载。
 文档领域能力（渲染/摄入/增强）在 `docpipeline/`，本包不得反向依赖它
 （依赖方向由 tests/test_layering.py 把关）。
+取数层（JSON 序列化、HTML 解析内核、嵌入、知识库、搜索引擎）在独立库
+`artesian`，登记为该测试里的 LOCAL_LIBRARY 一类。
 
 核心特性：
   - 消息总线支持异步广播和死信队列 (v3)
