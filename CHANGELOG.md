@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed（2026-10-08·续12，直接引用改为追 artesian main）
+
+- requirements.txt 的 `artesian @ git+…@<sha>` 从 `203987a`（v0.1.0 那一笔）
+  移到 `0f24388`（artesian main 当前一笔，只改了 README 的模块口径）。
+- **口径变化要说明白**：续11 里"tag `v0.1.0` == requirements 的 pin"这条对应关系
+  到此不再成立——pin 追 main，tag 仍停在发布物上。代价是 pin 指向的提交可能不属于
+  任何 tag，日后回滚/审计要按**提交号**而不是版本名去找。
+  但"追 main"追的仍是一个**固定提交**，不是分支头：分层判据
+  `test_local_library_has_reproducible_install_source` 只认完整 40 位 sha，
+  写成 `@main` 会当场判红（分支名会让同一份清单在不同时间装出不同的库；
+  这条是拿六例合成变异直接调真判据验的，不是复刻逻辑：现状 PASS／`@main` FAIL／
+  7 位短 sha FAIL／只有注释 FAIL／什么都没有 FAIL／PyPI 版本约束 PASS）。
+- **复验**：远端存在性双向核过（`git ls-remote origin main` 与
+  `gh api repos/Levango7/artesian/commits/0f24388…` 都给同一个全 sha）。
+  新建 venv 里按这一行 `pip install --no-deps` 装出的产物含 10 个文件
+  （9 个模块 + `py.typed`），`_guarded_urlopen` / `_SsrfRedirectHandler` /
+  `validate_public_http_url` 都在位；`FirecrawlExtractor(api_key="k")` 对
+  `169.254.169.254` 返回 `success=False`，`api_key=""` 时仍先短路成 `no API key`
+  （护栏没有把旧的优先级顺序挤掉）。用该 venv 解释器跑本仓 8 个相关套件
+  （kb 接线 / HTML 后端 / researcher / 分层 / llm_router / fetcher 安全 /
+  fetcher 扩展 / 文档一致性）**213 passed**，且 `artesian.__file__` 落在
+  该 venv 的 site-packages——验的是装出来的那份，不是本机 editable 的 `../artesian`。
+
 ### Fixed（2026-10-07）
 
 - **质量门不再放过"有字的垃圾"（FP-1，产品定义 docs/product-spec.md §6 列的前置必修）**。
