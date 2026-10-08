@@ -236,7 +236,7 @@ class TestRenderDispatch:
 
     def test_supported_formats_reflects_env(self):
         avail = renderer.supported_formats()
-        assert set(avail) <= {"docx", "pdf"}
+        assert set(avail) <= {"docx", "pdf", "xlsx", "pptx"}
 
     def test_clean_inline_variants(self):
         assert renderer.clean_inline("`a` **b** [c](d)") == "a b c (d)"
@@ -528,3 +528,143 @@ class TestCleanInlineImage:
         out = renderer.clean_inline("见图 ![架构](https://x/a.png) 说明")
         assert out == "见图 架构 (https://x/a.png) 说明"
         assert "!" not in out
+
+
+# ────────────────────────────── xlsx / pptx ──────────────────────────────
+
+class TestRenderXlsx:
+    """结构化子集：每张表一个工作表；无表落「正文」单列（mode 如实回报）。"""
+
+    def test_one_sheet_per_table_named_by_heading(self, tmp_path):
+        pytest.importorskip("openpyxl")
+        import openpyxl
+        res = renderer.render_xlsx(TABLE_MD, tmp_path / "t.xlsx")
+        assert res["status"] == "ok"
+        assert res["mode"] == "tables" and res["tables"] == 1
+        wb = openpyxl.load_workbook(res["path"])
+        assert wb.sheetnames == ["数据表"]          # 名取最近的上游标题
+        ws = wb["数据表"]
+        assert [c.value for c in ws[1]] == ["指标", "本季", "上季"]
+        assert ws["A2"].value == "营收"
+
+    def test_header_bold_and_freeze(self, tmp_path):
+        pytest.importorskip("openpyxl")
+        import openpyxl
+        res = renderer.render_xlsx(TABLE_MD, tmp_path / "t.xlsx")
+        ws = openpyxl.load_workbook(res["path"]).active
+        assert ws["A1"].font.bold is True and ws["B1"].font.bold is True
+        assert ws.freeze_panes == "A2"
+
+    def test_escaped_pipe_restored(self, tmp_path):
+        pytest.importorskip("openpyxl")
+        import openpyxl
+        res = renderer.render_xlsx(TABLE_MD, tmp_path / "t.xlsx")
+        ws = openpyxl.load_workbook(res["path"]).active
+        assert ws["B3"].value == "a|b"
+
+    def test_duplicate_sheet_names_deduped(self, tmp_path):
+        pytest.importorskip("openpyxl")
+        import openpyxl
+        md = ("## 表一\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n"
+              "## 表一\n\n| c | d |\n| --- | --- |\n| 3 | 4 |\n")
+        res = renderer.render_xlsx(md, tmp_path / "t.xlsx")
+        wb = openpyxl.load_workbook(res["path"])
+        assert len(wb.sheetnames) == 2
+        assert wb.sheetnames[0] != wb.sheetnames[1]
+
+    def test_sheet_name_sanitized(self, tmp_path):
+        pytest.importorskip("openpyxl")
+        import openpyxl
+        md = "## 2026/Q4: 营收[预估]\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n"
+        res = renderer.render_xlsx(md, tmp_path / "t.xlsx")
+        name = openpyxl.load_workbook(res["path"]).sheetnames[0]
+        assert not set(name) & set(":\\/?*[]")
+        assert len(name) <= 31
+
+    def test_text_mode_when_no_tables(self, tmp_path):
+        pytest.importorskip("openpyxl")
+        import openpyxl
+        res = renderer.render_xlsx("# 标题\n\n正文一段。\n", tmp_path / "t.xlsx")
+        assert res["status"] == "ok" and res["mode"] == "text"
+        ws = openpyxl.load_workbook(res["path"]).active
+        col = [c.value for c in ws["A"] if c.value is not None]
+        assert "标题" in col and "正文一段。" in col
+
+    def test_missing_backend_degrades(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(renderer, "HAS_XLSX", False)
+        res = renderer.render_xlsx("x", tmp_path / "x.xlsx")
+        assert res["status"] == "error" and "openpyxl" in res["message"]
+
+    def test_empty_content_errors(self, tmp_path):
+        assert renderer.render_xlsx("", tmp_path / "x.xlsx")["status"] == "error"
+
+
+class TestRenderPptx:
+    """结构化子集：标题起页、正文成要点、表格落真 PowerPoint 表格。"""
+
+    def test_slide_follows_heading(self, tmp_path):
+        pytest.importorskip("pptx")
+        import pptx
+        res = renderer.render_pptx(TABLE_MD, tmp_path / "t.pptx")
+        assert res["status"] == "ok" and res["slides"] == 1
+        prs = pptx.Presentation(res["path"])
+        assert prs.slides[0].shapes.title.text == "数据表"
+
+    def test_bullets_and_real_table(self, tmp_path):
+        pytest.importorskip("pptx")
+        import pptx
+        res = renderer.render_pptx(TABLE_MD, tmp_path / "t.pptx")
+        prs = pptx.Presentation(res["path"])
+        texts: list[str] = []
+        table_cells: list[str] = []
+        for shape in prs.slides[0].shapes:
+            if shape.has_table:
+                tbl = shape.table
+                table_cells += [tbl.cell(0, 0).text, tbl.cell(2, 1).text]
+            elif shape.has_text_frame:
+                texts += [p.text for p in shape.text_frame.paragraphs]
+        assert "正文收尾。" in texts                    # 段落成要点
+        assert "指标" in table_cells and "a|b" in table_cells   # 真表格 + 转义还原
+
+    def test_each_heading_new_slide(self, tmp_path):
+        pytest.importorskip("pptx")
+        import pptx
+        md = "# 一\n\n- 甲\n\n## 二\n\n段落乙\n\n### 三\n\n结尾\n"
+        res = renderer.render_pptx(md, tmp_path / "t.pptx")
+        prs = pptx.Presentation(res["path"])
+        assert res["slides"] == 3
+        assert [s.shapes.title.text for s in prs.slides] == ["一", "二", "三"]
+
+    def test_oversized_table_truncated_with_note(self, tmp_path):
+        """超限就地截断并把原表规模写在页内——溢出在 pptx 里是看不见的。"""
+        pytest.importorskip("pptx")
+        import pptx
+        rows = "\n".join(f"| r{i} | v{i} |" for i in range(20))
+        md = f"# 大表\n\n| 甲 | 乙 |\n| --- | --- |\n{rows}\n"
+        res = renderer.render_pptx(md, tmp_path / "t.pptx")
+        tbl = next(s for s in pptx.Presentation(res["path"]).slides[0].shapes
+                   if s.has_table).table
+        assert len(tbl.rows) == renderer._PPTX_MAX_TABLE_ROWS + 2   # 表头+12行+注记行
+        note = tbl.cell(len(tbl.rows) - 1, 0).text
+        assert "原表 21 行" in note
+
+    def test_chinese_font_pinned(self, tmp_path):
+        pytest.importorskip("pptx")
+        import zipfile
+        res = renderer.render_pptx(TABLE_MD, tmp_path / "t.pptx")
+        with zipfile.ZipFile(res["path"]) as z:
+            xml = z.read("ppt/slides/slide1.xml").decode("utf-8")
+        assert 'typeface="微软雅黑"' in xml and "a:ea" in xml
+
+    def test_dispatch_by_format_name(self, tmp_path):
+        pytest.importorskip("pptx")
+        res = renderer.render("# 标题\n\n内容\n", tmp_path / "d.pptx", fmt="pptx")
+        assert res["status"] == "ok" and res["format"] == "pptx"
+
+    def test_missing_backend_degrades(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(renderer, "HAS_PPTX", False)
+        res = renderer.render_pptx("x", tmp_path / "x.pptx")
+        assert res["status"] == "error" and "python-pptx" in res["message"]
+
+    def test_empty_content_errors(self, tmp_path):
+        assert renderer.render_pptx("", tmp_path / "x.pptx")["status"] == "error"

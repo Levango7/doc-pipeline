@@ -1,10 +1,12 @@
-"""渲染层：Markdown → docx / pdf。
+"""渲染层：Markdown → docx / pdf / xlsx / pptx。
 
 设计依据（见 spike/README.md 的可行性验证结论，GO）：
 - **docx 走 OOXML 路线**（python-docx）：落真正的 Word 标题样式，
   Word 能自动生成目录、导航窗格可跳转、用户可二次编辑 → "活文档"
 - **pdf 走 ReportLab 路线**：定版归档、可打印送审
-- 两条路线互补而非替代
+- **xlsx / pptx 走结构化子集**（openpyxl / python-pptx）：不是全量转换器——
+  表格落工作表 / 幻灯片真表，正文落要点；截断等降级在返回值里如实回报
+- 四条路线互补而非替代
 
 关键实现约束（踩坑记录，勿轻易改动）：
 1. python-docx 的 `run.font.name` 只写 w:ascii/w:hAnsi，中文走 w:eastAsia，
@@ -14,8 +16,9 @@
 3. reportlab 的 `wordWrap="CJK"` 会吞掉行首空格 → 代码缩进必须转 &nbsp;
 4. 表格识别走**保守判据**：表头行须以 `|` 起收 + 分隔行须含竖线，两条都
    满足才认成表格；宁可回落成段落，也不把散文里的竖线行误吞成表格
+5. python-pptx 的 `font.name` 同样只写 `a:latin`；中文走 `a:ea`，须手写 rPr
 
-两个后端都是**可选依赖**：未安装时对应函数返回明确的 error 结果，
+各后端都是**可选依赖**：未安装时对应函数返回明确的 error 结果，
 而不是抛异常中断流水线（降级策略，与项目既有约定一致）。
 """
 from __future__ import annotations
@@ -46,13 +49,26 @@ try:
 except ImportError:      # pragma: no cover - 环境相关
     HAS_PDF = False
 
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font as _XlFont
+    from openpyxl.utils import get_column_letter as _xl_col_letter
+    HAS_XLSX = True
+except ImportError:      # pragma: no cover - 环境相关
+    HAS_XLSX = False
+
+try:
+    from pptx import Presentation
+    from pptx.util import Inches as _PPInches
+    HAS_PPTX = True
+except ImportError:      # pragma: no cover - 环境相关
+    HAS_PPTX = False
+
 CJK_FONT = "微软雅黑"
 MONO_FONT = "Consolas"
 DEFAULT_TITLE = "生成文档"
 
 _RE_INLINE_CODE = re.compile(r"`([^`]+)`")
-_RE_BOLD = re.compile(r"\*\*([^*]+)\*\*")
-_RE_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _RE_BOLD = re.compile(r"\*\*([^*]+)\*\*")
 _RE_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _RE_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -461,9 +477,242 @@ def render_pdf(markdown: str, output_path: str | Path,
             "control_chars_stripped": stripped}
 
 
+# ─────────────────────────────── xlsx 渲染 ───────────────────────────────
+
+_XLSX_BAD_SHEET_CHARS = re.compile(r"[:\\/?*\[\]]")
+
+
+def _xlsx_sheet_name(raw: str, used: set[str]) -> str:
+    """工作表名：Excel 限 31 字符、禁 []:*?/\\；重名自动加序号。"""
+    name = _XLSX_BAD_SHEET_CHARS.sub(" ", raw).strip()[:31] or "Sheet"
+    base = name
+    n = 2
+    while name in used:
+        suffix = f" ({n})"
+        name = base[: 31 - len(suffix)] + suffix
+        n += 1
+    used.add(name)
+    return name
+
+
+def _xlsx_col_width(rows: list[list[str]], ci: int) -> float:
+    """列宽 ≈ 最宽单元格的显示宽度（CJK 按 2 计），夹在 [10, 60]。"""
+    width = 0
+    for row in rows:
+        if ci < len(row):
+            width = max(width, sum(2 if ord(ch) > 0x2E7F else 1
+                                   for ch in str(row[ci])))
+    return float(min(max(width + 2, 10), 60))
+
+
+def render_xlsx(markdown: str, output_path: str | Path,
+                title: str = DEFAULT_TITLE) -> dict[str, Any]:
+    """Markdown → xlsx（结构化子集）。
+
+    映射：每张 Markdown 表格 → 一个工作表（名取最近的上游标题，重名/超长
+    自动处理），表头加粗、冻结首行、列宽按内容估。无表格时整篇按行落进
+    单个「正文」工作表——`mode` 字段如实回报走了哪条路，不是静默二选一。
+    单元格一律按文本写入：保真优先（`007` 这类前导零、ID 串不做数值推断）。
+    """
+    if not HAS_XLSX:
+        return {"status": "error",
+                "message": "openpyxl 未安装，跳过 xlsx 渲染（pip install openpyxl）"}
+    markdown, stripped = xml_safe(markdown)
+    title, title_stripped = xml_safe(title)
+    stripped += title_stripped
+    blocks = parse_markdown(markdown)
+    if not blocks:
+        return {"status": "error", "message": "内容为空，无法渲染"}
+
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    wb = Workbook()
+    default_ws = wb.active
+    used: set[str] = {default_ws.title}
+    tables: list[tuple[str, list[list[str]]]] = []
+    heading = ""
+    for kind, text in blocks:
+        if kind in ("h1", "h2", "h3"):
+            heading = text
+        elif kind == "table":
+            rows = _table_rows(text)
+            if rows:
+                tables.append((heading or f"表{len(tables) + 1}", rows))
+
+    rows_written = 0
+    if tables:
+        for name, rows in tables:
+            ws = wb.create_sheet(_xlsx_sheet_name(name, used))
+            for ri, row in enumerate(rows, start=1):
+                for ci, cell in enumerate(row, start=1):
+                    c = ws.cell(row=ri, column=ci, value=cell)
+                    if ri == 1:
+                        c.font = _XlFont(bold=True)
+                rows_written += 1
+            for ci in range(1, len(rows[0]) + 1):
+                ws.column_dimensions[_xl_col_letter(ci)].width = \
+                    _xlsx_col_width(rows, ci - 1)
+            ws.freeze_panes = "A2"
+        wb.remove(default_ws)
+        mode = "tables"
+    else:
+        ws = default_ws
+        ws.title = _xlsx_sheet_name("正文", used)
+        for kind, text in blocks:
+            if kind == "hr":
+                continue
+            for line in text.splitlines() or [""]:
+                rows_written += 1
+                ws.cell(row=rows_written, column=1, value=line)
+        ws.column_dimensions["A"].width = 80
+        mode = "text"
+
+    with contextlib.suppress(Exception):
+        wb.properties.title = title
+    wb.save(str(path))
+    return {"status": "ok", "path": str(path), "format": "xlsx",
+            "size": path.stat().st_size, "mode": mode,
+            "sheets": len(wb.sheetnames), "tables": len(tables),
+            "rows": rows_written, "control_chars_stripped": stripped}
+
+
+# ─────────────────────────────── pptx 渲染 ───────────────────────────────
+
+#: 幻灯片不是文档：溢出在 pptx 里不报错、只是看不见，所以宁可显式截断并注明
+_PPTX_MAX_CODE_LINES = 12
+_PPTX_MAX_TABLE_ROWS = 12
+_PPTX_MAX_TABLE_COLS = 8
+
+
+def _pptx_pin_font(run, font: str = CJK_FONT) -> None:
+    """python-pptx 的 font.name 只写 a:latin；中文走 a:ea（连带 a:cs），手写 rPr。"""
+    from pptx.oxml.ns import qn
+
+    rpr = run._r.get_or_add_rPr()
+    for tag in ("a:latin", "a:ea", "a:cs"):
+        el = rpr.find(qn(tag))
+        if el is None:
+            el = rpr.makeelement(qn(tag), {})
+            rpr.append(el)
+        el.set("typeface", font)
+
+
+def render_pptx(markdown: str, output_path: str | Path,
+                title: str = DEFAULT_TITLE) -> dict[str, Any]:
+    """Markdown → pptx（结构化子集）。
+
+    映射：h1/h2/h3 各起一页（标题 = 标题文本）；其后的段落/列表/引用成要点；
+    表格落**真的 PowerPoint 表格**。超 12 行 / 8 列的表格、超 12 行的代码块
+    就地截断，并把「原表 N 行 × M 列」写在页内——幻灯片不是文档，宁可显式
+    截断，也不让内容溢出到版面外（pptx 的溢出既不报错也看不见）。
+    """
+    if not HAS_PPTX:
+        return {"status": "error",
+                "message": "python-pptx 未安装，跳过 pptx 渲染（pip install python-pptx）"}
+    markdown, stripped = xml_safe(markdown)
+    title, title_stripped = xml_safe(title)
+    stripped += title_stripped
+    blocks = parse_markdown(markdown)
+    if not blocks:
+        return {"status": "error", "message": "内容为空，无法渲染"}
+
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    prs = Presentation()
+    slides = 0
+    tables = 0
+    body: Any = None
+    cur_slide: Any = None
+
+    def _pin_paragraph(para) -> None:
+        for run in para.runs:
+            _pptx_pin_font(run)
+
+    def _add_slide(heading: str) -> None:
+        nonlocal slides, body, cur_slide
+        cur_slide = prs.slides.add_slide(prs.slide_layouts[1])  # Title and Content
+        t = cur_slide.shapes.title
+        t.text = heading
+        _pin_paragraph(t.text_frame.paragraphs[0])
+        body = cur_slide.placeholders[1].text_frame
+        slides += 1
+
+    def _bullet(text: str) -> None:
+        nonlocal body
+        if body is None:
+            _add_slide(title)
+        assert body is not None
+        first = body.paragraphs[0]
+        para = first if (not first.runs and first.text == "") \
+            else body.add_paragraph()
+        para.text = text
+        _pin_paragraph(para)
+
+    def _add_table(rows: list[list[str]]) -> None:
+        nonlocal tables
+        if cur_slide is None:
+            _add_slide(title)
+        assert cur_slide is not None
+        n_cols = min(len(rows[0]), _PPTX_MAX_TABLE_COLS)
+        truncated = len(rows) > _PPTX_MAX_TABLE_ROWS + 1 \
+            or len(rows[0]) > _PPTX_MAX_TABLE_COLS
+        data = [r[:n_cols] for r in rows[: _PPTX_MAX_TABLE_ROWS + 1]]
+        if truncated:
+            data.append(
+                [f"…（原表 {len(rows)} 行 × {len(rows[0])} 列，已截断）"]
+                + [""] * (n_cols - 1))
+        shape = cur_slide.shapes.add_table(
+            len(data), n_cols,
+            _PPInches(0.6), _PPInches(1.7),
+            prs.slide_width - _PPInches(1.2), _PPInches(0.4 * len(data)))
+        tbl = shape.table
+        for ri, row in enumerate(data):
+            for ci in range(n_cols):
+                cell = tbl.cell(ri, ci)
+                cell.text = row[ci] if ci < len(row) else ""
+                for para in cell.text_frame.paragraphs:
+                    _pin_paragraph(para)
+                    if ri == 0:
+                        for run in para.runs:
+                            run.font.bold = True
+        tables += 1
+
+    for kind, text in blocks:
+        if kind in ("h1", "h2", "h3"):
+            _add_slide(text or title)
+        elif kind == "table":
+            rows = _table_rows(text)
+            if rows:
+                _add_table(rows)
+            else:
+                _bullet(text)
+        elif kind == "code":
+            lines = text.splitlines() or [""]
+            for ln in lines[:_PPTX_MAX_CODE_LINES]:
+                _bullet(ln if ln.strip() else " ")
+            if len(lines) > _PPTX_MAX_CODE_LINES:
+                _bullet(f"…（代码块共 {len(lines)} 行，已截断）")
+        elif kind == "hr":
+            continue
+        else:                          # p / li / quote
+            _bullet(text)
+
+    if slides == 0:                    # 纯表格/纯代码文档也会有一页落脚
+        _add_slide(title)
+    with contextlib.suppress(Exception):
+        prs.core_properties.title = title
+    prs.save(str(path))
+    return {"status": "ok", "path": str(path), "format": "pptx",
+            "size": path.stat().st_size, "slides": slides,
+            "tables": tables, "control_chars_stripped": stripped}
+
+
 # ───────────────────────────── 统一入口 ─────────────────────────────
 
-_BACKENDS = {"docx": render_docx, "pdf": render_pdf}
+_BACKENDS = {"docx": render_docx, "pdf": render_pdf,
+             "xlsx": render_xlsx, "pptx": render_pptx}
 
 
 def render(markdown: str, output_path: str | Path, fmt: str = "docx",
@@ -478,5 +727,6 @@ def render(markdown: str, output_path: str | Path, fmt: str = "docx",
 
 def supported_formats() -> list[str]:
     """当前环境实际可用的格式（供 API/Agent 如实回报能力）。"""
-    flags = {"docx": HAS_DOCX, "pdf": HAS_PDF}
+    flags = {"docx": HAS_DOCX, "pdf": HAS_PDF,
+             "xlsx": HAS_XLSX, "pptx": HAS_PPTX}
     return [f for f, ok in flags.items() if ok]

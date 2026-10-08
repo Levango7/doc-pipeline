@@ -1,14 +1,14 @@
-"""Renderer Agent v1.0 - 多格式渲染插件（Markdown → docx / pdf）
+"""Renderer Agent v1.0 - 多格式渲染插件（Markdown → docx / pdf / xlsx / pptx）
 
 定位：把管线产出的 Markdown 中间态渲染成交付格式。
 这是系统里第一个"产出多种格式"的节点，也是"文档生成系统"区别于
 "Markdown 生成器"的关键一步。
 
 设计要点：
-- **不破坏主产物**：Markdown 始终是中间态，docx/pdf 是衍生产物。
+- **不破坏主产物**：Markdown 始终是中间态，各格式产物是衍生产物。
   渲染失败只记 warning，不让整条流水线失败（降级，与 layout 一致的策略）
-- **后端可选**：python-docx / reportlab 未安装时如实回报跳过原因，
-  不抛异常中断流水线
+- **后端可选**：python-docx / reportlab / openpyxl / python-pptx 未安装时如实
+  回报跳过原因，不抛异常中断流水线
 - 输出路径由配置或 pipeline 决定，绝不接受外部传入的任意路径
 """
 from pathlib import Path
@@ -22,7 +22,7 @@ AGENT_NAME = "renderer"
 # （信任来自声明本身，不再依赖 core 里写死的名单）
 SANDBOX_TRUSTED = True
 AGENT_VERSION = "1.0"
-AGENT_DESC = "多格式渲染 Agent - Markdown → docx/pdf（OOXML + ReportLab 双路线）"
+AGENT_DESC = "多格式渲染 Agent - Markdown → docx/pdf/xlsx/pptx（OOXML + ReportLab + openpyxl + python-pptx）"
 AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 80
 INPUT_TOPICS = ["renderer.render", "renderer.input", "layout.done", "checker.done"]
@@ -110,7 +110,8 @@ class RendererAgent(BaseAgent):
             result["skipped"] = skipped
         # 全部失败才算流水线失败：Markdown 产物仍在，渲染是增强而非前置
         if not ok_formats:
-            result["message"] = "无可用渲染后端（pip install python-docx reportlab）"
+            result["message"] = ("无可用渲染后端（pip install python-docx reportlab "
+                                 "openpyxl python-pptx）")
 
         self.publish(
             "renderer.done" if ok_formats else "renderer.failed",

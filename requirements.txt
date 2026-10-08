@@ -34,8 +34,12 @@ selectolax>=0.3.0
 # Markdown 主产物不受影响 —— 渲染是增强而非前置）
 #   python-docx：OOXML 路线，产出可编辑、能自动生成目录的 Word 文档
 #   reportlab：纯 Python PDF 路线，内置 CID 中文字体免装系统中文字体
+#   openpyxl：xlsx 结构化子集（表格 → 工作表，表头加粗/冻结首行）
+#   python-pptx：pptx 结构化子集（标题 → 幻灯片，表格落真 PowerPoint 表格）
 python-docx>=1.2.0
 reportlab>=5.0.0
+openpyxl>=3.1.0
+python-pptx>=1.0.0
 
 # 摄入层（pymupdf 用于解析 PDF：提取文本并按字号推断标题层级。
 # 未安装时 ingest 仅支持纯文本，PDF 明确报错而非静默失败）
