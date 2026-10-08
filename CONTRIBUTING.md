@@ -74,7 +74,7 @@ python -m pytest tests/ -q -m "not e2e" --cov --cov-report=term-missing
 | 文件 | 触发 | 作用 |
 |---|---|---|
 | `ci.yml` | push / PR | 测试（3.11-3.14 矩阵）+ lint + 安全扫描 + perf 回归 |
-| `e2e-nightly.yml` | schedule / dispatch | 真实端到端测试（需 Secrets） |
+| `e2e-nightly.yml` | dispatch（schedule 已于 2026-10-08 停用） | 真实端到端测试，需 `E2E_*` Secrets；缺 Secret 时判据判红而非假绿，原因与重启条件见 README「测试」一节 |
 | `release.yml` | push tag `v*` | 构建 + 发布 GitHub Release |
 
 ### 性能回归门禁

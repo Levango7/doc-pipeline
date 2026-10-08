@@ -9,14 +9,24 @@ name: E2E Nightly
 #   E2E_BOCHA_API_KEY / E2E_TAVILY_API_KEY             —— 搜索（激活搜索用例，至少其一）
 #   E2E_SERPER_API_KEY / E2E_FIRECRAWL_API_KEY         —— 备选搜索/抓取（可选）
 # 用例自带 skipif 护栏（tests/test_e2e_real.py::_has_env/_has_llm）：
-# .env 无真实 key 时跳过。**没有 Secret 时本工作流现在直接失败**，
+# .env 无真实 key 时跳过。**没有 Secret 时本工作流直接失败**，
 # 不再以"6 skipped 却全绿"的形态存在——夜间回归要么真的跑，要么显式红。
+#
+# 2026-10-08 停用定时触发：仓库从未配置过任何 E2E_* Secret（`gh secret list` 返回 []），
+# 上面那道判据因此每晚稳定判红——10-05/10-06/10-07 三个 schedule run 连续 failure
+# （37389154677 / 37538468919 / 37696603993）。红得再准也不是回归信号，
+# 只是把"这里没有 key"重复播报，还会淹掉真出问题时同一条红。
+# 定时块已摘掉，GitHub 侧工作流状态同时置为 disabled_manually；
+# workflow_dispatch 保留：Secret 配好后手动触发拿到非零 passed，再把 schedule 加回来。
 
 on:
-  schedule:
-    # UTC 18:00 ≈ 北京 02:00（夜间低峰，避开 API 限流高峰）
-    - cron: "0 18 * * *"
   workflow_dispatch:
+  # 重启条件：E2E_BOCHA_API_KEY 或 E2E_TAVILY_API_KEY 至少其一（激活 3 条搜索用例），
+  # E2E_LLM_API_KEY（激活 1 条 LLM 用例）；两者都配齐才轮到 2 条全链路用例。
+  # 取消下面两行的注释即恢复夜间自动跑。
+  # schedule:
+  #   # UTC 18:00 ≈ 北京 02:00（夜间低峰，避开 API 限流高峰）
+  #   - cron: "0 18 * * *"
 
 jobs:
   e2e:

@@ -680,10 +680,21 @@ Schema 校验、Lockfile 与 edges 一致性、消息总线（含幂等去重的
 成本追踪、告警机制、质量闭环、MCP Server、OpenAPI Spec、Agent 沙箱、
 配置热更新、kb-docgen 离线端到端、运行态路径隔离。
 
-> `python -m pytest tests/ -m e2e` 需要真实网络与 LLM Key；CI 未配 Secret 时
-> 这些用例会**全部 skip**（历史上 E2E Nightly 因此"绿而未跑"），
-> 离线端到端能力由 `tests/test_kb_pipeline_wiring.py` 与
-> `tests/test_e2e_mock.py` 承担。
+> `python -m pytest tests/ -m e2e` 是 6 个打真实网络的用例，`skipif` 读仓库根的 `.env`：
+> 搜索类要 `BOCHA_API_KEY` 或 `TAVILY_API_KEY`，LLM 类要 `LLM_API_KEY`，全链路两条都要，
+> 缺哪个跳哪个——所以本机没有 `.env` 时这里是"0 执行"而非失败。
+> 离线端到端能力由 `tests/test_kb_pipeline_wiring.py` 与 `tests/test_e2e_mock.py` 承担
+> （两者不带 `e2e` 标记，默认 CI 里真跑）。
+>
+> **E2E Nightly 工作流已于 2026-10-08 停用**：GitHub 侧状态置为 `disabled_manually`，
+> `.github/workflows/e2e-nightly.yml` 里的 `schedule` 块同步摘掉，`workflow_dispatch` 保留。
+> 原因不是判据坏了，而是它按设计生效了——仓库从未配置过任何 `E2E_*` Secret
+> （`gh secret list` 返回 `[]`），而夜间回归自 2026-10-05 起拒绝"0 执行却报绿"
+> （此前 10-02/10-03/10-04 三个 schedule run 就是这样假绿的），于是每晚稳定判红
+> （10-05/10-06/10-07 连续三个 schedule run failure）。一条只播报"这里没有 key"的
+> 常驻红灯不是回归信号，还会淹掉真出问题时同一条红。
+> **重启条件**：配好 `E2E_LLM_API_KEY` + `E2E_BOCHA_API_KEY`（或 `E2E_TAVILY_API_KEY`），
+> 手动 `workflow_dispatch` 触发拿到非零 passed，再把 `schedule` 加回 YAML。
 
 ```bash
 # 运行真实端到端测试（需要网络 + LLM API Key）
