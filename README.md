@@ -625,6 +625,34 @@ cron 支持 `*`、`a`、`a-b`、`*/n`、`a-b/n`、`a/n`、逗号列表与 `@dail
 定时触发的 run 与手动 `python run.py` **走同一条提交路径**（`run_plan`），
 因此和任何任务一样出现在同一任务队列与观测面（`list_tasks` / `GET /tasks` / 仪表盘）。
 
+### 入站 Webhook（外部服务触发）
+
+管理 API（`--admin` / `--dashboard` / 纯服务模式）提供入站端点：
+
+```bash
+POST /api/webhooks/<name>        # <name> 在 webhooks.yaml 里定义（模板见 webhooks.example.yaml）
+```
+
+- **鉴权独立于 `ADMIN_API_KEY`**（外部服务不该持有管理端凭据），每个 webhook
+  一个密钥、经 `secret_env` 指向环境变量注入；两种携带方式二选一：
+  `X-Webhook-Signature: sha256=<HMAC-SHA256(secret, 原始请求体)>`（推荐，GitHub 风格）
+  或 `X-Webhook-Token: <secret>`。**密钥未配置 = 拒绝一切（503，fail-closed）**。
+- **审计留痕**：每次调用无论成败都落一行 JSON 到 `<状态目录>/audit/webhooks.jsonl`
+  （时间 / webhook / 来源地址 / 方案 / 结果与 HTTP 状态 / task_id 或拒绝原因）；
+  写盘失败会在响应里如实回报 `audit_error`，不静默。
+- **请求体即运行输入**：JSON 对象按「## 键」渲染成输入文档，其余原样写入；
+  提交走 `run_plan(wait=False)`，任务出现在同一队列与观测面，响应 `202 + task_id`。
+
+```bash
+# 例：HMAC 签名调用（密钥在环境变量 DOC_PIPELINE_WEBHOOK_CI_SECRET）
+body='{"ref":"main"}'
+sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$DOC_PIPELINE_WEBHOOK_CI_SECRET" | awk '{print $2}')
+curl -X POST http://127.0.0.1:8910/api/webhooks/ci-deploy \
+     -H "X-Webhook-Signature: sha256=$sig" -d "$body"
+```
+
+`GET /api/webhooks`（管理鉴权）可查看已配置的 webhook 清单（不含密钥值）。
+
 ### 事件钩子（Event Hooks）
 
 通过 `POST /api/events/hooks` 注册 HTTP 回调，流水线事件触发时异步 POST JSON 到指定 URL：
@@ -714,7 +742,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2166 个测试本机全绿**（`2166 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
+**2194 个测试本机全绿**（`2194 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -725,8 +753,9 @@ xlsx/pptx 结构化子集那批加了 16 条判据（xlsx 8 / pptx 8）；
 MCP 通用入口那批加了 6 条判据（run_workflow 5 / 序列化形状 1）；
 定时触发那批加了 66 条判据（cron 解析与时刻计算 37 / 触发器与调度 29）；
 entry_points 插件那批加了 8 条判据（发现/加载/沙箱/同名优先）；
+入站 webhook 那批加了 28 条判据（配置/两种鉴权/审计留痕/HTTP 粘合层）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
-本机 2026-10-08 全量实测 87.98%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
+本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有
 出入——渲染层/OCR/嵌入类用例带 `skipif`，取决于该 job 装了哪些可选依赖。
 数字由 `tests/test_doc_consistency.py` 与实际收集数比对把关，落后于代码即红（此前这里

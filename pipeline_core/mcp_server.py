@@ -43,6 +43,7 @@ from . import __version__ as SERVER_VERSION
 from . import scheduler as _scheduler_mod
 from .artifacts import task_output
 from .ids import new_task_id
+from .input_docs import render_inputs_doc as _render_inputs_doc
 from .scheduler import resolve_pipeline_name
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -87,33 +88,6 @@ def _validate_output_path(path_str: str, base_dir: str | None = None) -> tuple[b
     except ValueError:
         return False, f"路径 {path_str!r} 不在允许目录 {base!s} 内"
     return True, ""
-
-
-def _render_inputs_doc(title: str, inputs: Any) -> str:
-    """把 run_workflow 的 inputs 渲染成输入文档（引擎以输入文档作为运行接口）。
-
-    对象按 `## 键` 分节：标量直书、列表成 `- ` 行、嵌套对象走 JSON；
-    字符串输入原样落盘；空输入只给标题行。首层 Agent 的查询词提取会跳过
-    `#` 行，所以标题不会被误当成主题。
-    """
-    if inputs is None or (isinstance(inputs, (dict, list, str)) and not inputs):
-        return f"# {title}\n"
-    if isinstance(inputs, str):
-        return f"# {title}\n\n{inputs}\n"
-    if isinstance(inputs, dict):
-        lines = [f"# {title}", ""]
-        for key, value in inputs.items():
-            lines.append(f"## {key}")
-            lines.append("")
-            if isinstance(value, (list, tuple)):
-                lines.extend(f"- {item}" for item in value)
-            elif isinstance(value, dict):
-                lines.append(_fast_dumps(value, ensure_ascii=False))
-            else:
-                lines.append(str(value))
-            lines.append("")
-        return "\n".join(lines)
-    return f"# {title}\n\n{_fast_dumps(inputs, ensure_ascii=False)}\n"
 
 
 TOOLS = [

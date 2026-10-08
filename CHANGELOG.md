@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-08·续22，入站 webhook：HMAC/Token 鉴权 + 审计留痕，`POST /api/webhooks/<name>`）
+
+- **痛点**：触发方式此前全部是"从内部发起"（CLI / HTTP 提交 / MCP / 定时），
+  外部服务（CI、监控、IM 机器人）想让流水线动起来没有正规入口——product-spec
+  §2 四轴表"触发方式"（5 → 目标 ≥6）与 §5.3 的"webhook 入站有鉴权与审计"记的就是这条。
+- **`pipeline_core/webhooks.py`**（配置 + 纯函数逻辑，HTTP 粘合薄）：
+  - **鉴权独立于 `ADMIN_API_KEY`**——外部服务不该持有管理端凭据。每个 webhook
+    一个密钥，`secret_env` 指向环境变量（密钥不落配置文件），支持
+    `X-Webhook-Signature: sha256=<HMAC-SHA256(原始请求体)>`（GitHub 风格，能防体篡改）
+    或 `X-Webhook-Token`（直传、常量时间比较）；**密钥未配置 = fail-closed（503）**。
+  - **审计留痕**：每次调用无论成败落一行 JSON 到 `state_root()/audit/webhooks.jsonl`
+    （时间 / webhook / 来源地址 / 方案 / 结果与 HTTP 状态 / task_id 或拒绝原因）；
+    写盘失败在响应里带 `audit_error` 如实回报，不静默。
+  - **请求体即运行输入**：JSON 对象经 `render_inputs_doc`（本批从 mcp_server
+    抽出的共享模块 `pipeline_core/input_docs.py`）按「## 键」渲染，其余原样写入；
+    `run_plan(wait=False)` 提交——与手动 run / 定时触发同一条路径、同一观测面，
+    响应 `202 + task_id`。
+- **`admin_api.py`**：`POST /api/webhooks/<name>` 置于管理鉴权门**之前**（自携密钥，
+  见上）；`GET /api/webhooks`（管理鉴权）列出配置清单（不含密钥值）；
+  `AdminAPI.start()` 装载 `webhooks.yaml`（路径可用 `DOC_PIPELINE_WEBHOOKS_FILE`
+  或构造参数覆盖；未配置文件 = 能力休眠；配置写坏 = 整体禁用并大声记日志）。
+  OpenAPI 规范同批补上两个新端点。
+- **一处判据按意图修正**：`test_openapi_spec.test_responses_exist` 原要求每个操作
+  必须有 `200`——webhook 的成功码是语义正确的 `202 Accepted`，判据收宽为"任意
+  2xx"，而不是往规范里补一个端点根本不会返回的 200。
+- **测试**：新增 `tests/test_webhooks.py` 28 条——配置校验（缺 secret_env / 坏
+  enabled / 重名 / 未知流水线）、两种鉴权（含大小写折叠取头、体篡改必失败、签名
+  优先于令牌）、fail-closed 503、四类拒绝全落审计（unknown / disabled /
+  secret_missing / bad_credentials）、成功路径断言 `run_plan(wait=False)` 与输入
+  文档内容、提交失败 500、审计写盘失败如实回报、HTTP 粘合层（含超限 413 与
+  缺名 400）。全量 **2194 passed, 1 skipped, 6 deselected**（本机 2026-10-08
+  实测），coverage 87.99%；README 增「入站 Webhook」小节、`webhooks.example.yaml`
+  随仓（个人配置进 .gitignore）；product-spec §2 / §5.3 / §5.4 按实测更新
+  （组合数按实值重算 80 → 100）。
+
 ### Added（2026-10-08·续21，entry_points 插件发现：外部 pip 包零改动接入 Agent）
 
 - **痛点**：Agent 发现只有"本仓 `agents/*.py` glob"一条路——外部包想提供 Agent

@@ -43,6 +43,9 @@ versions/
 # 个人定时触发配置（模板见 triggers.example.yaml）
 triggers.yaml
 
+# 个人入站 webhook 配置（模板见 webhooks.example.yaml）
+webhooks.yaml
+
 # 测试临时文件
 out_*.md
 plan*.md

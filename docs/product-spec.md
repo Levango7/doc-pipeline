@@ -58,11 +58,11 @@
 | 轴 | 现状 | 目标 | 依据 |
 |---|---|---|---|
 | 任务类型（真实跑通的 pack） | **2**（docgen 系 / api-report） | **≥10** | 〔实测〕两条都跑通；其余 8 条 YAML 是 docgen 变体 |
-| 触发方式 | **4**（CLI / HTTP `POST /api/tasks` / MCP stdio / **定时 `--triggers`**〔2026-10-08 落地〕） | **≥6** | 〔实测〕`tests/test_triggers.py` 钉住提交路径与手动 run 同源；inbound webhook 仍未做（亦无鉴权面） |
+| 触发方式 | **5**（CLI / HTTP `POST /api/tasks` / MCP stdio / **定时 `--triggers`** / **入站 webhook**〔均 2026-10-08 落地〕） | **≥6** | 〔实测〕`tests/test_triggers.py` 钉定时提交路径、`tests/test_webhooks.py` 钉 HMAC/Token 鉴权与审计留痕；队列多机未做 |
 | 交付形态 | **5**（md / docx / pdf / **xlsx / pptx**〔2026-10-08 加入结构化子集〕） | **≥5** | 〔实测〕`tests/test_renderer.py` 读回判真；xlsx/pptx 为结构化子集而非全量转换 |
 | 扩展来源 | **2**（本仓 `agents/` glob + **entry_points**〔2026-10-08 落地，group `doc_pipeline.agents`〕）；第三方插件实测数仍为 0 | **≥2 且第三方插件 ≥5** | 〔实测〕`tests/test_agent_loader.py::TestEntryPointPlugins` 八条钉住 发现/加载/沙箱/同名优先 |
 
-**组合数：80（2×4×5×2） → 300（10×6×5×2）**，即 ≥3.75x（2026-10-08 按实测轴值重算）；按 pack 与插件实际增量交付计，承诺口径仍为 **≥20x**。
+**组合数：100（2×5×5×2） → 300（10×6×5×2）**，即 ≥3.0x（2026-10-08 按实测轴值重算）；按 pack 与插件实际增量交付计，承诺口径仍为 **≥20x**。
 
 ### 2.1 验收线（四条同时成立才算达成）
 
@@ -157,7 +157,7 @@
 | MCP Server | **已达标**（2026-10-08）：6 tools——新增通用 `run_workflow(name, inputs)`（inputs 按「## 键」渲染为输入文档）；banner/日志改 stderr 与 `serverInfo.version` 接 `__version__` 均已修（FP-3 关闭）；真 stdio 往返测试在位（`tests/test_mcp_server.py::TestMCPOverRealStdio`）。原现状留档：5 tools 全是文档动词 / banner 污染 stdout / version 恒 `unknown`〔实测〕 | 加通用 `run_workflow(name, inputs)`；banner/日志改 stderr；version 接 `__version__` | 一条**真实 stdio 往返**测试通过 |
 | HTTP 执行 API | 只有"提交文档生成任务"〔静态：`openapi_spec.py:126`〕 | `POST /api/workflows/{name}/runs` 接受任意 payload | 用非文档 pack 跑通该端点 |
 | CLI | 功能完整但命名满是文档味（banner、argparse 描述、`--enhance`） | 改名 + 动词收敛为 `run / plan / lock / pack / plugin` | `--help` 里不再出现"文档生成流水线"字样 |
-| 触发方式 | **4 种**（CLI / HTTP API / MCP / **定时**〔2026-10-08 落地：`--triggers` + `triggers.yaml`，5 字段 cron，错过不补跑〕）；inbound webhook 未做 | 6 种（+ 定时 + inbound webhook） | 定时触发的 run 出现在同一队列与观测面（与手动 run 同一 `run_plan` 提交路径，`tests/test_triggers.py` 钉住）；webhook 入站有鉴权与审计 |
+| 触发方式 | **5 种**（CLI / HTTP API / MCP / **定时** / **入站 webhook**〔均 2026-10-08 落地：`POST /api/webhooks/<name>`，HMAC 签名或 Token 鉴权、密钥未配置 fail-closed、每次调用成败落 `audit/webhooks.jsonl`〕）；队列多机未做 | 6 种（+ 定时 + inbound webhook） | 定时触发的 run 出现在同一队列与观测面（同 `run_plan` 路径，`tests/test_triggers.py` 钉住）；webhook 入站鉴权与审计均已兑现（`tests/test_webhooks.py` 钉住） |
 
 ### 5.4 治理层
 
@@ -166,7 +166,7 @@
 | 身份与租户 | **无**：共享 `ADMIN_API_KEY`；全仓 `tenant/principal/user_id` 0 命中〔静态〕 | token → 任务/成本/产物三类数据的作用域隔离 | 两个 token 互不可见对方任务（真 HTTP 断言，非 mock） |
 | 状态后端 | 全 SQLite/JSON 单机文件；pub/sub 是进程内回调〔静态〕 | 后端抽象（SQLite / Postgres），队列与总线可换 | 两实例共享一库并发跑通（P1 判据） |
 | 成本归因 | 定价表 + 按供应商/Agent 维度已有 | 增加按 **pack / token** 归因 | `GET /api/cost` 能按 pack 出账 |
-| 审计 | 事件钩子仅出站 | 入站调用与配置变更留痕 | 每次 `/api/config` 变更有审计记录 |
+| 审计 | **入站调用已留痕**（2026-10-08：webhook 全部调用成败落 JSONL）；配置变更留痕仍未做（`/api/config` 目前是危险操作二次确认 + 结构化日志） | 入站调用与配置变更留痕 | 每次 `/api/config` 变更有审计记录 |
 
 ### 5.5 CI 与门禁（跨层，先于一切功能）
 

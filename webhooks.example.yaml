@@ -1,0 +1,29 @@
+# webhooks.example.yaml —— 入站触发配置示例
+#
+# 复制为 webhooks.yaml 后按需修改（webhooks.yaml 已在 .gitignore 中）。
+# 端点由管理 API 提供（`python run.py --admin` / `--dashboard` / 纯服务模式）：
+#
+#   POST /api/webhooks/<name>
+#   Header（二选一）：
+#     X-Webhook-Signature: sha256=<HMAC-SHA256(secret, 原始请求体) 的 hex>   ← 推荐
+#     X-Webhook-Token: <secret>                                             ← 直传令牌
+#
+# 密钥不写在本文件里：secret_env 指向环境变量名，请求时读取；
+# 密钥未配置 = 拒绝一切（fail-closed，503），不是"没密钥就放行"。
+# 每次调用（无论成败）都会在 <状态目录>/audit/webhooks.jsonl 留一行审计。
+#
+# 请求体即运行输入：JSON 对象按「## 键」分节渲染成输入文档，其余原样写入。
+# 定时触发与入站触发的任务都会出现在同一任务队列与观测面（GET /tasks）。
+
+webhooks:
+  - name: ci-deploy        # 端点名：POST /api/webhooks/ci-deploy
+    pipeline: docgen-render
+    secret_env: DOC_PIPELINE_WEBHOOK_CI_SECRET
+    output: output/ci_report.md
+    enabled: false         # 示例默认停用：先配好密钥环境变量再启用
+
+  # HMAC 验签示例（GitHub 风格 hook 可直接复用）：
+  #   body='{"ref":"main"}'
+  #   sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$DOC_PIPELINE_WEBHOOK_CI_SECRET" | awk '{print $2}')
+  #   curl -X POST http://127.0.0.1:8910/api/webhooks/ci-deploy \
+  #        -H "X-Webhook-Signature: sha256=$sig" -d "$body"

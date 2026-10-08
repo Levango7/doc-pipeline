@@ -68,7 +68,14 @@ class TestOpenAPISpec:
         assert any(p["name"] == "query" and p["in"] == "query" for p in params)
 
     def test_responses_exist(self, spec):
+        """每个操作都要声明 responses，且至少含一个 2xx 成功响应。
+
+        2026-10-08：入站 webhook 的成功响应是语义正确的 202 Accepted（异步受理），
+        原先"只认 200"的写法会把它误判成"没声明成功响应"——判据按意图收宽到 2xx，
+        而不是去规范里补一个端点根本不会返回的 200。
+        """
         for path, methods in spec["paths"].items():
             for method, detail in methods.items():
                 assert "responses" in detail, f"{method.upper()} {path} 缺少 responses"
-                assert "200" in detail["responses"] or "200" in str(detail["responses"].keys())
+                keys = str(detail["responses"].keys())
+                assert any(code in keys for code in ("200", "201", "202")),                     f"{method.upper()} {path} 没有声明 2xx 成功响应: {keys}"
