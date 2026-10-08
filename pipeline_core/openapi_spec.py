@@ -288,6 +288,28 @@ def _ops_paths() -> dict:
                 "responses": {"200": {"description": "已注销"}},
             },
         },
+        "/api/webhooks": {
+            "get": {
+                "summary": "入站 webhook 清单（不含密钥值）",
+                "responses": {"200": {"description": "webhook 列表"}},
+            },
+        },
+        "/api/webhooks/{name}": {
+            "post": {
+                "summary": "入站触发：按 webhooks.yaml 的条目提交流水线 run",
+                "description": "自携密钥鉴权（X-Webhook-Signature 的 HMAC-SHA256 或 "
+                               "X-Webhook-Token），不走 ADMIN_API_KEY；密钥未配置时 "
+                               "fail-closed（503）。每次调用无论成败都落审计 "
+                               "（<状态目录>/audit/webhooks.jsonl）。请求体即运行输入。",
+                "parameters": [{"name": "name", "in": "path", "required": True,
+                                "schema": {"type": "string"}}],
+                "responses": {"202": {"description": "已提交（含 task_id）"},
+                              "401": {"description": "凭据无效"},
+                              "403": {"description": "webhook 已停用"},
+                              "404": {"description": "未知 webhook"},
+                              "503": {"description": "密钥未配置（fail-closed）"}},
+            },
+        },
         "/dlq": {
             "get": {
                 "summary": "死信队列",

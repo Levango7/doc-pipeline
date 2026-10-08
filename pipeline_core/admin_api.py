@@ -252,6 +252,9 @@ class AdminHandler(BaseHTTPRequestHandler):
     dashboard_dir: str | None = None  # 静态文件目录
     api_key: str | None = None  # 由 AdminAPI 注入
     server_host: str = "127.0.0.1"  # 由 AdminAPI 注入（本机信任模式判定）
+    #: 入站 webhook 配置（webhooks.load_webhooks 的产物），由 AdminAPI 注入；
+    #: 空 dict = 未配置（所有 /api/webhooks/* 请求 404）
+    webhooks: dict = {}
 
     def _parse_query(self) -> dict:
         """解析 URL 查询串为 dict（不含 URL 解码以外的处理）"""
@@ -533,6 +536,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._handle_cost_stats()
             elif self.path == "/api/events/hooks":
                 self._handle_list_hooks()
+            elif self.path == "/api/webhooks":
+                configured = getattr(self, "webhooks", {}) or {}
+                self._json({"webhooks": [
+                    {"name": w.name, "pipeline": w.pipeline, "enabled": w.enabled,
+                     "secret_env": w.secret_env, "output": w.output}
+                    for w in sorted(configured.values(), key=lambda x: x.name)]})
             elif self.path == "/dlq":
                 self._handle_list_dlq()
             elif self.path.startswith("/dlq/") and self.path.endswith("/replay"):
@@ -590,6 +599,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/health":
                 self._handle_health()
+                return
+            # 入站 webhook 自携密钥（HMAC/Token）且全程审计，不走 ADMIN_API_KEY——
+            # 外部服务不该持有管理端凭据。置于管理鉴权门之前是刻意的。
+            if self.path.startswith("/api/webhooks"):
+                self._handle_webhook_inbound()
                 return
             # 鉴权前置：未通过前不读取请求体（HTTP/1.0 无 keep-alive，可安全直接响应）
             if not self._check_auth():
@@ -829,6 +843,36 @@ class AdminHandler(BaseHTTPRequestHandler):
 
         threading.Thread(target=_reap, daemon=True,
                          name=f"tmp-clean-{task_id}").start()
+
+    def _handle_webhook_inbound(self) -> None:
+        """POST /api/webhooks/<name> —— 入站触发（自携密钥 + 审计）。
+
+        请求体在这里自行读取：HMAC 要用**原始字节**验签，且这条路不经过管理
+        鉴权门（见 do_POST 的注释）。业务逻辑全在 pipeline_core.webhooks，
+        这里只做 HTTP 层的取头/读数/回包。
+        """
+        from . import webhooks as _webhooks
+
+        raw = self.path.split("?", 1)[0]
+        m = re.fullmatch(r"/api/webhooks/([^/]+)", raw)
+        if not m:
+            self._json({"error": "webhook name required: POST /api/webhooks/<name>"}, 400)
+            return
+        name = m.group(1)
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self._json({"error": "invalid Content-Length"}, 400)
+            return
+        if length > _MAX_BODY_BYTES:
+            self._json({"error": "request body too large"}, 413)
+            return
+        body = self.rfile.read(length) if length > 0 else b""
+        remote = self.client_address[0] if self.client_address else "?"
+        status, payload = _webhooks.handle_inbound(
+            name, getattr(self, "webhooks", {}) or {}, body,
+            headers=self.headers, remote=remote, orch=getattr(self, "orch", None))
+        self._json(payload, status)
 
     def _handle_submit_task(self, body: bytes):
         """提交新文档生成任务
@@ -1584,13 +1628,15 @@ class AdminAPI:
 
     def __init__(self, host: str = "127.0.0.1", port: int = 8910,
                  serve_static: bool = False, dashboard_dir: str | None = None,
-                 api_key: str | None = None):
+                 api_key: str | None = None, webhooks_path: str | None = None):
         self.host = host
         self.port = port
         self.serve_static = serve_static
         self.dashboard_dir = dashboard_dir
         # 从环境变量或参数获取 API key
         self.api_key = api_key or os.environ.get("ADMIN_API_KEY", "")
+        # 入站 webhook 配置路径（None = 用 DOC_PIPELINE_WEBHOOKS_FILE 或仓库根默认）
+        self.webhooks_path = webhooks_path
         self._server: HTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -1607,6 +1653,20 @@ class AdminAPI:
             AdminHandler.orch = orch
             AdminHandler.api_key = self.api_key
             AdminHandler.server_host = self.host
+            # 入站 webhook：默认读仓库根 webhooks.yaml（可用 DOC_PIPELINE_WEBHOOKS_FILE
+            # 或显式路径覆盖）；未配置文件 = 能力休眠（不报错）。配置写坏则整体禁用
+            # 并大声记日志——半个配置放行比全禁更危险。
+            from .webhooks import CONFIG_PATH_ENV, WebhookConfigError, default_config_path, load_webhooks
+            wh_path = (self.webhooks_path or os.environ.get(CONFIG_PATH_ENV)
+                       or str(default_config_path()))
+            try:
+                AdminHandler.webhooks = load_webhooks(wh_path)
+                if AdminHandler.webhooks:
+                    _logger.info(
+                        f"[AdminAPI] 入站 webhook: {len(AdminHandler.webhooks)} 个（{wh_path}）")
+            except WebhookConfigError as e:
+                AdminHandler.webhooks = {}
+                _logger.error(f"[AdminAPI] webhooks 配置非法，入站触发已禁用: {e}")
             if self.serve_static and self.dashboard_dir:
                 AdminHandler.dashboard_dir = self.dashboard_dir
                 _logger.info(f"[AdminAPI] 静态文件目录: {self.dashboard_dir}")
