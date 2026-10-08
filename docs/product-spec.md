@@ -58,11 +58,11 @@
 | 轴 | 现状 | 目标 | 依据 |
 |---|---|---|---|
 | 任务类型（真实跑通的 pack） | **2**（docgen 系 / api-report） | **≥10** | 〔实测〕两条都跑通；其余 8 条 YAML 是 docgen 变体 |
-| 触发方式 | **3**（CLI / HTTP `POST /api/tasks` / MCP stdio） | **≥6** | 〔静态〕全仓无 cron/时间触发入口，无 inbound webhook 鉴权 |
-| 交付形态 | **3**（md / docx / pdf） | **≥5** | 〔静态〕renderer 双后端可选依赖 |
+| 触发方式 | **4**（CLI / HTTP `POST /api/tasks` / MCP stdio / **定时 `--triggers`**〔2026-10-08 落地〕） | **≥6** | 〔实测〕`tests/test_triggers.py` 钉住提交路径与手动 run 同源；inbound webhook 仍未做（亦无鉴权面） |
+| 交付形态 | **5**（md / docx / pdf / **xlsx / pptx**〔2026-10-08 加入结构化子集〕） | **≥5** | 〔实测〕`tests/test_renderer.py` 读回判真；xlsx/pptx 为结构化子集而非全量转换 |
 | 扩展来源 | **1**（仅本仓 `agents/` glob） | **≥2 且第三方插件 ≥5** | 〔静态〕`agent_loader.py:159,177` |
 
-**组合数：18（2×3×3×1） → 300（10×6×5×2）**，即 ≥16.7x；按 pack 与插件实际增量交付计，承诺口径为 **≥20x**。
+**组合数：40（2×4×5×1） → 300（10×6×5×2）**，即 ≥7.5x（2026-10-08 按实测轴值重算）；按 pack 与插件实际增量交付计，承诺口径仍为 **≥20x**。
 
 ### 2.1 验收线（四条同时成立才算达成）
 
@@ -157,7 +157,7 @@
 | MCP Server | **已达标**（2026-10-08）：6 tools——新增通用 `run_workflow(name, inputs)`（inputs 按「## 键」渲染为输入文档）；banner/日志改 stderr 与 `serverInfo.version` 接 `__version__` 均已修（FP-3 关闭）；真 stdio 往返测试在位（`tests/test_mcp_server.py::TestMCPOverRealStdio`）。原现状留档：5 tools 全是文档动词 / banner 污染 stdout / version 恒 `unknown`〔实测〕 | 加通用 `run_workflow(name, inputs)`；banner/日志改 stderr；version 接 `__version__` | 一条**真实 stdio 往返**测试通过 |
 | HTTP 执行 API | 只有"提交文档生成任务"〔静态：`openapi_spec.py:126`〕 | `POST /api/workflows/{name}/runs` 接受任意 payload | 用非文档 pack 跑通该端点 |
 | CLI | 功能完整但命名满是文档味（banner、argparse 描述、`--enhance`） | 改名 + 动词收敛为 `run / plan / lock / pack / plugin` | `--help` 里不再出现"文档生成流水线"字样 |
-| 触发方式 | 3 种 | 6 种（+ 定时 + inbound webhook） | 定时触发的 run 出现在同一队列与观测面；webhook 入站有鉴权与审计 |
+| 触发方式 | **4 种**（CLI / HTTP API / MCP / **定时**〔2026-10-08 落地：`--triggers` + `triggers.yaml`，5 字段 cron，错过不补跑〕）；inbound webhook 未做 | 6 种（+ 定时 + inbound webhook） | 定时触发的 run 出现在同一队列与观测面（与手动 run 同一 `run_plan` 提交路径，`tests/test_triggers.py` 钉住）；webhook 入站有鉴权与审计 |
 
 ### 5.4 治理层
 

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-08·续20，定时触发：`--triggers` 常驻调度 + 5 字段 cron）
+
+- **痛点**：引擎此前只有"人来触发"的入口（CLI / HTTP / MCP / recover），
+  "周期性报告"这类固定节律的用法得靠外部计划任务壳一层——product-spec §2
+  四轴表里"触发方式"记的就是这条（3 → 目标 ≥6）。
+- **`pipeline_core/cron.py`**：5 字段 cron 解析 + 下次触发计算，纯函数、零新依赖
+  （不装 APScheduler/croniter——引擎层只依赖 artesian 与标准库）。
+  - 支持 `*`、`a`、`a-b`、`*/n`、`a-b/n`、`a/n`（Vixie 语义：a 到字段上限）、
+    逗号列表与 `@hourly/@daily/@weekly/@monthly/@yearly` 宏；周 7 归一为周日。
+  - **日/周的 OR 语义**（两字段都受限时命中任一即触发）按 Vixie cron 实现；
+    只有单边受限时按该边判定。
+  - `next_fire` 按天推进扫描（不匹配日期 O(1) 跳天），5 年上限防 `0 0 30 2 *`
+    这类永不匹配把调用方挂死——超限抛 CronError，不是死循环。
+- **`pipeline_core/triggers.py`**：triggers.yaml 加载（名字唯一 / 流水线存在 /
+  cron 合法全部前置校验）+ 调度推进 `tick()`（时钟与提交函数可注入，循环体
+  无副作用）+ `run_trigger_loop()` 常驻循环。
+  - **与手动 run 同一条提交路径**：`run_plan(..., wait=False)`——定时任务因此
+    天然出现在同一任务队列与观测面（`list_tasks` / `GET /tasks` / 仪表盘）。
+  - **错过不补跑**：积压窗口只跑最近一个，跳过数量如实打印（补跑策略是产品
+    决策，不偷偷替用户选）。
+  - inputs 字符串渲染为输入文档落到 `state_root()/trigger_inputs/<name>.md`。
+  - **YAML 布尔陷阱显式拦下**：`name: off` 会被 YAML 解析成布尔 `False`——
+    加载器直接报"name 必须是字符串（off/on/yes/no 请加引号）"，而不是把
+    False 静默 stringify 成 "False"（实现期在测试里先踩到，已钉判据）。
+- **CLI**：`--triggers`（常驻）/ `--triggers-file`（配置路径，默认仓库根
+  triggers.yaml）/ `--triggers-dry-run`（列最近 3 次时刻后退出）；模板
+  `triggers.example.yaml` 随仓，个人配置 triggers.yaml 进 .gitignore。
+- **测试**：新增 `tests/test_cron.py`（37 条）与 `tests/test_triggers.py`（29 条），
+  共 +66——cron 侧把 OR 语义 / 月年进位 / 闰年 2-29 / 永不匹配 / 边界独占全用
+  具体时刻钉死；触发器侧注入假时钟走完"到点一次 / 不重复 / 错过计数 / 停用跳过 /
+  提交失败不拖垮循环"，另有 `--triggers-dry-run` 的真子进程往返。全量
+  **2158 passed, 1 skipped, 6 deselected**（本机 2026-10-08 实测），
+  coverage 87.96%；README 增「定时触发（Cron）」小节与测试计数；product-spec
+  §2 四轴表与 §5.3 触发方式行按实测更新（顺带补记 P1 已落地的交付形态 5 种，
+  组合数按实值重算 18 → 40）。
+
 ### Added（2026-10-08·续19，MCP 通用入口 run_workflow(name, inputs)）
 
 - **痛点**：MCP 原有 5 个 tools 全是文档动词——`generate_document` 把输入写死成

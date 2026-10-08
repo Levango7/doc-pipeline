@@ -538,6 +538,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="worker 空转多少秒后退出（默认不退出）")
     parser.add_argument("--lease-stale", type=float, default=900.0,
                         help="回收 running 行的租约阈值（秒）")
+    parser.add_argument("--triggers", action="store_true",
+                        help="定时触发常驻模式：按 triggers.yaml 的 cron 提交 run（Ctrl+C 退出）")
+    parser.add_argument("--triggers-file", default=None,
+                        help="触发配置路径（默认仓库根 triggers.yaml）")
+    parser.add_argument("--triggers-dry-run", action="store_true",
+                        help="只列出各触发的最近 3 次时刻后退出（校验配置用）")
     return parser
 
 
@@ -566,8 +572,9 @@ def main():
             f"--lease-stale={args.lease_stale}",
         ]))
 
-    # 无输入文件时：仅 --check/--mcp/--recover 及服务模式（admin/dashboard/daemon）可用
+    # 无输入文件时：仅 --check/--mcp/--recover/--triggers* 及服务模式（admin/dashboard/daemon）可用
     if args.input is None and not args.check and not args.mcp and not args.recover \
+            and not args.triggers and not args.triggers_dry_run \
             and not args.admin and not args.dashboard and not args.daemon:
         parser.error('需要指定输入文件，或使用 --check 运行启动自检')
 
@@ -584,6 +591,31 @@ def main():
     if args.mcp:
         from pipeline_core.mcp_server import run_mcp_server
         run_mcp_server()
+        return
+
+    # ─── 定时触发模式 ──────────────────────────
+    if args.triggers or args.triggers_dry_run:
+        from datetime import datetime as _dt
+
+        from pipeline_core.triggers import TriggerConfigError, describe_triggers, load_triggers, run_trigger_loop
+        cfg_path = Path(args.triggers_file) if args.triggers_file \
+            else Path(__file__).parent / "triggers.yaml"
+        try:
+            triggers = load_triggers(cfg_path)
+        except TriggerConfigError as e:
+            print(f"[triggers] ERROR: {e}", file=sys.stderr)
+            sys.exit(2)
+        if args.triggers_dry_run:
+            print(f"[triggers] 配置文件: {cfg_path}（{len(triggers)} 个触发）")
+            for line in describe_triggers(triggers, _dt.now()):
+                print(line)
+            return
+        project_root = Path(__file__).parent
+        orch = _get_orchestrator(project_root)
+        orch.register_agents()
+        run_trigger_loop(orch, triggers)
+        # 循环只在 Ctrl+C 后返回；收尾关总线/任务队列等资源（与 recover 分支同款）
+        orch.shutdown()
         return
 
     # ─── 恢复中断任务 ──────────────────────

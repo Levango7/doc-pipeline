@@ -40,6 +40,9 @@ logs/
 .doc_baseline.json
 versions/
 
+# 个人定时触发配置（模板见 triggers.example.yaml）
+triggers.yaml
+
 # 测试临时文件
 out_*.md
 plan*.md
