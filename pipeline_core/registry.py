@@ -68,6 +68,8 @@ class AgentMeta:
     writes_output: bool = False                # 是否本流水线的落盘终点（接口层据此取产出）
     legacy_auto: bool = True                   # 是否参与 legacy 自动图（见 LEGACY_AUTO）
     consumes: list = field(default_factory=list)   # 期望上游提供的 artifact（文档/校验用）
+    #: 来源标记："builtin"（本仓 agents/）| "entry_point:<name>"（外部 pip 包提供）
+    source: str = "builtin"
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:

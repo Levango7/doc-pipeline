@@ -1,6 +1,7 @@
 """tests/test_agent_loader.py — AgentLoader + AST 安全扫描单元测试。"""
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -271,3 +272,133 @@ class TestModuleIdentity:
         agents = Path(__file__).resolve().parent.parent / "agents"
         assert declares_sandbox_trust(agents / "writer.py") is True
         assert declares_sandbox_trust(tmp_path / "nope.py") is False
+
+
+class TestEntryPointPlugins:
+    """entry_points 插件发现：外部 pip 包提供 Agent、本仓零改动即被发现/注册/执行。
+
+    全部走"假 entry point"：把一段源码 exec 成模块，再让打桩的 entry_points()
+    返回指向它的对象——被测的是 AgentLoader 的发现/加载/安全检查路径本身。
+    """
+
+    PLUGIN_SRC = (
+        "from pipeline_core.base_agent import BaseAgent\n"
+        "AGENT_NAME = 'hello'\n"
+        "AGENT_VERSION = '2.0'\n"
+        "AGENT_DESC = '外部插件示例'\n"
+        "class HelloAgent(BaseAgent):\n"
+        "    def handle(self, msg):\n"
+        "        return {'status': 'ok', 'echo': msg.payload.get('x', '')}\n"
+    )
+
+    def _install_plugin(self, monkeypatch, tmp_path, src=None, name="hello"):
+        """装一个假插件：模块 exec 进 sys.modules，entry_points() 打桩返回它。"""
+        import importlib.util as ilu
+
+        import pipeline_core.agent_loader as al
+
+        f = tmp_path / f"{name}_plugin.py"
+        f.write_text(src or self.PLUGIN_SRC, encoding="utf-8")
+        spec = ilu.spec_from_file_location(f"plugin_{name}", f)
+        mod = ilu.module_from_spec(spec)
+        sys.modules[f"plugin_{name}"] = mod
+        spec.loader.exec_module(mod)
+        ep = SimpleNamespace(name=name, value=f"plugin_{name}", load=lambda: mod)
+        monkeypatch.setattr(al, "entry_points", lambda **kw: [ep])
+        return mod
+
+    def test_discover_includes_plugins_and_queries_group(self, monkeypatch, tmp_path):
+        import pipeline_core.agent_loader as al
+
+        self._install_plugin(monkeypatch, tmp_path)
+        calls: list = []
+        monkeypatch.setattr(
+            al, "entry_points",
+            lambda **kw: (calls.append(kw),
+                          [SimpleNamespace(name="hello", load=lambda: None)])[1])
+        loader = _make_loader(tmp_path)
+        assert "hello" in loader.discover()
+        # group 名是文档与外部包的契约，写错就没有插件——钉住它
+        assert calls and calls[0].get("group") == al.ENTRY_POINT_GROUP
+
+    def test_local_file_wins_on_name_collision(self, monkeypatch, tmp_path):
+        (tmp_path / "hello.py").write_text(
+            "from pipeline_core.base_agent import BaseAgent\n"
+            "AGENT_NAME = 'hello'\n"
+            "class LocalHello(BaseAgent):\n"
+            "    def handle(self, msg): return {'status': 'ok'}\n",
+            encoding="utf-8")
+        self._install_plugin(monkeypatch, tmp_path)
+        loader = _make_loader(tmp_path)
+        assert loader.discover().count("hello") == 1
+        loader.register(["hello"])
+        meta = loader.registry.get_meta("hello")
+        assert meta is not None and meta.source == "builtin"      # 本仓优先
+
+    def test_register_plugin_and_execute(self, monkeypatch, tmp_path):
+        self._install_plugin(monkeypatch, tmp_path)
+        loader = _make_loader(tmp_path)
+        loaded = loader.register(["hello"])
+        assert loaded == ["hello"]
+        meta = loader.registry.get_meta("hello")
+        assert meta is not None
+        assert meta.source == "entry_point:hello"
+        assert meta.version == "2.0"
+        # "能作为节点执行"：DAG 执行器按同一 registry 取实例，这里直接跑 handle
+        from pipeline_core.base_agent import Message
+
+        inst = loader.registry.get_instance("hello")
+        out = inst.handle(Message(topic="t", from_agent="test", payload={"x": "42"}))
+        assert out == {"status": "ok", "echo": "42"}
+
+    def test_untrusted_plugin_goes_through_ast_scan(self, monkeypatch, tmp_path):
+        self._install_plugin(monkeypatch, tmp_path, src=(
+            "import os\n"
+            "from pipeline_core.base_agent import BaseAgent\n"
+            "AGENT_NAME = 'hello'\n"
+            "class Evil(BaseAgent):\n"
+            "    def handle(self, msg):\n"
+            "        os.system('rm -rf /')\n"
+            "        return {}\n"))
+        loader = _make_loader(tmp_path)          # strict_safety=True
+        assert loader.register(["hello"]) == []
+        assert loader.registry.get_meta("hello") is None
+
+    def test_plugin_may_declare_sandbox_trust(self, monkeypatch, tmp_path):
+        self._install_plugin(monkeypatch, tmp_path, src=(
+            "SANDBOX_TRUSTED = True\n"
+            "from pipeline_core.base_agent import BaseAgent\n"
+            "AGENT_NAME = 'hello'\n"
+            "class Trusted(BaseAgent):\n"
+            "    def handle(self, msg): return {'status': 'ok'}\n"))
+        loader = _make_loader(tmp_path)
+        assert loader.register(["hello"]) == ["hello"]
+
+    def test_class_valued_entry_point_rejected(self, monkeypatch, tmp_path):
+        import pipeline_core.agent_loader as al
+
+        class NotAModule:
+            pass
+
+        ep = SimpleNamespace(name="hello", value="x:NotAModule", load=lambda: NotAModule)
+        monkeypatch.setattr(al, "entry_points", lambda **kw: [ep])
+        loader = _make_loader(tmp_path)
+        assert loader.register(["hello"]) == []          # 失败记日志、不拖垮其他
+        assert loader.registry.get_meta("hello") is None
+
+    def test_broken_metadata_does_not_break_local_discovery(self, monkeypatch, tmp_path):
+        import pipeline_core.agent_loader as al
+
+        (tmp_path / "foo.py").write_text("# agent", encoding="utf-8")
+
+        def boom(**kw):
+            raise RuntimeError("metadata broken")
+
+        monkeypatch.setattr(al, "entry_points", boom)
+        loader = _make_loader(tmp_path)
+        assert loader.discover() == ["foo"]
+
+    def test_missing_agents_dir_still_lists_plugins(self, monkeypatch, tmp_path):
+        self._install_plugin(monkeypatch, tmp_path)
+        loader = _make_loader(tmp_path / "nonexistent")
+        assert loader.discover() == ["hello"]

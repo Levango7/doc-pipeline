@@ -1,10 +1,23 @@
-"""Agent 加载器 —— 负责 Agent 发现、注册和生命周期管理"""
+"""Agent 加载器 —— 负责 Agent 发现、注册和生命周期管理
+
+两条发现路径并存（product-spec §2.1 验收线第 2 条：外部 pip 包提供 Agent、
+本仓零改动即被发现/注册/执行）：
+1. 本仓 `agents/*.py`（glob，传统路径）；
+2. **entry_points 插件**：group `doc_pipeline.agents`，entry point 的**值须是
+   模块路径**（与内置 agents/*.py 同构：模块级 `AGENT_NAME` + 一个 BaseAgent
+   子类）。同名时本仓文件优先——插件不能悄悄顶掉内置 Agent。
+
+安全策略两条路径一致：文件先过 `declares_sandbox_trust`（模块顶层显式声明
+`SANDBOX_TRUSTED = True` 才跳过），否则走 `_check_safety` 的 AST 扫描。
+"""
 from __future__ import annotations
 
 import ast
 import importlib.util
 import logging
 import sys
+import types
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,6 +27,9 @@ if TYPE_CHECKING:
     from .registry import AgentMeta
 
 logger = logging.getLogger(__name__)
+
+#: 第三方 Agent 插件的 entry_points group（值 = 模块路径，如 "my_pkg.my_agent"）
+ENTRY_POINT_GROUP = "doc_pipeline.agents"
 
 # 危险调用黑名单（含模块属性调用，如 os.remove / socket.socket / ctypes.CDLL）
 _DANGEROUS_CALLS = {
@@ -168,17 +184,31 @@ class AgentLoader:
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
 
-    def discover(self) -> list[str]:
-        """自动发现 agents 目录下的插件"""
-        discovered = []  # type: ignore[var-annotated]
-        if not self.agents_dir.exists():
-            return discovered
+    def _plugin_entry_points(self) -> dict:
+        """entry_points(group=ENTRY_POINT_GROUP) 的插件（名字 → EntryPoint）。
 
-        for f in self.agents_dir.glob("*.py"):
-            if f.stem.startswith("_"):
-                continue
-            discovered.append(f.stem)
-        return discovered
+        独立成方法便于测试打桩；元数据读取失败不拖垮内置发现（记 error 后返回 {}，
+        内置 agents/ 照常可用）。
+        """
+        try:
+            eps = entry_points(group=ENTRY_POINT_GROUP)
+        except Exception as e:
+            if self._logger:
+                self._logger.log("error", "entry_points 读取失败", error=str(e))
+            return {}
+        return {ep.name: ep for ep in eps}
+
+    def discover(self) -> list[str]:
+        """本仓 agents/*.py + entry_points 插件；同名时本仓文件优先。"""
+        names: list[str] = []
+        if self.agents_dir.exists():
+            for f in self.agents_dir.glob("*.py"):
+                if not f.stem.startswith("_"):
+                    names.append(f.stem)
+        local = set(names)
+        plugins = self._plugin_entry_points()
+        names.extend(n for n in sorted(plugins) if n not in local)
+        return names
 
     def register(self, agent_names: list[str] | None = None, config: dict | None = None,
                  *, reload: bool = False) -> list[str]:
@@ -196,14 +226,16 @@ class AgentLoader:
         想热插拔新代码就显式传 `reload=True`；但注意复用条件是"文件路径一致"，
         不同目录下的同名 Agent（测试夹具里很常见）不会被误当成同一份。
         """
-        from .base_agent import BaseAgent
-
         names = agent_names or self.discover()
-        loaded = []
+        loaded: list[str] = []
+        plugins = self._plugin_entry_points()
 
         for name in names:
             try:
                 agent_file = self.agents_dir / f"{name}.py"
+                if not agent_file.exists() and name in plugins:
+                    self._register_entry_point(name, plugins[name], config, loaded)
+                    continue
                 module_key = f"agents.{name}"
                 cached = sys.modules.get(module_key)
                 cached_file = getattr(cached, "__file__", None)
@@ -230,39 +262,64 @@ class AgentLoader:
                     sys.modules[module_key] = mod
                     spec.loader.exec_module(mod)  # type: ignore[union-attr]
 
-                # 找 Agent 类
-                for attr_name in dir(mod):
-                    attr = getattr(mod, attr_name)
-                    if (isinstance(attr, type)
-                        and issubclass(attr, BaseAgent)
-                        and attr_name != "BaseAgent"):
-
-                        # 提取元信息
-                        meta = self._extract_meta(attr)
-
-                        # 实例化：优先注入按 agent 名提取的子配置，同时保留顶层全局配置
-                        agent_config = (config or {}).get(meta.name, config or {})
-                        agent = attr(
-                            name=meta.name,
-                            meta=meta,
-                            config=agent_config,
-                            message_bus=self.bus,
-                            registry=self.registry
-                        )
-                        # 保存实例配置到 meta，用于 respawn 恢复
-                        meta.config = agent_config
-
-                        self.registry.register(meta, agent)
-                        if self._logger:
-                            self._logger.log("info", f"注册: {meta.name} v{meta.version}")
-                        loaded.append(meta.name)
-                        break
+                self._register_module(mod, config, loaded, source="builtin")
 
             except Exception as e:
                 if self._logger:
                     self._logger.log("error", f"加载失败 {name}", error=str(e))
 
         return loaded
+
+    def _register_module(self, mod, config: dict | None, loaded: list[str],
+                         source: str) -> None:
+        """模块 → 注册其中第一个 BaseAgent 子类（内置与 entry_points 两条路径共用）。"""
+        from .base_agent import BaseAgent
+
+        for attr_name in dir(mod):
+            attr = getattr(mod, attr_name)
+            if (isinstance(attr, type)
+                and issubclass(attr, BaseAgent)
+                and attr_name != "BaseAgent"):
+
+                # 提取元信息
+                meta = self._extract_meta(attr)
+                meta.source = source
+
+                # 实例化：优先注入按 agent 名提取的子配置，同时保留顶层全局配置
+                agent_config = (config or {}).get(meta.name, config or {})
+                agent = attr(
+                    name=meta.name,
+                    meta=meta,
+                    config=agent_config,
+                    message_bus=self.bus,
+                    registry=self.registry
+                )
+                # 保存实例配置到 meta，用于 respawn 恢复
+                meta.config = agent_config
+
+                self.registry.register(meta, agent)
+                if self._logger:
+                    self._logger.log("info",
+                                     f"注册: {meta.name} v{meta.version}（{source}）")
+                loaded.append(meta.name)
+                break
+
+    def _register_entry_point(self, name: str, ep, config: dict | None,
+                              loaded: list[str]) -> None:
+        """按 entry point 加载外部插件模块（值须是模块路径）。"""
+        mod = ep.load()
+        if not isinstance(mod, types.ModuleType):
+            raise TypeError(
+                f"entry point {name!r} 的值须是模块路径（如 'my_pkg.my_agent'），"
+                f"实际加载出 {type(mod).__name__}——请对外暴露模块、把类放在模块里，"
+                f"与内置 agents/*.py 同构")
+        file_path = Path(str(getattr(mod, "__file__", "") or ""))
+        if not (str(file_path) and file_path.exists()):
+            raise ValueError(
+                f"entry point {name!r} 的模块没有可读文件，无法做 AST 安全检查")
+        if not declares_sandbox_trust(file_path):
+            _check_safety(file_path, strict=self._strict_safety)
+        self._register_module(mod, config, loaded, source=f"entry_point:{name}")
 
     def _extract_meta(self, cls) -> AgentMeta:
         """从类属性提取 AgentMeta"""
