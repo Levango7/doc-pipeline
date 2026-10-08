@@ -701,6 +701,12 @@ my_agent = "my_pkg.my_agent"
 `[entry_point:my_agent]`，且能作为任何 pipeline 的节点执行；同名时本仓
 `agents/*.py` 优先，插件不能悄悄顶掉内置 Agent。
 
+可运行的参考实现与完整契约说明见 [`examples/plugin-hello/`](examples/plugin-hello/README.md)：
+`pip install ./examples/plugin-hello` 后即可在 `--list-agents` 里看到 `char_stats`。
+该路径有一条**真 venv + 真 pip install** 的端到端判据（`tests/test_plugin_example.py`）——
+外部包装进 site-packages、空 agents 目录下仍被发现/注册/执行，是"本仓零改动"
+这条验收线的可复现证明。
+
 ### Agent 安全沙箱
 
 第三方 Agent 加载时自动执行 AST 安全检查（禁止 `os.system`/`subprocess`/`eval`/`exec`/`open` 等），
@@ -742,7 +748,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2194 个测试本机全绿**（`2194 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
+**2198 个测试本机全绿**（`2198 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -754,6 +760,7 @@ MCP 通用入口那批加了 6 条判据（run_workflow 5 / 序列化形状 1）
 定时触发那批加了 66 条判据（cron 解析与时刻计算 37 / 触发器与调度 29）；
 entry_points 插件那批加了 8 条判据（发现/加载/沙箱/同名优先）；
 入站 webhook 那批加了 28 条判据（配置/两种鉴权/审计留痕/HTTP 粘合层）；
+插件示例包那批加了 4 条判据（包形状 3 / 真 venv 安装即发现 1）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有

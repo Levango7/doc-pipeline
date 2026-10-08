@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-08·续23，外部插件示例包 + 真 venv 安装即发现的端到端判据）
+
+- **背景**：entry_points 发现（续21）落地时只有"打桩 entry_points()"的单元判据；
+  product-spec §2.1 验收线第 2 条要的是**真外部 pip 包**——本批把这条补成实证。
+- **`examples/plugin-hello/`**（随仓参考实现，可复制成模板）：
+  - `pyproject.toml` 声明 group `doc_pipeline.agents`、值 = 模块路径；
+  - `char_stats` Agent（字符 / 行 / 中文字符统计）刻意保持"干净"——不碰黑名单
+    调用、**不**声明 `SANDBOX_TRUSTED`（那是内置件的做法），示范合法插件如何
+    直接通过 AST 安全检查；
+  - README 写清契约（模块级 `AGENT_NAME` + BaseAgent 子类、同名本仓优先、
+    安装 / 验证 / 卸载三步）。
+- **端到端判据 `tests/test_plugin_example.py`**（4 条）：
+  - 快判据 3 条：示例包 group 必须等于加载器常量 `ENTRY_POINT_GROUP`（写错就
+    没有插件）、模块契约、AST 扫描零告警；
+  - **慢判据 1 条（真 venv + 真 pip install）**：`venv --system-site-packages` +
+    `pip install --no-deps --no-build-isolation ./examples/plugin-hello`，然后在
+    **空 agents 目录**下跑发现脚本——`char_stats` 必须被 `discover()` 列出、
+    `register()` 注册（`source == "entry_point:char_stats"`）且 `handle()` 真跑出
+    统计结果。整条判据**离线可跑**（pip/setuptools 借宿主机、插件本体不装依赖），
+    CI 与无网环境行为一致；本机实测该条 ~66s，是"验收证据"，不用 slow 标记
+    绕开它。
+- **口径**：product-spec §5.2"插件发现"行标记达标（**第三方插件实测数仍为 0**——
+  等真实生态，自带的示例包不算第三方）；README「外部插件」小节指向参考实现与
+  判据。全量 **2198 passed, 1 skipped, 6 deselected**（本机 2026-10-08 实测），
+  coverage 87.99%。
+
 ### Added（2026-10-08·续22，入站 webhook：HMAC/Token 鉴权 + 审计留痕，`POST /api/webhooks/<name>`）
 
 - **痛点**：触发方式此前全部是"从内部发起"（CLI / HTTP 提交 / MCP / 定时），

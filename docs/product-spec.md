@@ -145,7 +145,7 @@
 
 | 功能 | 现状 | v1 目标 | 验收判据 |
 |---|---|---|---|
-| 插件发现 | **无**：`agent_loader.py:159,177,207` 只 glob 本仓 `agents/*.py`，`pyproject.toml` 零 entry_points〔静态〕 | `entry_points` group 与本仓 glob **并存** | 外部 venv 包装好即被 `list agents` 列出，并能作为节点执行 |
+| 插件发现 | **已达标**（2026-10-08）：entry_points group `doc_pipeline.agents` 与本仓 glob 并存（`TestEntryPointPlugins` 八条）；参考实现 `examples/plugin-hello/` 随仓，**真 venv + 真 pip install** 的端到端判据在位（`tests/test_plugin_example.py`：空 agents 目录下仍被发现/注册/执行）。第三方插件实测数仍为 0（等真实生态） | `entry_points` group 与本仓 glob **并存** | 外部 venv 包装好即被 `list agents` 列出，并能作为节点执行 |
 | Agent 沙箱 | 已有（AST + 白名单，内置件跳过检查） | 增加来源/签名标记，并在 S4 显示 | 第三方危险 Agent 被拒且报出命中规则 |
 | pack 机制 | 无 | 拆出 `pack-docgen`：5 个文档件（writer/quality_gate/checker/layout/fact_checker）+ 6 条 docgen YAML + quality profile | 拆完 `--check` 不再要求 `agents/writer.py` 与 `pipelines/docgen.yaml`（当前 `bootstrap.py:183-185,235` 硬绑〔实测：`--check` 输出逐条含这两项〕） |
 | 领域件与引擎件的依赖方向 | 引擎层无 `import agents/docpipeline`〔静态+护栏 `tests/test_layering.py`〕 | 保持 | 分层测试继续通过 |
