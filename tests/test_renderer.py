@@ -413,3 +413,118 @@ class TestControlCharsAreStripped:
         pytest.importorskip("docx")
         res = renderer.render_docx(SAMPLE_MD, tmp_path / "c.docx")
         assert res["status"] == "ok" and res["control_chars_stripped"] == 0
+
+
+# ────────────────────────────── 表格与图片 ──────────────────────────────
+
+TABLE_MD = """# 数据表
+
+| 指标 | 本季 | 上季 |
+| --- | --- | --- |
+| 营收 | 120 | 98 |
+| 转义 | a\\|b | ok |
+
+正文收尾。
+"""
+
+
+class TestParseTables:
+    """表格块识别：认成 table 才走真表格，认不出必须回落段落（不误吞）。"""
+
+    def test_table_block_recognized(self):
+        blocks = renderer.parse_markdown("| a | b |\n| --- | --- |\n| 1 | 2 |")
+        assert [k for k, _ in blocks] == ["table"]
+        assert blocks[0][1] == "| a | b |\n| 1 | 2 |"
+
+    def test_separator_row_dropped(self):
+        """分隔行是语法壳，不进数据。"""
+        blocks = renderer.parse_markdown("| a |\n| --- |\n| 1 |")
+        assert "---" not in blocks[0][1]
+
+    def test_without_separator_falls_back_to_paragraph(self):
+        blocks = renderer.parse_markdown("| 单独一行 | 不是表格 |")
+        assert [k for k, _ in blocks] == ["p"]
+
+    def test_separator_without_leading_pipe(self):
+        """分隔行可以不带首竖线（`--- | ---`）。
+
+        旧实现"先全收再 pop(1)"在这种形态上直接 IndexError——
+        收行时按 | 行收，分隔行收不进来，pop 越界。
+        """
+        blocks = renderer.parse_markdown("| a | b |\n--- | ---\n| 1 | 2 |")
+        assert [k for k, _ in blocks] == ["table"]
+        assert blocks[0][1] == "| a | b |\n| 1 | 2 |"
+
+    def test_bare_rule_is_not_table_separator(self):
+        """单独一行 `---` 是水平线，不是分隔行——表头 + 水平线不得误判成表。"""
+        blocks = renderer.parse_markdown("| 看起来像表头 |\n---")
+        assert [k for k, _ in blocks] == ["p", "hr"]
+
+    def test_pipe_in_prose_not_swallowed(self):
+        """散文里的普通竖线行不是表格——没有分隔行就不认。"""
+        blocks = renderer.parse_markdown("a | b | c\nand | more")
+        assert [k for k, _ in blocks] == ["p", "p"]
+
+    def test_rows_split_unescaped_pipe_only(self):
+        """`\\|` 是单元格内的字面竖线，不能当分隔符切。"""
+        assert renderer._table_rows("| a\\|b | c |") == [["a|b", "c"]]
+
+    def test_ragged_rows_padded(self):
+        assert renderer._table_rows("| a | b |\n| c |") == [["a", "b"], ["c", ""]]
+
+    def test_empty_middle_cell_kept(self):
+        assert renderer._table_rows("| a |  | b |") == [["a", "", "b"]]
+
+
+class TestTableRendering:
+    """端到端：docx 落真 Word 表格（可编辑、可被 Word 识别），pdf 文本保真。"""
+
+    def test_docx_becomes_real_word_table(self, tmp_path):
+        pytest.importorskip("docx")
+        res = renderer.render_docx(TABLE_MD, tmp_path / "t.docx")
+        assert res["status"] == "ok"
+        assert res["blocks"]["table"] == 1
+        from docx import Document
+        doc = Document(res["path"])
+        assert len(doc.tables) == 1
+        table = doc.tables[0]
+        assert len(table.rows) == 3          # 表头 + 2 行数据
+        assert [c.text for c in table.rows[0].cells] == ["指标", "本季", "上季"]
+
+    def test_docx_escaped_pipe_restored(self, tmp_path):
+        pytest.importorskip("docx")
+        res = renderer.render_docx(TABLE_MD, tmp_path / "t.docx")
+        from docx import Document
+        table = Document(res["path"]).tables[0]
+        assert table.rows[2].cells[1].text == "a|b"
+
+    def test_docx_header_bold(self, tmp_path):
+        pytest.importorskip("docx")
+        res = renderer.render_docx(TABLE_MD, tmp_path / "t.docx")
+        from docx import Document
+        table = Document(res["path"]).tables[0]
+        header_run = table.rows[0].cells[0].paragraphs[0].runs[0]
+        body_run = table.rows[1].cells[0].paragraphs[0].runs[0]
+        assert header_run.font.bold and not body_run.font.bold
+
+    @needs_pdftext
+    def test_pdf_table_text_preserved(self, tmp_path):
+        pytest.importorskip("reportlab")
+        res = renderer.render_pdf(TABLE_MD, tmp_path / "t.pdf")
+        assert res["status"] == "ok"
+        import pymupdf
+        text = "".join(p.get_text() for p in pymupdf.open(res["path"]))
+        assert "指标" in text and "营收" in text
+        assert "a|b" in text
+
+
+class TestCleanInlineImage:
+    """图片标记要在链接规则之前吃掉，否则留下 `!` 残渣。"""
+
+    def test_image_marker_stripped(self):
+        assert renderer.clean_inline("![截图](https://x/y.png)") == "截图 (https://x/y.png)"
+
+    def test_image_inside_sentence(self):
+        out = renderer.clean_inline("见图 ![架构](https://x/a.png) 说明")
+        assert out == "见图 架构 (https://x/a.png) 说明"
+        assert "!" not in out
