@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-08·续21，entry_points 插件发现：外部 pip 包零改动接入 Agent）
+
+- **痛点**：Agent 发现只有"本仓 `agents/*.py` glob"一条路——外部包想提供 Agent
+  必须往本仓扔文件。product-spec §2 四轴表"扩展来源"（1 → 目标 ≥2 且第三方 ≥5）
+  与 §2.1 验收线第 2 条（"外部 pip 包提供 Agent，本仓零改动即被发现、注册、
+  执行"）记的就是这条。
+- **发现**：`AgentLoader.discover()` 在 glob 之外读 `entry_points(group=
+  "doc_pipeline.agents")`；entry point 的**值须是模块路径**（与内置
+  `agents/*.py` 同构：模块级 `AGENT_NAME` + 一个 BaseAgent 子类）——加载出类
+  之类的形态直接报错并给出修正提示，而不是猜。
+- **加载**：`_register_entry_point` → `ep.load()` 得到模块 → 用 `__file__` 做
+  **与内置件同一套安全检查**（未声明 `SANDBOX_TRUSTED` 就走 AST 扫描）→
+  复用新抽出的 `_register_module`（两条路径从此共用"找类 → 提 meta → 实例化 →
+  注册"这一段，不再有第二份分叉）。
+- **来源标记**：`AgentMeta` 新增 `source` 字段（`builtin` / `entry_point:<name>`），
+  `run.py --list-agents` 对非内置来源打 `[entry_point:xx]` 标记（S4 面板接它
+  是后续的事）。同名时**本仓文件优先**——插件不能悄悄顶掉内置 Agent。
+- **鲁棒性**：entry_points 元数据读取失败不让内置发现陪葬（记 error 后
+  discover 照常返回本仓清单）；坏插件（load 抛错 / 值不是模块 / 无文件）被记
+  日志跳过，不拖垮同批其他 Agent。
+- **测试**：`tests/test_agent_loader.py` 新增 `TestEntryPointPlugins` 8 条——
+  发现含插件且 group 名被钉住（写错就没有插件）、同名本仓优先、注册后
+  `handle()` 真跑出结果（可作节点执行）、未声明信任的恶意插件被 AST 拦下、
+  声明 `SANDBOX_TRUSTED` 放行、类值 entry point 被拒、元数据损坏不拖垮发现、
+  agents 目录缺失仍能列出插件。全量 **2166 passed, 1 skipped, 6 deselected**
+  （本机 2026-10-08 实测），coverage 87.98%；README 增「外部插件（entry_points）」
+  小节并修正沙箱段落的"白名单"旧口径；product-spec §2 四轴表"扩展来源"按实测
+  更新（组合数 40 → 80 重算）。
+
 ### Added（2026-10-08·续20，定时触发：`--triggers` 常驻调度 + 5 字段 cron）
 
 - **痛点**：引擎此前只有"人来触发"的入口（CLI / HTTP / MCP / recover），

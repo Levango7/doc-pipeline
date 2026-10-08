@@ -60,9 +60,9 @@
 | 任务类型（真实跑通的 pack） | **2**（docgen 系 / api-report） | **≥10** | 〔实测〕两条都跑通；其余 8 条 YAML 是 docgen 变体 |
 | 触发方式 | **4**（CLI / HTTP `POST /api/tasks` / MCP stdio / **定时 `--triggers`**〔2026-10-08 落地〕） | **≥6** | 〔实测〕`tests/test_triggers.py` 钉住提交路径与手动 run 同源；inbound webhook 仍未做（亦无鉴权面） |
 | 交付形态 | **5**（md / docx / pdf / **xlsx / pptx**〔2026-10-08 加入结构化子集〕） | **≥5** | 〔实测〕`tests/test_renderer.py` 读回判真；xlsx/pptx 为结构化子集而非全量转换 |
-| 扩展来源 | **1**（仅本仓 `agents/` glob） | **≥2 且第三方插件 ≥5** | 〔静态〕`agent_loader.py:159,177` |
+| 扩展来源 | **2**（本仓 `agents/` glob + **entry_points**〔2026-10-08 落地，group `doc_pipeline.agents`〕）；第三方插件实测数仍为 0 | **≥2 且第三方插件 ≥5** | 〔实测〕`tests/test_agent_loader.py::TestEntryPointPlugins` 八条钉住 发现/加载/沙箱/同名优先 |
 
-**组合数：40（2×4×5×1） → 300（10×6×5×2）**，即 ≥7.5x（2026-10-08 按实测轴值重算）；按 pack 与插件实际增量交付计，承诺口径仍为 **≥20x**。
+**组合数：80（2×4×5×2） → 300（10×6×5×2）**，即 ≥3.75x（2026-10-08 按实测轴值重算）；按 pack 与插件实际增量交付计，承诺口径仍为 **≥20x**。
 
 ### 2.1 验收线（四条同时成立才算达成）
 

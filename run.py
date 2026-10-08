@@ -698,7 +698,10 @@ def main():
             meta = orch.registry.get(name)
             if meta:
                 status = orch.registry.get_status(name).value
-                print(f"  {name:20s} v{meta['version']:6s} [{status:12s}] {meta.get('description', '')[:40]}")
+                source = meta.get("source", "builtin")
+                tag = "" if source == "builtin" else f"  [{source}]"
+                print(f"  {name:20s} v{meta['version']:6s} [{status:12s}] "
+                      f"{meta.get('description', '')[:40]}{tag}")
         print()
         return
 

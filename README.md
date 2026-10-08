@@ -657,10 +657,28 @@ curl -X DELETE http://127.0.0.1:8910/api/events/hooks/<id>
 
 Webhook 使用独立事件循环异步发送（aiohttp 连接池），不阻塞流水线主线程。
 
+### 外部插件（entry_points）
+
+除了本仓 `agents/*.py`，外部 pip 包可以通过 entry_points **零改动**接入 Agent
+（group `doc_pipeline.agents`；entry point 的**值须是模块路径**，与内置
+`agents/*.py` 同构：模块级 `AGENT_NAME` + 一个 BaseAgent 子类）：
+
+```toml
+# 插件包的 pyproject.toml
+[project.entry-points."doc_pipeline.agents"]
+my_agent = "my_pkg.my_agent"
+```
+
+安装后即被发现与注册——`python run.py --list-agents` 会带来源标记
+`[entry_point:my_agent]`，且能作为任何 pipeline 的节点执行；同名时本仓
+`agents/*.py` 优先，插件不能悄悄顶掉内置 Agent。
+
 ### Agent 安全沙箱
 
 第三方 Agent 加载时自动执行 AST 安全检查（禁止 `os.system`/`subprocess`/`eval`/`exec`/`open` 等），
-内置 Agent 白名单跳过检查。默认 `strict_safety=True`，检测到危险调用直接阻断加载。
+内置 Agent 通过在模块顶层声明 `SANDBOX_TRUSTED = True` 跳过检查（信任来自声明本身，
+不再依赖引擎里写死的名单）；entry_points 插件与内置件同一条策略。
+默认 `strict_safety=True`，检测到危险调用直接阻断加载。
 
 ---
 
@@ -696,7 +714,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2158 个测试本机全绿**（`2158 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
+**2166 个测试本机全绿**（`2166 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -706,8 +724,9 @@ E2E Nightly 停用那一批加了 2 条判据，锁"工作流有没有定时"与
 xlsx/pptx 结构化子集那批加了 16 条判据（xlsx 8 / pptx 8）；
 MCP 通用入口那批加了 6 条判据（run_workflow 5 / 序列化形状 1）；
 定时触发那批加了 66 条判据（cron 解析与时刻计算 37 / 触发器与调度 29）；
+entry_points 插件那批加了 8 条判据（发现/加载/沙箱/同名优先）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
-本机 2026-10-08 全量实测 87.96%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
+本机 2026-10-08 全量实测 87.98%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有
 出入——渲染层/OCR/嵌入类用例带 `skipif`，取决于该 job 装了哪些可选依赖。
 数字由 `tests/test_doc_consistency.py` 与实际收集数比对把关，落后于代码即红（此前这里
