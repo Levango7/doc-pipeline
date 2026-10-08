@@ -161,3 +161,65 @@ def test_ci_step_carries_the_output_fidelity_checks():
         "ci.yml 不再检查抓取层原始素材签名（degradation.FETCH_TIMESTAMP_RE 的等价式）"
     assert "OUTPUT FIDELITY OK" in text, "护栏与被检对象一并失效，先确认这一步还在"
 
+
+# ─── 5. E2E Nightly 的触发实态与文档口径必须同步 ─────────────
+
+def _nightly_triggers(text: str) -> set:
+    """从 YAML 解析出真实触发集合。
+
+    必须用解析器而不是 grep：定时块现在是被注释掉的形态留在文件里
+    （留着是为了"重启只需取消注释"），文本搜索会把注释当成触发，
+    于是这条护栏会永远自我安慰成"定时还在"。
+    """
+    import yaml
+
+    doc = yaml.safe_load(text) or {}
+    # YAML 1.1 把裸 `on` 解析成布尔 True，GitHub 的 `on:` 因此有两种键形态。
+    on = doc.get("on", doc.get(True, {}))
+    if isinstance(on, str):
+        return {on}
+    return set(on or {})
+
+
+def test_nightly_trigger_reader_sees_both_shapes():
+    """先证明读取函数本身活着：注释掉的 schedule 不算触发，真写的算。
+
+    双向对照——若哪天有人只改了注释而没改实触发，读取函数必须给出不同结论。
+    """
+    scheduled = _nightly_triggers("on:\n  schedule:\n    - cron: '0 18 * * *'\n")
+    assert scheduled == {"schedule"}, f"读取函数漏掉了真定时：{scheduled}"
+    dispatch_only = _nightly_triggers("on:\n  workflow_dispatch:\n")
+    assert dispatch_only == {"workflow_dispatch"}, dispatch_only
+    commented = _nightly_triggers(
+        "on:\n  workflow_dispatch:\n  # schedule:\n  #   - cron: '0 18 * * *'\n")
+    assert "schedule" not in commented, f"注释被当成了触发：{commented}"
+
+
+def test_nightly_disabled_state_is_disclosed_in_docs():
+    """E2E Nightly 有没有定时，README 与 CONTRIBUTING 的说法必须跟文件一致。
+
+    2026-10-08 停用的那晚，问题不在判据而在文档：README 只写了"未配 Secret 会全部
+    skip"，读者据此以为夜间回归还在跑。反向也成立——真要恢复定时，
+    把 schedule 加回来的同一天这两处文档就得改，否则这里红。
+    """
+    text = (ROOT / ".github" / "workflows" / "e2e-nightly.yml").read_text(encoding="utf-8")
+    triggers = _nightly_triggers(text)
+    assert "workflow_dispatch" in triggers, \
+        "e2e-nightly.yml 连手动触发都没了，Secret 配好后无法先手动验证再恢复定时"
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    discloses_disabled = "已于 2026-10-08 停用" in readme
+
+    if "schedule" in triggers:
+        assert not discloses_disabled, \
+            "定时触发已恢复，README 却仍说 E2E Nightly 处于停用状态"
+    else:
+        assert discloses_disabled, \
+            "E2E Nightly 已无定时触发，README「测试」一节必须写明停用日期与重启条件"
+        assert "重启条件" in readme, "停用要连同怎么恢复一起写，否则等于永久放弃"
+        row = [line for line in contributing.splitlines() if "e2e-nightly.yml" in line]
+        assert row, "CONTRIBUTING 的工作流表里读不到 e2e-nightly.yml 这一行，护栏需重写"
+        assert "停用" in row[0], \
+            f"CONTRIBUTING 仍按「定时照跑」介绍 e2e-nightly：{row[0]}"
+
