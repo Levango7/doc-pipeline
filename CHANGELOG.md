@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed（2026-10-08·续15，E2E Nightly 停用：常驻红灯不是回归信号）
+
+- **现象**：E2E Nightly 连续三晚红（10-05/10-06/10-07，run 37389154677 /
+  37538468919 / 37696603993，都是 `schedule` 触发、20–48 秒就结束）。
+- **根因不是坏了，是判据按设计生效了**：`7d925b5`（2026-10-05）给这个工作流装了
+  "0 执行不许报绿"的闸门，而仓库**从未配置过任何 `E2E_*` Secret**
+  （`gh secret list` 返回 `[]`，仓库也没有 environment），于是第一道
+  `::error::未配置任何 E2E_* Secret…` 每晚必然命中——真正的 6 条 e2e 用例
+  从来没机会跑，第二道判据也就从没被执行过。
+- **停用前的假绿也一并核过**（不是凭注释推断）：10-02/10-03/10-04 三个 schedule run
+  的日志尾部分别是 `6 skipped, 1519 deselected`、`6 skipped, 1674 deselected`、
+  `6 skipped, 1784 deselected`，工作流却都是 success——正是那条判据要治的形态。
+- **处置（两条都做，避免只改一处）**：GitHub 侧工作流状态置为 `disabled_manually`
+  （workflow id 344188685，`gh workflow list` 回读确认）；YAML 里 `schedule` 块摘掉，
+  只留 `workflow_dispatch`——UI 上的停用状态不进 git，光靠它下次改文件就可能被翻回来。
+  `workflow_dispatch` 保留是为了"配好 key 就能手动验一次"，不用先恢复定时。
+- **README「测试」一节的口径补齐**：原话"CI 未配 Secret 时这些用例会全部 skip
+  （历史上 E2E Nightly 因此'绿而未跑'）"不算写错，但只交代了旧假绿，没交代
+  **现在每晚红**这件事——读者按 README 看仓库会以为夜间回归还在跑。现补齐 6 条用例
+  各自的 `skipif` 前置（搜索要 `BOCHA_API_KEY`/`TAVILY_API_KEY` 其一、LLM 要
+  `LLM_API_KEY`、全链路两条都要）、停用的原因与日期，以及重启条件；
+  CONTRIBUTING 的工作流表同样从"schedule / dispatch"改成只写 dispatch 并注明停用。
+- **顺手加了两条判据把这份口径钉住**（`tests/test_doc_consistency.py`）：一条先证明
+  读取函数用的是 YAML 解析器而不是文本搜索（当前 schedule 块就留在文件里当注释，
+  grep 会把它读成"定时还在"），一条要求"有没有定时"与"README/CONTRIBUTING 怎么说"
+  同向——反向也成立，将来真恢复定时却没改文档一样红。
+  五条漂移变异（恢复定时不改文档 / 删停用声明 / 删重启条件 / 表格回退 / 连手动触发一起摘）
+  逐一转红且失败原因各对其意，原样为绿，跑完文件逐字节还原。
+- **离线兜底没有变薄**：`tests/test_e2e_mock.py` 与 `tests/test_kb_pipeline_wiring.py`
+  都不带 `e2e` 标记，默认 CI 真跑（本次实测 `-m e2e` 收集到 6/2060，其余 2054 在默认口径里）。
+- **顺带排除一个假嫌疑人**：Perf Trend 只有一次 10-01 的 run，看着像"另一个从不跑的定时"，
+  实际它的 cron 是 `0 0 1 * *`（每月 1 日），下次该在 11-01——不是缺陷。
+
 ### Added（2026-10-08·续14，artesian 发布流水线就位（等一次性 PyPI 配置））
 
 - artesian 加了 `.github/workflows/release.yml` + `tools/verify_dist.py`：
