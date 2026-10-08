@@ -593,7 +593,9 @@ python run.py input.md --admin
 python run.py --mcp
 ```
 
-提供 5 个 tools：`generate_document`、`get_task`、`list_tasks`、`list_pipelines`、`get_pipeline_info`。
+提供 6 个 tools：`generate_document`、`run_workflow`（通用入口：任意已安装流水线 +
+任意 `inputs`，对象按「## 键」序列化为输入文档、字符串原样写入）、`get_task`、
+`list_tasks`、`list_pipelines`、`get_pipeline_info`。
 
 ### 事件钩子（Event Hooks）
 
@@ -666,7 +668,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2086 个测试本机全绿**（`2086 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
+**2092 个测试本机全绿**（`2092 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -674,8 +676,9 @@ url_guard 归位后 52 条用例随库走，库侧另加 9 条 SSRF 判据（含
 E2E Nightly 停用那一批加了 2 条判据，锁"工作流有没有定时"与文档说法同向；
 渲染层结构化表格那批加了 15 条判据（表格解析 9 / 渲染端到端 4 / 行内清洗 2）；
 xlsx/pptx 结构化子集那批加了 16 条判据（xlsx 8 / pptx 8）；
+MCP 通用入口那批加了 6 条判据（run_workflow 5 / 序列化形状 1）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
-本机 2026-10-08 全量实测 87.93%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
+本机 2026-10-08 全量实测 87.95%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有
 出入——渲染层/OCR/嵌入类用例带 `skipif`，取决于该 job 装了哪些可选依赖。
 数字由 `tests/test_doc_consistency.py` 与实际收集数比对把关，落后于代码即红（此前这里

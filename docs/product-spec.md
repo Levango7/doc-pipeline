@@ -154,7 +154,7 @@
 
 | 功能 | 现状 | v1 目标 | 验收判据 |
 |---|---|---|---|
-| MCP Server | 5 tools 全是文档动词；**启动 banner 打到 stdout 污染 JSON-RPC 通道**；`serverInfo.version` 恒为 `unknown`〔实测：真子进程 stdio 往返复现〕 | 加通用 `run_workflow(name, inputs)`；banner/日志改 stderr；version 接 `__version__` | 一条**真实 stdio 往返**测试通过（当前 12 个 MCP 测试全走进程内 `_handle_request`〔静态〕） |
+| MCP Server | **已达标**（2026-10-08）：6 tools——新增通用 `run_workflow(name, inputs)`（inputs 按「## 键」渲染为输入文档）；banner/日志改 stderr 与 `serverInfo.version` 接 `__version__` 均已修（FP-3 关闭）；真 stdio 往返测试在位（`tests/test_mcp_server.py::TestMCPOverRealStdio`）。原现状留档：5 tools 全是文档动词 / banner 污染 stdout / version 恒 `unknown`〔实测〕 | 加通用 `run_workflow(name, inputs)`；banner/日志改 stderr；version 接 `__version__` | 一条**真实 stdio 往返**测试通过 |
 | HTTP 执行 API | 只有"提交文档生成任务"〔静态：`openapi_spec.py:126`〕 | `POST /api/workflows/{name}/runs` 接受任意 payload | 用非文档 pack 跑通该端点 |
 | CLI | 功能完整但命名满是文档味（banner、argparse 描述、`--enhance`） | 改名 + 动词收敛为 `run / plan / lock / pack / plugin` | `--help` 里不再出现"文档生成流水线"字样 |
 | 触发方式 | 3 种 | 6 种（+ 定时 + inbound webhook） | 定时触发的 run 出现在同一队列与观测面；webhook 入站有鉴权与审计 |

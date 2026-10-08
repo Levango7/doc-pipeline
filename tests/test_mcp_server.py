@@ -57,9 +57,10 @@ class TestMCPServer:
     def test_tools_list(self, server):
         resp = server._handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = resp["result"]["tools"]
-        assert len(tools) == 5
+        assert len(tools) == 6
         names = [t["name"] for t in tools]
         assert "generate_document" in names
+        assert "run_workflow" in names
         assert "get_task" in names
         assert "list_tasks" in names
         assert "list_pipelines" in names
@@ -121,6 +122,90 @@ class TestMCPServer:
         assert isinstance(content, list)
         assert content[0]["type"] == "text"
         assert isinstance(content[0]["text"], str)
+
+
+class TestRunWorkflowTool:
+    """通用入口 run_workflow：任意流水线 + 任意 inputs。
+
+    输入文档是引擎的运行接口（首层 Agent 从它提取查询词），序列化规则单独
+    直测 `_render_inputs_doc`；提交路径用 MagicMock orchestrator 断言，
+    并 patch 掉 watcher 线程以便读临时输入文件（不 patch 会被后台清理删走）。
+    """
+
+    def _server(self, pipeline="api-digest"):
+        from types import SimpleNamespace
+        task = SimpleNamespace(id="tid", status=SimpleNamespace(value="running"),
+                               pipeline_name=pipeline, result={}, error=None)
+        orch = MagicMock()
+        orch.run_plan.return_value = task
+        return MCPServer(orch=orch), orch
+
+    def test_tool_listed_with_schema(self, server):
+        resp = server._handle_request({"jsonrpc": "2.0", "id": 30, "method": "tools/list"})
+        tool = next(t for t in resp["result"]["tools"] if t["name"] == "run_workflow")
+        assert tool["inputSchema"]["required"] == ["name"]
+        assert "inputs" in tool["inputSchema"]["properties"]
+
+    def test_missing_name(self, server):
+        resp = server._handle_request({
+            "jsonrpc": "2.0", "id": 31, "method": "tools/call",
+            "params": {"name": "run_workflow", "arguments": {}},
+        })
+        assert resp["result"]["isError"] is True
+        assert "name" in resp["result"]["content"][0]["text"]
+
+    def test_unknown_pipeline_lists_available(self, server):
+        resp = server._handle_request({
+            "jsonrpc": "2.0", "id": 32, "method": "tools/call",
+            "params": {"name": "run_workflow", "arguments": {"name": "no-such-wf"}},
+        })
+        text = resp["result"]["content"][0]["text"]
+        assert resp["result"]["isError"] is True
+        assert "no-such-wf" in text and "可用" in text
+
+    def test_object_inputs_serialized_into_input_doc(self):
+        s, orch = self._server()
+        with patch("pipeline_core.mcp_server.threading.Thread"):
+            resp = s._handle_request({
+                "jsonrpc": "2.0", "id": 33, "method": "tools/call",
+                "params": {"name": "run_workflow", "arguments": {
+                    "name": "api-digest",
+                    "inputs": {"topic": "季度营收", "files": ["a.pdf", "b.pdf"]},
+                }},
+            })
+        assert resp["result"].get("isError") is not True
+        data = json.loads(resp["result"]["content"][0]["text"])
+        assert data["pipeline"] == "api-digest"
+        assert data["inputs"]["topic"] == "季度营收"      # inputs 原样回显
+        input_file = Path(orch.run_plan.call_args.kwargs["input_file"])
+        text = input_file.read_text(encoding="utf-8")
+        assert "## topic" in text and "季度营收" in text
+        assert "- a.pdf" in text and "- b.pdf" in text
+        input_file.unlink(missing_ok=True)
+
+    def test_string_inputs_passthrough(self):
+        s, orch = self._server("kb-docgen")
+        with patch("pipeline_core.mcp_server.threading.Thread"):
+            resp = s._handle_request({
+                "jsonrpc": "2.0", "id": 34, "method": "tools/call",
+                "params": {"name": "run_workflow", "arguments": {
+                    "name": "kb-docgen", "inputs": "季度复盘\n资料A.pdf",
+                }},
+            })
+        assert resp["result"].get("isError") is not True
+        input_file = Path(orch.run_plan.call_args.kwargs["input_file"])
+        text = input_file.read_text(encoding="utf-8")
+        assert "季度复盘" in text and "资料A.pdf" in text
+        input_file.unlink(missing_ok=True)
+
+    def test_render_inputs_doc_shapes(self):
+        from pipeline_core.mcp_server import _render_inputs_doc
+        assert _render_inputs_doc("wf", {}) == "# wf\n"
+        assert _render_inputs_doc("wf", "") == "# wf\n"
+        doc = _render_inputs_doc("wf", {"n": 3, "nested": {"a": 1}, "items": [1, "x"]})
+        assert "## n" in doc and "\n3\n" in doc
+        assert "- 1" in doc and "- x" in doc
+        assert re.search(r'\{"a":\s*1\}', doc), f"嵌套对象应走 JSON: {doc!r}"
 
 
 class TestMCPOverRealStdio:
