@@ -56,7 +56,13 @@ class TestExamplePackageShape:
 
 
 class TestRealPipInstallDiscovery:
-    """慢判据：真 venv 里 pip install → 被发现/注册/执行（验收线第 2 条的实证）。"""
+    """慢判据：真 venv 里 pip install → 被发现/注册/执行（验收线第 2 条的实证）。
+
+    安装走两段式：**优先 `--no-build-isolation`**（借用宿主机 setuptools，离线可跑）；
+    宿主机没有可借的 setuptools 时（Python 3.12+ 的 ensurepip 不再自带，CI 镜像
+    常见）**回退到隔离构建**——由 pip 临时安装构建依赖，需要一次网络访问。
+    两条路径都会把包真装进 site-packages，判据本身不打折。
+    """
 
     @staticmethod
     def _venv_python(venv_dir: Path) -> Path:
@@ -73,10 +79,14 @@ class TestRealPipInstallDiscovery:
             capture_output=True, text=True, timeout=180)
         assert r.returncode == 0, r.stderr[-800:]
         vpy = self._venv_python(venv_dir)
-        r = subprocess.run(
-            [str(vpy), "-m", "pip", "install", "--no-deps", "--no-build-isolation",
-             "--disable-pip-version-check", str(PLUGIN_DIR)],
-            capture_output=True, text=True, timeout=300)
+        base = [str(vpy), "-m", "pip", "install", "--no-deps",
+                "--disable-pip-version-check"]
+        r = subprocess.run(base + ["--no-build-isolation", str(PLUGIN_DIR)],
+                           capture_output=True, text=True, timeout=300)
+        if r.returncode != 0 and "setuptools.build_meta" in (r.stderr or ""):
+            # 宿主机没 setuptools 可借（3.12+ 常见）→ 回退隔离构建（要一次网络）
+            r = subprocess.run(base + [str(PLUGIN_DIR)],
+                               capture_output=True, text=True, timeout=600)
         assert r.returncode == 0, f"pip install 失败：\n{r.stdout[-800:]}\n{r.stderr[-800:]}"
 
         # 空 agents 目录 + 仓库根为 cwd（'' 进 sys.path，pipeline_core 从本仓导入）——
