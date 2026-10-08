@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed（2026-10-08·续16，main 的 required 检查从此也管管理员）
+
+- **查出来的一件事**：`main` 上确实挂着 5 条 required 检查
+  （`test (3.11/3.12/3.13/3.14)` + `docker`，`strict=true`），但 `enforce_admins=false`——
+  所以那两批直推各自打印了 `Bypassed rule violations for refs/heads/main: - 5 of 5 required
+  status checks are expected.`。**"全绿才进 main"在此之前只是惯例，不是机器判据**：
+  真把 main 推红了，门禁不会拦在门外，只会事后告诉你红了。
+- **处置**：`enforce_admins` 翻 true。读回整份 protection 与改动前逐字段 diff，
+  **只有这一个字段变了**——5 个 context、`strict`、`required_signatures`、
+  `required_linear_history`、`allow_force_pushes`、`allow_deletions` 全部原样，
+  也**没有**顺手开启"必须经 PR 才能改"（那是另一件事，没授权就不动）。
+- **端点形态记一笔**：这条子资源是 `POST .../protection/enforce_admins` 生效、`PUT` 同一 URL 返
+  **404**；而上一批停用 workflow 时正好反过来（`PUT .../disable` 生效、`POST` 404）。
+  所以"写操作 404"先怀疑动词与端点形态，别急着归因权限——GET 一路都通、scope 也够。
+- **从下一批开始的代价**：直推 `main` 会被拒（required 检查对新 sha 只能"预期"、不能"已过"），
+  每批要走 分支 → PR → CI 全绿 → 合并。这是这条规则应有的样子，但节奏确实变了，
+  后续推送与合并仍需逐批授权。
+
+### Added（2026-10-08·续16，渲染层结构化表格：docx 落真 Word 表格、pdf 落 Table）
+
+- **背景**：`docpipeline/renderer.py` 里挂着产品代码全仓唯一的 TODO——"表格、图片
+  暂按段落处理"。上游确有其物：摄入层把 PDF 表格转成 Markdown 管道表
+  （`_rows_to_markdown`，PyMuPDF `find_tables`），writer 产出的正文也可能带表格；
+  渲染层原样把它们当普通段落写进 docx/pdf，交付文档里是一串带竖线的字面文本。
+- **解析层**：`parse_markdown` 新增 `table` 块类型。判据刻意保守——表头行须以
+  `|` 起收、分隔行须含竖线（`(?=.*\|)` 前置断言），两条都满足才认；否则整段
+  回落为普通段落，散文里的竖线行不被误吞。
+- **docx**：落**真 Word 表格**（`Table Grid` 样式、表头行加粗）——Word 里可
+  继续编辑行列，而不是一串管道符段落。**pdf**：落 ReportLab `Table`
+  （浅灰网格线、表头浅底、单元格样式从 BodyText 继承），单元格文本进 pdf
+  文本层（pymupdf 可读回，中文无损）。
+- **单元格切分**只按未转义竖线切（`(?<!\\)\|`），`\|` 还原为字面竖线——与
+  ingest 产出（单元格内字面竖线写作 `\|`）对齐；列数取齐最长行（缺的补空）。
+- **顺带修掉图片标记残渣**：`clean_inline` 原来只吃链接，`![截图](url)` 会被
+  `_RE_LINK` 命中 `[截图](url)` 而留下 `!` 残渣（渲染为 `!截图 (url)`）；
+  现图片规则先于链接执行，输出 `截图 (url)`。
+- **实现期抓出并钉住两个真缺陷（各有回归用例，先在旧实现上复现再修）**：
+  1. 分隔行不带首竖线（`--- | ---`，GFM 合法形态）时，旧"先把连续 `|` 行全收
+     进来再 `pop(1)` 丢分隔行"的写法直接 `IndexError`（收行条件与分隔行形态
+     不匹配）——复现 `REPRO OK, IndexError: pop index out of range` 后改为
+     显式跳过分隔行的收集；
+  2. 单独一行 `---`（水平线）跟在看起来像表头的行后会被误判成分隔行——
+     `_RE_TABLE_SEP` 补 `(?=.*\|)` 要求行内至少一个竖线。
+- **测试**：`tests/test_renderer.py` 49 → 64 条（+15：解析 9 / docx·pdf 端到端
+  4 / 行内清洗 2）。端到端不只看文件生成：docx 用 python-docx 读回 `doc.tables`
+  断言行列数与单元格文本、表头加粗；pdf 用 pymupdf 断言文本层含单元格内容与
+  转义竖线还原。README 测试数与格式表同批更新（**2070 个测试本机全绿**，
+  coverage 87.89%）——护栏按设计先红后绿，更新后复跑为绿。
+
 ### Changed（2026-10-08·续15，E2E Nightly 停用：常驻红灯不是回归信号）
 
 - **现象**：E2E Nightly 连续三晚红（10-05/10-06/10-07，run 37389154677 /

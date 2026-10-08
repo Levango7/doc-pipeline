@@ -1,4 +1,4 @@
-"""渲染层：Markdown → docx / pdf / html。
+"""渲染层：Markdown → docx / pdf。
 
 设计依据（见 spike/README.md 的可行性验证结论，GO）：
 - **docx 走 OOXML 路线**（python-docx）：落真正的 Word 标题样式，
@@ -12,6 +12,8 @@
 2. reportlab 5.x 的字体家族映射表只有 13 个西文家族，任何 CID 中文字体
    都需同时过三道关：registerFont + _ps2tt_map + _tt2ps_map
 3. reportlab 的 `wordWrap="CJK"` 会吞掉行首空格 → 代码缩进必须转 &nbsp;
+4. 表格识别走**保守判据**：表头行须以 `|` 起收 + 分隔行须含竖线，两条都
+   满足才认成表格；宁可回落成段落，也不把散文里的竖线行误吞成表格
 
 两个后端都是**可选依赖**：未安装时对应函数返回明确的 error 结果，
 而不是抛异常中断流水线（降级策略，与项目既有约定一致）。
@@ -38,6 +40,8 @@ try:
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import Table as _RT
+    from reportlab.platypus.tables import TableStyle as _RTStyle
     HAS_PDF = True
 except ImportError:      # pragma: no cover - 环境相关
     HAS_PDF = False
@@ -49,21 +53,47 @@ DEFAULT_TITLE = "生成文档"
 _RE_INLINE_CODE = re.compile(r"`([^`]+)`")
 _RE_BOLD = re.compile(r"\*\*([^*]+)\*\*")
 _RE_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_RE_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+_RE_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_RE_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _RE_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 _RE_RULE = {"---", "***", "___"}
 _RE_FENCE_LINE = re.compile(r"^\s*(`{3,}|~{3,})\s*(\S*)")
+_RE_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+# 分隔行：| --- | :---: | 这类；单元格只允许 -、:、空格与竖线。
+# 前置 (?=.*\|) 要求行内至少有一个竖线——否则单独的 `---`（水平线）
+# 会沾上表头行被误判成分隔行。
+_RE_TABLE_SEP = re.compile(r"^(?=.*\|)\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
+# 单元格切分：只按「前面没有反斜杠」的竖线切，`\|` 是字面竖线
+_RE_UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
+
+_RT_STYLE = None
+if HAS_PDF:
+    from reportlab.lib import colors as _rl_colors
+    _RT_STYLE = _RTStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, _rl_colors.Color(0.72, 0.72, 0.72)),
+        ("BACKGROUND", (0, 0), (-1, 0), _rl_colors.Color(0.93, 0.94, 0.96)),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ])
 
 
 # ───────────────────────────── Markdown 解析 ─────────────────────────────
 
 def clean_inline(text: str) -> str:
-    """行内标记清洗：代码 / 粗体 / 链接 → 纯文本。
+    """行内标记清洗：代码 / 粗体 / 图片 / 链接 → 纯文本。
 
     链接保留为 `文字 (URL)`——引用来源是文档可信度的关键信息，
     不能像正文提取那样丢掉 URL。
+    图片必须在链接规则**之前**吃掉：`![alt](url)` 会被 `_RE_LINK`
+    命中 `[alt](url)` 部分，留下一个 `!` 残渣——所以先处理图片。
     """
     text = _RE_INLINE_CODE.sub(r"\1", text)
     text = _RE_BOLD.sub(r"\1", text)
+    text = _RE_IMAGE.sub(r"\1 (\2)", text)
     text = _RE_LINK.sub(r"\1 (\2)", text)
     return text.strip()
 
@@ -71,8 +101,8 @@ def clean_inline(text: str) -> str:
 def parse_markdown(md: str) -> list[tuple[str, str]]:
     """把 Markdown 拆成 (kind, text) 序列。
 
-    kind ∈ h1/h2/h3/p/li/code/quote/hr
-    只覆盖渲染所需的最小子集；表格、图片暂按段落处理（TODO: 结构化表格）
+    kind ∈ h1/h2/h3/p/li/code/quote/table/hr
+    表格 = 连续 `|` 行且第二行是分隔行；否则整段回落为普通段落（不误吞）。
     """
     blocks: list[tuple[str, str]] = []
     lines = md.splitlines()
@@ -99,6 +129,20 @@ def parse_markdown(md: str) -> list[tuple[str, str]]:
         if not line.strip():
             i += 1
             continue
+
+        # 表格：本行是 | 行 且 下一行是分隔行，才认成表格；否则按普通段落走。
+        # 分隔行只被跳过、不进数据——它可能不带首竖线（`--- | ---`），
+        # 用"先全收再 pop"的写法会在这种形态上越界（已用回归用例钉住）。
+        if _RE_TABLE_ROW.match(line) and i + 1 < len(lines) \
+                and _RE_TABLE_SEP.match(lines[i + 1]):
+            raw: list[str] = [line]
+            i += 2                       # 跳过分隔行
+            while i < len(lines) and _RE_TABLE_ROW.match(lines[i]):
+                raw.append(lines[i])
+                i += 1
+            blocks.append(("table", "\n".join(raw)))
+            continue
+
         if line.strip() in _RE_RULE:
             blocks.append(("hr", ""))
         elif line.startswith("### "):
@@ -115,6 +159,28 @@ def parse_markdown(md: str) -> list[tuple[str, str]]:
             blocks.append(("p", clean_inline(line)))
         i += 1
     return blocks
+
+
+def _table_rows(text: str) -> list[list[str]]:
+    """table 块文本 → 二维行。
+
+    竖线按「未被反斜杠转义」切分——ingest 产出把单元格里的字面竖线
+    写作 `\\|`，用一个 `split("|")` 会把 `a\\|b` 劈成两半。首尾竖线
+    产生的空首/空尾单元格丢掉；列数取齐最长行（缺的补空）。
+    """
+    rows: list[list[str]] = []
+    for line in text.splitlines():
+        cells = [c.strip().replace("\\|", "|")
+                 for c in _RE_UNESCAPED_PIPE.split(line.strip())]
+        if cells and cells[0] == "":
+            cells.pop(0)                   # 行首的 |
+        if cells and cells[-1] == "":
+            cells.pop()                    # 行尾的 |
+        rows.append(cells)
+    if not rows:
+        return []                          # 空文本不走到 max()（防子集调用方）
+    width = max(len(r) for r in rows)
+    return [r + [""] * (width - len(r)) for r in rows]
 
 
 # ─────────────────────────────── docx 渲染 ───────────────────────────────
@@ -209,7 +275,8 @@ def render_docx(markdown: str, output_path: str | Path,
     doc = Document()
     _setup_docx_styles(doc)
 
-    stats = {"h1": 0, "h2": 0, "h3": 0, "p": 0, "li": 0, "code": 0, "quote": 0}
+    stats = {"h1": 0, "h2": 0, "h3": 0, "p": 0, "li": 0, "code": 0, "quote": 0,
+             "table": 0}
     for kind, text in blocks:
         if kind == "h1":
             p = doc.add_heading("", level=0)      # → Word "Title" 样式
@@ -235,6 +302,18 @@ def render_docx(markdown: str, output_path: str | Path,
             r.font.size = Pt(9.5)
             r.font.italic = True
             r.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+        elif kind == "table":
+            rows = _table_rows(text)
+            if rows:
+                t = doc.add_table(rows=len(rows), cols=len(rows[0]))
+                t.style = "Table Grid"
+                for ri, row in enumerate(rows):
+                    for ci in range(len(rows[0])):
+                        run = t.cell(ri, ci).paragraphs[0].add_run(row[ci])
+                        if ri == 0:               # 表头加粗
+                            run.font.bold = True
+            else:
+                doc.add_paragraph().add_run(text)
         elif kind == "hr":
             continue
         else:
@@ -303,6 +382,8 @@ def _pdf_styles() -> dict[str, Any]:
                              spaceAfter=4),
         "quote": ParagraphStyle("Quote", parent=body, leftIndent=16,
                                 fontSize=9.5, textColor="#555555", **no_infer),
+        "cell": ParagraphStyle("CellCN", parent=body, fontSize=9,
+                               leading=13, spaceAfter=0, **no_infer),
         "code": ParagraphStyle(
             "Code", parent=base["Code"], fontName="Courier", fontSize=7.5,
             leading=9.5, leftIndent=16, backColor="#F5F5F5", borderPadding=3),
@@ -360,6 +441,17 @@ def render_pdf(markdown: str, output_path: str | Path,
             for ln in (text.splitlines() or [""]):
                 flow.append(Paragraph(_preserve_indent(ln.rstrip()) or "&nbsp;",
                                       st["code"]))
+        elif kind == "table":
+            rows = _table_rows(text)
+            if rows:
+                data = [[Paragraph(_xml_escape(c), st["cell"]) for c in row]
+                        for row in rows]
+                tbl = _RT(data, hAlign="LEFT")
+                tbl.setStyle(_RT_STYLE)
+                flow.append(tbl)
+                flow.append(Spacer(1, 7))
+            else:
+                flow.append(Paragraph(_xml_escape(text), st["p"]))
         else:
             flow.append(Paragraph(_xml_escape(text), st[kind]))
 
