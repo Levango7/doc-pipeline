@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-08·续19，MCP 通用入口 run_workflow(name, inputs)）
+
+- **痛点**：MCP 原有 5 个 tools 全是文档动词——`generate_document` 把输入写死成
+  `## 查询` 段。拿引擎跑非文档流水线（api-report / api-digest / kb-docgen）没有
+  通用入口，等于把"通用引擎"在外面焊成了"文档工具"（product-spec §5.3 记的就是这条）。
+- **新增 `run_workflow`**：只要求 `name`（已安装流水线名），`inputs` 可选、对象或字符串：
+  - 对象 → 按 `## 键` 分节序列化为输入文档（列表成 `- ` 行、嵌套对象走 JSON、
+    标量直书）；字符串 → 原样写入；空输入 → 只写标题行。
+  - 输入文档就是引擎既有的运行接口（首层 Agent 从它提取查询词），提取会跳过
+    `#` 行，所以标题不会被误当主题。
+  - 返回值回显 `inputs`；`wait` / `output` 语义与 `generate_document` 完全一致。
+- **顺带收口**：两条工具抽出共享提交尾 `_submit_plan_run`（写临时输入文件 →
+  parse → run_plan → wait/异步 watcher 收尾只在单处维护）；`_resolve_target_path`
+  同理。原 `generate_document` 在 resolve 失败时"先写文件再删"的绕路随之消失
+  （顺序改成先 resolve 后写文件）。
+- **一处守卫跟着生成点走**：`test_security_hardening` 里那条 `inspect.getsource`
+  断言原盯 `_tool_generate_document` 里有没有 `new_task_id()`，重构后失焦（它在新
+  结构下转红是对的）；改盯 `_submit_plan_run`，并钉住两条工具都必须经过它。
+- **测试**：`tests/test_mcp_server.py` 14 → 20 条（+6：schema / 缺 name / 未知流水线
+  列可用清单 / 对象 inputs 落输入文档 / 字符串原样 / `_render_inputs_doc` 形状直测；
+  提交路径测试 patch 掉 watcher 线程再读临时文件——不 patch 会被后台清理删走）。
+  全量 **2092 passed, 1 skipped, 6 deselected**（本机 2026-10-08 实测），
+  coverage 87.95%；README 的 MCP 小节与测试计数、product-spec §5.3 的 MCP 行
+  （标记达标）同批更新。
+
 ### Added（2026-10-08·续18，xlsx / pptx 结构化子集渲染：表格落工作表、标题起幻灯片）
 
 - **编号说明**：续16（本仓渲染层结构化表格）与并行批的 enforce_admins 台账原本

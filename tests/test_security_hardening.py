@@ -281,9 +281,15 @@ class TestMcpInitializeEcho:
         import inspect
 
         from pipeline_core.mcp_server import MCPServer
-        src = inspect.getsource(MCPServer._tool_generate_document)
-        assert "new_task_id()" in src
-        assert "uuid.uuid4" not in src
+        # task_id 的生成点已收口到共享提交尾 `_submit_plan_run`（generate_document
+        # 与 run_workflow 共用）——守卫跟着生成点走，并钉住两条工具都必须经过它，
+        # 不然 id 来源就分叉了（原守卫只盯 _tool_generate_document，重构后失焦）。
+        submit_src = inspect.getsource(MCPServer._submit_plan_run)
+        assert "new_task_id()" in submit_src
+        assert "uuid.uuid4" not in submit_src
+        for tool in (MCPServer._tool_generate_document, MCPServer._tool_run_workflow):
+            assert "_submit_plan_run" in inspect.getsource(tool), (
+                f"{tool.__name__} 必须经 _submit_plan_run 提交任务")
 
 
 # ─── 4. new_task_id 统一生成 ────────────────────────────────

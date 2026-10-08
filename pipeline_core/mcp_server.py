@@ -88,6 +88,34 @@ def _validate_output_path(path_str: str, base_dir: str | None = None) -> tuple[b
         return False, f"路径 {path_str!r} 不在允许目录 {base!s} 内"
     return True, ""
 
+
+def _render_inputs_doc(title: str, inputs: Any) -> str:
+    """把 run_workflow 的 inputs 渲染成输入文档（引擎以输入文档作为运行接口）。
+
+    对象按 `## 键` 分节：标量直书、列表成 `- ` 行、嵌套对象走 JSON；
+    字符串输入原样落盘；空输入只给标题行。首层 Agent 的查询词提取会跳过
+    `#` 行，所以标题不会被误当成主题。
+    """
+    if inputs is None or (isinstance(inputs, (dict, list, str)) and not inputs):
+        return f"# {title}\n"
+    if isinstance(inputs, str):
+        return f"# {title}\n\n{inputs}\n"
+    if isinstance(inputs, dict):
+        lines = [f"# {title}", ""]
+        for key, value in inputs.items():
+            lines.append(f"## {key}")
+            lines.append("")
+            if isinstance(value, (list, tuple)):
+                lines.extend(f"- {item}" for item in value)
+            elif isinstance(value, dict):
+                lines.append(_fast_dumps(value, ensure_ascii=False))
+            else:
+                lines.append(str(value))
+            lines.append("")
+        return "\n".join(lines)
+    return f"# {title}\n\n{_fast_dumps(inputs, ensure_ascii=False)}\n"
+
+
 TOOLS = [
     {
         "name": "generate_document",
@@ -119,6 +147,35 @@ TOOLS = [
                 },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "run_workflow",
+        "description": "运行任意已安装流水线（通用入口，不限于文档场景）。inputs 会作为本次运行的输入文档写入输入文件——对象按「## 键」分节序列化、字符串原样写入，流水线首层 Agent 经由输入文档/查询词读取它们。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "流水线名（必填，见 list_pipelines）",
+                },
+                "inputs": {
+                    "type": ["object", "string"],
+                    "description": "本次运行的输入（可选）：对象按「## 键」分节序列化为"
+                                   "输入文档；字符串原样写入。键值里的列表成 `- ` 行、"
+                                   "嵌套对象序列化为 JSON",
+                },
+                "wait": {
+                    "type": "boolean",
+                    "description": "是否同步等待完成（可选，默认 false，建议 false 后用 get_task 轮询）",
+                    "default": False,
+                },
+                "output": {
+                    "type": "string",
+                    "description": "输出文件相对路径（可选，须落在项目根目录白名单内；wait=true 时同步落盘）",
+                },
+            },
+            "required": ["name"],
         },
     },
     {
@@ -226,6 +283,8 @@ class MCPServer:
 
         if name == "generate_document":
             return self._tool_generate_document(req_id, args)
+        elif name == "run_workflow":
+            return self._tool_run_workflow(req_id, args)
         elif name == "get_task":
             return self._tool_get_task(req_id, args)
         elif name == "list_tasks":
@@ -254,30 +313,76 @@ class MCPServer:
         if not self.orch:
             return self._error(req_id, -32603, "Orchestrator not initialized")
 
-        task_id = new_task_id()
-        input_file = Path(tempfile.gettempdir()) / f"mcp_{task_id}.md"
-        input_file.write_text(f"# {title}\n\n## 查询\n\n{query}\n", encoding="utf-8")
-
         resolved, err = resolve_pipeline_name(
             pipeline_name, _scheduler_mod.installed_pipelines(),
             _default_pipeline_from(self.orch))
         if err:
-            with contextlib.suppress(OSError):
-                input_file.unlink()
             return self._tool_error(req_id, err)
+
+        input_text = f"# {title}\n\n## 查询\n\n{query}\n"
+        return self._submit_plan_run(
+            req_id, resolved, input_text, wait,
+            self._resolve_target_path(output_arg),
+            {"query": query, "title": title})
+
+    def _tool_run_workflow(self, req_id: Any, args: dict) -> dict:
+        """通用入口：跑任意已安装流水线，inputs 渲染成输入文档。
+
+        与 generate_document 的差异只在"输入文档怎么写"：这里不假设文档语义，
+        对象按 `## 键` 分节序列化（见 `_render_inputs_doc`），字符串原样落盘。
+        """
+        name = str(args.get("name", "")).strip()
+        if not name:
+            return self._tool_error(req_id, "Missing 'name' argument")
+
+        inputs = args.get("inputs", {})
+        wait = bool(args.get("wait", False))
+        output_arg = str(args.get("output", "") or "")
+
+        ok, reason = _validate_output_path(output_arg, base_dir=str(PROJECT_ROOT))
+        if not ok:
+            return self._tool_error(req_id, f"Invalid output path: {reason}")
+
+        if not self.orch:
+            return self._error(req_id, -32603, "Orchestrator not initialized")
+
+        resolved, err = resolve_pipeline_name(
+            name, _scheduler_mod.installed_pipelines())
+        if err:
+            return self._tool_error(req_id, err)
+
+        input_text = _render_inputs_doc(resolved, inputs)
+        return self._submit_plan_run(
+            req_id, resolved, input_text, wait,
+            self._resolve_target_path(output_arg),
+            {"inputs": inputs})
+
+    @staticmethod
+    def _resolve_target_path(output_arg: str) -> Path | None:
+        if not output_arg:
+            return None
+        candidate = Path(output_arg)
+        return candidate if candidate.is_absolute() else PROJECT_ROOT / candidate
+
+    def _submit_plan_run(self, req_id: Any, pipeline_name: str, input_text: str,
+                         wait: bool, target_path: Path | None,
+                         extra: dict) -> dict:
+        """共享提交尾：临时输入文件 → 解析 plan → run_plan → 同步/异步收尾。
+
+        generate_document 与 run_workflow 共用这一段——wait 语义、watcher 与
+        临时文件清理只在单处维护，不在两条工具里各写一份。
+        """
+        task_id = new_task_id()
+        input_file = Path(tempfile.gettempdir()) / f"mcp_{task_id}.md"
+        input_file.write_text(input_text, encoding="utf-8")
+
         try:
             from .scheduler import Scheduler
             sched = Scheduler()
-            plan = sched.parse(resolved)
+            plan = sched.parse(pipeline_name)
         except Exception as e:
-            with contextlib.suppress(OSError):
-                input_file.unlink()
+            self._cleanup_temp_input(input_file)
             return self._tool_error(req_id, f"Failed to parse pipeline: {e}")
-
-        target_path = None
-        if output_arg:
-            candidate = Path(output_arg)
-            target_path = candidate if candidate.is_absolute() else PROJECT_ROOT / candidate
 
         try:
             task = self.orch.run_plan(plan, input_file=str(input_file),
@@ -290,8 +395,7 @@ class MCPServer:
             "task_id": task.id,
             "status": task.status.value if hasattr(task.status, "value") else str(task.status),
             "pipeline": task.pipeline_name,
-            "query": query,
-            "title": title,
+            **extra,
         }
 
         if wait:
