@@ -27,10 +27,12 @@ benchmark = ["numpy>=1.24.0"]
 # 此前这些依赖只出现在 requirements.txt/Dockerfile 里，`pyproject.toml` 完全没有，
 # 于是 `pip install .` 与 `pip install -r requirements.txt` 会装出能力不同的两份东西。
 # 版本下限取自本机实测可用版本（本机 python-docx 1.2.0 / reportlab 5.0.0 /
-# PyMuPDF 1.27.2.3 / paddleocr 3.7.0 + paddlex 3.7.2），不是猜的。
-render = [                      # docpipeline/renderer.py：Markdown → docx / pdf
+# PyMuPDF 1.27.2.3 / openpyxl 3.1.5 / python-pptx 1.0.2 / paddleocr 3.7.0 + paddlex 3.7.2），不是猜的。
+render = [                      # docpipeline/renderer.py：Markdown → docx / pdf / xlsx / pptx
     "python-docx>=1.2.0",
     "reportlab>=5.0.0",
+    "openpyxl>=3.1.0",          # xlsx 结构化子集：表格 → 工作表
+    "python-pptx>=1.0.0",       # pptx 结构化子集：标题 → 幻灯片，表格落真表
 ]
 ingest = ["pymupdf>=1.24.0"]    # docpipeline/ingest.py：PDF 按字号推断标题层级
 ocr = [                         # docpipeline/ingest.py：扫描件/图片 PP-StructureV3 路线
@@ -54,6 +56,8 @@ all = [
     "duckduckgo-search>=4.0.0",
     "python-docx>=1.2.0",
     "reportlab>=5.0.0",
+    "openpyxl>=3.1.0",
+    "python-pptx>=1.0.0",
     "pymupdf>=1.24.0",
 ]
 

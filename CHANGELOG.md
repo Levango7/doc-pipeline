@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-08·续18，xlsx / pptx 结构化子集渲染：表格落工作表、标题起幻灯片）
+
+- **编号说明**：续16（本仓渲染层结构化表格）与并行批的 enforce_admins 台账原本
+  撞号，后者已改续17；本批顺延为续18，不再制造第二个撞号。
+- **痛点**：渲染层此前只有 docx / pdf 两条"整篇文档"路线——报告里的表格数据要拿去
+  二次计算（xlsx）、提纲要拿去汇报（pptx）都得换工具。这两条新路线按**结构化子集**
+  兑现：不做全量转换器，只把结构信息（表格 / 标题 / 列表）映射成目标格式的**真对象**，
+  映射不了的一律如实回报而不是静默吞掉。
+- **xlsx（openpyxl）**：每张 Markdown 表格一个工作表——表名取最近的上游标题
+  （超 31 字符 / 含 `[]:*?/\` 自动清洗、重名自动加序号），表头加粗、冻结首行、
+  列宽按内容（CJK 按双宽）估。**无表格时**整篇按行落进单个「正文」工作表，
+  `mode` 字段如实回报走了哪条路；单元格一律按文本写入（`007` 前导零、ID 串
+  不做数值推断——保真优先于"看起来像数字"）。
+- **pptx（python-pptx）**：h1/h2/h3 各起一页、其后的段落/列表/引用成要点；
+  表格落**真的 PowerPoint 表格**（不是图片也不是文本块）。幻灯片不是文档——
+  超 12 行 / 8 列的表格、超 12 行的代码块**就地截断并把「原表 N 行 × M 列」
+  写进页内**：pptx 的溢出不报错、只是看不见，宁可显式截断也不静默丢。
+  字体同 docx 一条边界：`font.name` 只写 `a:latin`，中文要在 rPr 上手写
+  `a:ea`（连带 `a:cs`），否则跨机打开中文字形回退。
+- **降级与边界**：两条后端都走既有"可选依赖如实回报"约定（缺 openpyxl /
+  python-pptx 时返回结构化 error，不中断流水线）；`render()` 分发与
+  `supported_formats()` 环境探测同步扩到四种；renderer Agent 的 `formats`
+  配置项因此天然支持 xlsx / pptx（docgen-render.yaml 未动，默认仍 docx+pdf）。
+- **注册与依赖**：`tests/test_layering.py` 的 docpipeline 依赖登记表新增
+  openpyxl / pptx 两条（IMPORT_TO_DIST 映射到发行名 python-pptx）；
+  requirements.txt 与 pyproject 的 `render` / `all` extras 同批声明。
+- **测试**：渲染套件 64 → 80 条（+16：xlsx 8 / pptx 8），全部"读回"判真——
+  xlsx 用 openpyxl 重开断言表名 / 表头加粗 / 冻结 / 转义竖线还原 / 文本模式，
+  pptx 用 python-pptx 重开断言页数 / 标题 / 要点 / 真表格与截断注记，并用
+  zipfile 断言 `a:ea` 字体真的写进了 slide XML。全量 **2086 passed, 1 skipped,
+  6 deselected**（本机 2026-10-08 实测），coverage 87.93%；README 格式表与
+  测试计数同批更新。
+
 ### Changed（2026-10-08·续16，main 的 required 检查从此也管管理员）
 
 - **查出来的一件事**：`main` 上确实挂着 5 条 required 检查

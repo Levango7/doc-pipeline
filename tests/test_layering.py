@@ -30,12 +30,14 @@ DOC = PROJECT / "docpipeline"
 # docpipeline 的非标准库依赖登记（逐条认领，新增必须显式加到这里）
 # 同包自引用由 _scan 过滤，不会出现在结果里，因此登记集不含 "docpipeline"。
 FIRST_PARTY = {"pipeline_core", "scripts"}
-DECLARED_OPTIONAL = {"docx", "reportlab", "pymupdf"}     # requirements.txt 里声明
+DECLARED_OPTIONAL = {"docx", "reportlab", "pymupdf", "openpyxl", "pptx"}   # requirements.txt 里声明
 RUNTIME_PROBED = {"paddleocr", "mineru"}                 # 重型 OCR，有意不进 requirements
 # 取数/知识底座：与本仓同盘的另一座仓，靠 `pip install -e ../artesian` 装，
 # 还没进 PyPI 所以不能写进 requirements 的包名行——由下面那条判据盯住"过渡装法有留痕"。
 LOCAL_LIBRARY = {"artesian"}
-IMPORT_TO_DIST = {"docx": "python-docx", "reportlab": "reportlab", "pymupdf": "pymupdf"}
+IMPORT_TO_DIST = {"docx": "python-docx", "reportlab": "reportlab",
+                  "pymupdf": "pymupdf", "openpyxl": "openpyxl",
+                  "pptx": "python-pptx"}
 
 
 def _requirements_names() -> set[str]:
