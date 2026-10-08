@@ -37,6 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   逐一转红且失败原因各对其意，原样为绿，跑完文件逐字节还原。
 - **离线兜底没有变薄**：`tests/test_e2e_mock.py` 与 `tests/test_kb_pipeline_wiring.py`
   都不带 `e2e` 标记，默认 CI 真跑（本次实测 `-m e2e` 收集到 6/2060，其余 2054 在默认口径里）。
+- **README 的测试数随这批 +2 条判据抬到 2055**（`2055 passed, 1 skipped, 6 deselected`，
+  2026-10-08 本机全量实测 12 分 18 秒）。coverage 那句原来只写"本轮实测 87.84%"，没说是哪台：
+  现拆成两条——本机 10-07 全量 87.84%，CI 侧 10-08 在 `7b140bf` 实测 87.28%（3.11–3.13 三档一致，
+  3.14 是 87.25%）。
+- **CI 与本机的通过数差 10 条不是这批造成的**：CI 四档都是 `2045 passed, 10 skipped`，
+  本机是 `2055 passed, 1 skipped`——总数两边都差 1 条（收集 2055 vs 2056），这是可选依赖
+  带来的收集/执行差异，README 早就声明过；拿上一笔 `e944bbc` 的 CI 日志对了一下，
+  当时是 `2043 passed, 10 skipped`，**差值同样是 10 条**，而这批正好加 2 条判据
+  （2043→2045），所以对不上账的不是这批。
+- **推送后的终判**：CI run 37714279545（head sha `7b140bf1…` 与 `git ls-remote` 逐字节相同）
+  conclusion success，四档测试矩阵 + docker + perf-regression 全绿，`refresh-baseline` skipped；
+  两条新判据的 PASSED 行在 3.11/3.12/3.13/3.14 四档日志里各有两行（不是"步骤绿而用例没跑"）。
+  推 YAML 之后回读 `gh workflow list --all`，E2E Nightly 仍是 `disabled_manually`——
+  改文件没有把它自动翻回 active。
 - **顺带排除一个假嫌疑人**：Perf Trend 只有一次 10-01 的 run，看着像"另一个从不跑的定时"，
   实际它的 cron 是 `0 0 1 * *`（每月 1 日），下次该在 11-01——不是缺陷。
 
