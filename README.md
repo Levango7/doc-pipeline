@@ -597,6 +597,34 @@ python run.py --mcp
 任意 `inputs`，对象按「## 键」序列化为输入文档、字符串原样写入）、`get_task`、
 `list_tasks`、`list_pipelines`、`get_pipeline_info`。
 
+### 定时触发（Cron）
+
+按 `triggers.yaml` 的 cron 常驻调度（本地时间；**错过不补跑**，跳过窗口会打印出来）：
+
+```bash
+python run.py --triggers-dry-run    # 先核对各触发最近 3 次时刻，再启用
+python run.py --triggers            # 常驻调度（Ctrl+C 退出）
+```
+
+配置模板见根目录 `triggers.example.yaml`（复制为 `triggers.yaml`，该文件已在
+`.gitignore` 中，属个人调度配置）：
+
+```yaml
+triggers:
+  - name: weekly-report
+    pipeline: docgen-render
+    cron: "0 9 * * 1"              # 每周一 09:00（五字段：分 时 日 月 周，周 0=周日）
+    inputs: |
+      本周技术周报
+    output: output/weekly_report.md
+```
+
+cron 支持 `*`、`a`、`a-b`、`*/n`、`a-b/n`、`a/n`、逗号列表与 `@daily` 等宏；
+「日」与「周」都受限时命中任一即触发（Vixie cron 的 OR 语义）。
+
+定时触发的 run 与手动 `python run.py` **走同一条提交路径**（`run_plan`），
+因此和任何任务一样出现在同一任务队列与观测面（`list_tasks` / `GET /tasks` / 仪表盘）。
+
 ### 事件钩子（Event Hooks）
 
 通过 `POST /api/events/hooks` 注册 HTTP 回调，流水线事件触发时异步 POST JSON 到指定 URL：
@@ -668,7 +696,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2092 个测试本机全绿**（`2092 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
+**2158 个测试本机全绿**（`2158 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -677,8 +705,9 @@ E2E Nightly 停用那一批加了 2 条判据，锁"工作流有没有定时"与
 渲染层结构化表格那批加了 15 条判据（表格解析 9 / 渲染端到端 4 / 行内清洗 2）；
 xlsx/pptx 结构化子集那批加了 16 条判据（xlsx 8 / pptx 8）；
 MCP 通用入口那批加了 6 条判据（run_workflow 5 / 序列化形状 1）；
+定时触发那批加了 66 条判据（cron 解析与时刻计算 37 / 触发器与调度 29）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
-本机 2026-10-08 全量实测 87.95%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
+本机 2026-10-08 全量实测 87.96%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有
 出入——渲染层/OCR/嵌入类用例带 `skipif`，取决于该 job 装了哪些可选依赖。
 数字由 `tests/test_doc_consistency.py` 与实际收集数比对把关，落后于代码即红（此前这里

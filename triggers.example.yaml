@@ -1,0 +1,31 @@
+# triggers.example.yaml —— 定时触发配置示例
+#
+# 复制为 triggers.yaml 后按需修改（triggers.yaml 已在 .gitignore 中，属个人调度配置）：
+#   python run.py --triggers-dry-run   # 只列出各触发最近 3 次时刻（先核对时刻）
+#   python run.py --triggers           # 常驻调度（Ctrl+C 退出）
+#
+# cron 五字段：分 时 日 月 周（本地时间；周 0=周日，7 也接受为周日）；
+# 支持 *、a、a-b、*/n、a-b/n、a/n、逗号列表，与 @hourly/@daily/@weekly/@monthly/@yearly 宏。
+# 「日」与「周」都受限时命中任一即触发（Vixie cron 的 OR 语义）。
+#
+# 语义要点：
+# - 定时触发与手动 `python run.py` 走同一条提交路径，任务出现在同一队列与观测面；
+# - 错过不补跑（进程未运行的时间窗跳过，跳过数会打印出来）；
+# - inputs 是字符串，原样写入输入文档（首行写主题、其余行写资料路径，与 kb-docgen 约定一致）。
+
+triggers:
+  - name: weekly-report
+    pipeline: docgen-render
+    cron: "0 9 * * 1"          # 每周一 09:00
+    inputs: |
+      本周技术周报
+    output: output/weekly_report.md
+    enabled: false             # 示例默认停用：先 --triggers-dry-run 核对时刻再启用
+
+  - name: kb-refresh
+    pipeline: kb-docgen
+    cron: "@daily"             # 每天 00:00
+    inputs: |
+      季度资料汇总
+      docs/input.pdf
+    enabled: false
