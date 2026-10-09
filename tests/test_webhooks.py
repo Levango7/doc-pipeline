@@ -13,7 +13,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline_core import webhooks as wh
 from pipeline_core.admin_api import AdminHandler
 from pipeline_core.webhooks import (
     SIGNATURE_HEADER,
@@ -239,8 +238,12 @@ class TestHandleInbound:
         monkeypatch.setenv("TEST_WH_SECRET", "s3cret")
         blocker = tmp_path / "blocked"
         blocker.write_text("file", encoding="utf-8")     # 以文件冒充目录 → mkdir 必败
-        monkeypatch.setattr(wh, "_audit_path",
-                            lambda: blocker / "audit" / "webhooks.jsonl")
+        # 审计实现已收口到 pipeline_core.audit（webhooks 只是转发），
+        # patch 点跟到真实落盘处——patch 旧别名会变成"打了补丁但没命中"。
+        from pipeline_core import audit as audit_mod
+
+        monkeypatch.setattr(audit_mod, "audit_path",
+                            lambda channel: blocker / "audit" / f"{channel}.jsonl")
         status, payload = handle_inbound("deploy", _registry(), b"{}",
                                          headers={TOKEN_HEADER: "s3cret"},
                                          remote="r", orch=FakeOrch())

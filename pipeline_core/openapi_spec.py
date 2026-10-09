@@ -199,9 +199,20 @@ def _resource_paths() -> dict:
                 "responses": {"200": {"description": "配置快照"}},
             },
             "post": {
-                "summary": "更新配置",
+                "summary": "更新配置（每次变更有审计记录）",
+                "description": "变更落 <状态目录>/audit/config.jsonl：key / 新旧值 / 客户端 / "
+                               "凭证指纹；敏感键名（token/secret/password/api_key）的值只记"
+                               "脱敏形状。审计写盘失败时响应携带 audit_error。",
                 "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"key": {"type": "string"}, "value": {}}}}}},
-                "responses": {"200": {"description": "更新成功"}},
+                "responses": {"200": {"description": "更新成功（含 audit/audit_error）"}},
+            },
+        },
+        "/api/config/audit": {
+            "get": {
+                "summary": "配置变更审计（新→旧）",
+                "parameters": [{"name": "limit", "in": "query", "required": False,
+                                "schema": {"type": "integer", "maximum": 500}}],
+                "responses": {"200": {"description": "最近若干条变更记录"}},
             },
         },
         "/api/cache": {

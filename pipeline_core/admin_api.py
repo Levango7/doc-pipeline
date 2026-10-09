@@ -528,6 +528,8 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._handle_agent_detail(agent_name)
             elif self.path == "/api/config":
                 self._handle_config_get()
+            elif self.path.split("?", 1)[0] == "/api/config/audit":
+                self._handle_config_audit()
             elif self.path == "/api/health/deep":
                 self._handle_health_deep()
             elif self.path == "/api/cache":
@@ -1112,8 +1114,28 @@ class AdminHandler(BaseHTTPRequestHandler):
             return self._json({"error": "orchestrator not set"}, 500)
         self._json(self.orch.config.to_dict())
 
+    #: 审计里对这些键做值脱敏：只记"变了"，不记明文（值可能带密钥/token）
+    _AUDIT_REDACT_KEYS = ("token", "key", "secret", "password", "api_key")
+
+    @staticmethod
+    def _redact_value(key: str, value):
+        """审计脱敏：命中敏感键名时只回形状（类型 + 长度），不回明文。"""
+        if value is None:
+            return None
+        lowered = key.lower()
+        if any(marker in lowered for marker in AdminHandler._AUDIT_REDACT_KEYS):
+            return {"redacted": True, "type": type(value).__name__,
+                    "length": len(value) if isinstance(value, (str, list, dict)) else None}
+        return value
+
     def _handle_config_set(self, body: bytes):
-        """运行时配置更新。body: {"key": "llm.model", "value": "xxx"}"""
+        """运行时配置变更。body: {"key": "llm.model", "value": "xxx"}
+
+        契约（docs/product-spec.md §5.4）：**每次变更有审计记录**。审计落
+        `<状态目录>/audit/config.jsonl`（与入站 webhook 同一份实现），
+        记录 key / 旧值 / 新值 / 客户端 / 凭证指纹；敏感键名的值只记脱敏形状。
+        写盘失败不静默——响应里带 `audit_error`。
+        """
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
         try:
@@ -1127,7 +1149,38 @@ class AdminHandler(BaseHTTPRequestHandler):
         old_value = self.orch.config.get(key)
         self.orch.config.set(key, value)
         _logger.info(f"[AdminAPI] 配置更新: {key} = {value!r} (旧值: {old_value!r})")
-        self._json({"key": key, "old_value": old_value, "new_value": value, "applied": True})
+
+        from . import audit as _audit
+
+        audit_error = _audit.write_audit("config", {
+            "event": "config.set",
+            "key": key,
+            "old_value": self._redact_value(str(key), old_value),
+            "new_value": self._redact_value(str(key), value),
+            "key_id": self._key_identity(),
+            "client": self.client_address[0] if self.client_address else "?",
+        })
+        payload: dict = {"key": key, "old_value": old_value,
+                         "new_value": value, "applied": True}
+        if audit_error:
+            payload["audit_error"] = audit_error
+            _logger.error(f"[AdminAPI] 配置变更审计写盘失败: {audit_error}")
+        else:
+            payload["audit"] = "ok"
+        self._json(payload)
+
+    def _handle_config_audit(self):
+        """GET /api/config/audit —— 最近的配置变更审计（新→旧，供 §5.4 判据查证）。"""
+        from . import audit as _audit
+
+        limit_raw = self._parse_query().get("limit", "50")
+        try:
+            limit = max(1, min(int(limit_raw), 500))
+        except (TypeError, ValueError):
+            limit = 50
+        records = _audit.read_audit("config", limit=limit)
+        self._json({"audit_file": str(_audit.audit_path("config")),
+                    "count": len(records), "records": list(reversed(records))})
 
     def _handle_health_deep(self):
         """全组件深度健康检查"""

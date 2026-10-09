@@ -166,7 +166,7 @@
 | 身份与租户 | **无**：共享 `ADMIN_API_KEY`；全仓 `tenant/principal/user_id` 0 命中〔静态〕 | token → 任务/成本/产物三类数据的作用域隔离 | 两个 token 互不可见对方任务（真 HTTP 断言，非 mock） |
 | 状态后端 | 全 SQLite/JSON 单机文件；pub/sub 是进程内回调〔静态〕 | 后端抽象（SQLite / Postgres），队列与总线可换 | 两实例共享一库并发跑通（P1 判据） |
 | 成本归因 | 定价表 + 按供应商/Agent 维度已有 | 增加按 **pack / token** 归因 | `GET /api/cost` 能按 pack 出账 |
-| 审计 | **入站调用已留痕**（2026-10-08：webhook 全部调用成败落 JSONL）；配置变更留痕仍未做（`/api/config` 目前是危险操作二次确认 + 结构化日志） | 入站调用与配置变更留痕 | 每次 `/api/config` 变更有审计记录 |
+| 审计 | **入站调用与配置变更均已留痕**（2026-10-08：webhook 全部调用成败落 JSONL；`/api/config` 每次变更落 `audit/config.jsonl`——key/新旧值/客户端/凭证指纹，敏感值只记脱敏形状，`GET /api/config/audit` 可查回） | 入站调用与配置变更留痕 | 每次 `/api/config` 变更有审计记录（`tests/test_config_audit.py` 九条钉住，含脱敏与写盘失败不静默） |
 
 ### 5.5 CI 与门禁（跨层，先于一切功能）
 
