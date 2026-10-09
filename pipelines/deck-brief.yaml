@@ -1,0 +1,98 @@
+# 要点 → 汇报演示稿（pack：接口要点 → 分节渲染 → Markdown 主产物 + pptx 交付）
+#
+# 任务类型：把上游系统返回的汇报要点（JSON）渲染成**演示稿**——每个要点一页。
+# 与 api-digest 的区别不只是模板：这条 pack 的交付形态是 pptx（renderer 节点
+# 在每个 `##` 标题处起一页幻灯片），Markdown 只作中间态与主产物备份。
+#
+# renderer 是"增强而非前置"：pptx 后端缺失时该节点如实回报跳过原因，
+# Markdown 主产物不受影响（与 docgen-render 同一取舍，见 agents/renderer_agent.py）。
+#
+# 出网只发生在取要点上；离线测试把 requests 换成罐头响应，其余全走真件。
+# 用法: python run.py input.md --pipeline deck-brief -o output/deck.md
+_name: deck-brief
+_version: "1.0"
+description: 汇报演示稿生成（HttpRequest → Transform 分节渲染 → SafeWriter → Renderer(pptx)）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: http_request
+    version: "1.0"
+    timeout: 60
+    dependencies: []
+    config:
+      url: https://reports.example.com/api/v1/weekly-highlights
+      method: GET
+      expect: json
+      timeout_s: 15
+      max_bytes: 200000
+      headers:
+        Accept: application/json
+        User-Agent: doc-pipeline-engine
+
+  # foreach 逐条展开：每个要点渲染成一个 `##` 小节——renderer 的 pptx 映射
+  # 在每个 h1/h2/h3 起一页，所以"一节 = 一页幻灯片"是这条 pack 的排版契约。
+  - name: transform
+    version: "1.0"
+    timeout: 60
+    dependencies: ["http_request"]
+    foreach:
+      over: artifacts.response.highlights
+      max_items: 12
+    config:
+      template: |
+        ## {{item.heading}}
+
+        - 结论: {{item.conclusion}}
+        - 数据支撑: {{item.evidence}}
+        - 负责人: {{item.owner}}
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["transform"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+  # 渲染节点：Markdown → pptx。后端（python-pptx）为可选依赖，缺失时该节点
+  # 如实回报跳过原因，不让整条流水线失败。
+  - name: renderer
+    version: "1.0"
+    timeout: 120
+    dependencies: ["safe_writer"]
+    config:
+      formats: ["pptx"]
+      output_dir: output
+
+topology:
+  type: dag
+  levels:
+    - [http_request]
+    - [transform]
+    - [safe_writer]
+    - [renderer]
+
+  edges:
+    - [http_request, transform]
+    - [transform, safe_writer]
+    - [safe_writer, renderer]
+
+pipeline:
+  timeout: 300
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

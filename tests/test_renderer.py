@@ -338,6 +338,40 @@ class TestRendererAgent:
         assert RendererAgent._resolve_base_name({}, "") == "document"
 
 
+class TestNodeConfigFromPayload:
+    """DAG 节点级配置必须生效——它在 payload["config"] 里，不在构造期。
+
+    实测缺陷（2026-10-09）：构造期只读注册时的空 config，YAML 里写的
+    `formats` / `output_dir` 被静默忽略——声明 `formats: ["pptx"]` 的流水线
+    实际渲染了全部四种格式、`output_dir` 也落在默认目录。对"声明即契约"
+    的产品这是最坏的一类失真。
+    """
+
+    @staticmethod
+    def _msg(**payload):
+        from pipeline_core.base_agent import Message
+        payload.setdefault("task_id", "t1")
+        return Message(topic="renderer.render", from_agent="test", payload=payload)
+
+    @needs_both
+    def test_formats_from_payload_wins_over_ctor(self, tmp_path):
+        agent = _make_agent(tmp_path, {"formats": ["docx", "pdf"]})
+        res = agent.handle(self._msg(content=SAMPLE_MD,
+                                      config={"formats": ["pdf"]}))
+        assert res["status"] == "ok"
+        assert res["formats"] == ["pdf"], "payload.config.formats 未生效"
+
+    @needs_both
+    def test_output_dir_from_payload_redirects_files(self, tmp_path):
+        outdir = tmp_path / "redirected"
+        agent = _make_agent(tmp_path, {"formats": ["docx", "pdf"]})
+        res = agent.handle(self._msg(content=SAMPLE_MD,
+                                      config={"output_dir": str(outdir)}))
+        assert res["status"] == "ok"
+        for fmt in ("docx", "pdf"):
+            assert Path(res["outputs"][fmt]).parent == outdir
+
+
 # ────────────────────────── pipeline 声明一致性 ──────────────────────────
 
 class TestPipelineDeclaration:

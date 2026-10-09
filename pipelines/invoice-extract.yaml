@@ -1,0 +1,100 @@
+# 合同/发票要素抽取（pack：发票接口 → 逐票抽取要素清单 → Markdown + pptx 双交付）
+#
+# 任务类型：从发票数据集里**逐票抽取要素**（票号/开票方/金额/币种/开票日/税额），
+# 一笔一票渲染成可核对的要素清单。与 alert-runbook 的区别在对象语义与交付
+# 形态：那条是"告警 → 处置步骤"（每节带 runbook），这条是"票据 → 台账要素"，
+# 且额外交付 pptx（每张票一页，字段以真文本落页）。
+#
+# 用 foreach 而不是 items+where 是有意的：items 模式下模板只渲染一次，交付物
+# 里只剩计数、没有逐票明细——"要素抽取"必须看得见每一票。作废票的过滤留给
+# 上游接口的查询参数（status=valid），声明式层不做二次筛。
+#
+# 出网只发生在取数上；离线测试把 requests 换成罐头响应，其余全走真件。
+# 用法: python run.py input.md --pipeline invoice-extract -o output/invoices.md
+_name: invoice-extract
+_version: "1.0"
+description: 合同/发票要素抽取（HttpRequest → Transform 逐票渲染要素 → SafeWriter → Renderer(pptx)）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: http_request
+    version: "1.0"
+    timeout: 60
+    dependencies: []
+    config:
+      # 查询参数在服务端过滤（status=valid）；换成本项目的开票接口
+      url: https://billing.example.com/api/v1/invoices?period=2026-09&status=valid
+      method: GET
+      expect: json
+      timeout_s: 15
+      max_bytes: 200000
+      headers:
+        Accept: application/json
+        User-Agent: doc-pipeline-engine
+
+  # foreach 逐票展开：每票一节台账条目。字段缺失在渲染期如实报错
+  # （缺字段不该渲染成空值出厂）。
+  - name: transform
+    version: "1.0"
+    timeout: 60
+    dependencies: ["http_request"]
+    foreach:
+      over: artifacts.response.invoices
+      max_items: 30
+    config:
+      template: |
+        ### 发票 {{item.no}}
+
+        - 开票方: {{item.issuer}}
+        - 金额: {{item.currency}} {{item.amount}}
+        - 开票日期: {{item.date}}
+        - 税额: {{item.tax}}
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["transform"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+  - name: renderer
+    version: "1.0"
+    timeout: 120
+    dependencies: ["safe_writer"]
+    config:
+      formats: ["pptx"]
+      output_dir: output
+
+topology:
+  type: dag
+  levels:
+    - [http_request]
+    - [transform]
+    - [safe_writer]
+    - [renderer]
+
+  edges:
+    - [http_request, transform]
+    - [transform, safe_writer]
+    - [safe_writer, renderer]
+
+pipeline:
+  timeout: 300
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

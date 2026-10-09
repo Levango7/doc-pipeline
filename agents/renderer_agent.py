@@ -65,6 +65,16 @@ class RendererAgent(BaseAgent):
         content = payload.get("content", "")
         task_id = payload.get("task_id", "")
 
+        # 节点级配置按请求解析：DAG 路径把 YAML 节点的 config 放在
+        # payload["config"] 里，构造期拿到的是空 dict —— 不读它 = YAML 里写的
+        # `formats` / `output_dir` / `title` 被静默忽略（实测：声明
+        # `formats: ["pptx"]` 仍渲染全部格式、`output_dir` 也不生效）。
+        # 只解析成局部量、不改实例状态：同一实例可能被多条流水线并发复用。
+        node_cfg = payload.get("config") or {}
+        formats = (self._parse_formats(node_cfg["formats"])
+                   if "formats" in node_cfg else self._formats)
+        output_dir = str(node_cfg.get("output_dir") or self._output_dir)
+
         if not content:
             empty_result: dict[str, Any] = {
                 "status": "error", "message": "内容为空，无法渲染"}
@@ -72,12 +82,12 @@ class RendererAgent(BaseAgent):
                          {"task_id": task_id, **empty_result})
             return empty_result
 
-        title = payload.get("title") or self._title or "生成文档"
+        title = payload.get("title") or node_cfg.get("title") or self._title or "生成文档"
         base_name = self._resolve_base_name(payload, task_id)
         outputs: dict[str, dict] = {}
 
-        for fmt in self._formats:
-            target = Path(self._output_dir) / f"{base_name}.{fmt}"
+        for fmt in formats:
+            target = Path(output_dir) / f"{base_name}.{fmt}"
             res = renderer.render(content, target, fmt=fmt, title=title)
             if res.get("status") == "ok":
                 size_kb = res.get("size", 0) / 1024

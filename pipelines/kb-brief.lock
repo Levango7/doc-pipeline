@@ -1,0 +1,29 @@
+agents:
+  ingest:
+    config_hash: fc9e5efd88b0
+    dependencies: []
+    pool_size: 1
+    version: '1.0'
+  knowledge_base:
+    config_hash: 32ad93a64170
+    dependencies:
+    - ingest
+    pool_size: 1
+    version: '1.0'
+  safe_writer:
+    config_hash: a5047e77162a
+    dependencies:
+    - transform
+    pool_size: 1
+    version: '2.0'
+  transform:
+    config_hash: 0f7f68fe6016
+    dependencies:
+    - knowledge_base
+    pool_size: 1
+    version: '1.0'
+created_at: '2026-10-10T01:56:45'
+node_count: 4
+pipeline: kb-brief
+plan_id: d8e768ca
+topology_hash: 13ee57cbf53b

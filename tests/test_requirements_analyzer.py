@@ -213,6 +213,34 @@ class TestHandle:
         mock_gr.assert_not_called()
         assert result["status"] == "ok"
 
+    def test_payload_config_llm_disabled_wins_over_instance(self, agent):
+        """节点级 config（payload["config"]）必须生效——实测缺陷修复的判据。
+
+        构造期只读注册时的空 config；YAML 里写 `llm_enabled: false` 若不从
+        payload 读，就会被静默忽略、直接走 LLM 路径（实例默认 True）。
+        """
+        agent._llm_enabled = True  # 实例默认允许 LLM
+        with patch("pipeline_core.llm_router.get_router") as mock_gr:
+            result = agent.handle(self._msg({
+                "input": "Nginx 手册",
+                "config": {"llm_enabled": False},
+            }))
+        mock_gr.assert_not_called()
+        assert result["status"] == "ok"
+
+    def test_payload_config_threshold_and_max_questions_win(self, agent):
+        """节点级 confidence_threshold / max_questions 同样要生效。"""
+        agent._confidence_threshold = 0.1  # 实例阈值很松
+        agent._max_questions = 3
+        result = agent.handle(self._msg({
+            "input": "简短",
+            "config": {"llm_enabled": False, "confidence_threshold": 0.99,
+                       "max_questions": 1},
+        }))
+        assert result["status"] == "ok"
+        assert result["needs_clarification"] is True, "节点级阈值未生效"
+        assert len(result["spec"]["ambiguities"]) <= 1, "节点级 max_questions 未生效"
+
 
 class TestAnalyzeHelper:
 

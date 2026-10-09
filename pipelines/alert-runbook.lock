@@ -1,0 +1,23 @@
+agents:
+  http_request:
+    config_hash: 11c54da7e610
+    dependencies: []
+    pool_size: 1
+    version: '1.0'
+  safe_writer:
+    config_hash: a5047e77162a
+    dependencies:
+    - transform
+    pool_size: 1
+    version: '2.0'
+  transform:
+    config_hash: 74ace413741b
+    dependencies:
+    - http_request
+    pool_size: 1
+    version: '1.0'
+created_at: '2026-10-10T01:56:45'
+node_count: 3
+pipeline: alert-runbook
+plan_id: 825b0321
+topology_hash: 68e2b9f3d6f3

@@ -1,0 +1,23 @@
+agents:
+  http_request:
+    config_hash: f4bfa2a67893
+    dependencies: []
+    pool_size: 1
+    version: '1.0'
+  safe_writer:
+    config_hash: a5047e77162a
+    dependencies:
+    - transform
+    pool_size: 1
+    version: '2.0'
+  transform:
+    config_hash: 8c868601521b
+    dependencies:
+    - http_request
+    pool_size: 1
+    version: '1.0'
+created_at: '2026-10-10T01:56:45'
+node_count: 3
+pipeline: minutes-weekly
+plan_id: e7ce172c
+topology_hash: 4e77292e55f9

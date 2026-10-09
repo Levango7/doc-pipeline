@@ -1,0 +1,88 @@
+# 告警 → 处置手册（pack：告警接口 → 分级处置步骤渲染 → 落盘）
+#
+# 任务类型：把监控系统拉回来的告警事件（JSON 列表）逐条渲染成"处置手册"——
+# 每条告警带严重级别、影响面与对应处置步骤。与 api-digest 的区别：那条只把
+# 列表原始字段拼成摘要行；这条按**告警对象语义**渲染处置文档，且用 foreach
+# 逐条展开（告警条数即投递次数），条数上限显式声明。
+#
+# 出网只发生在取告警上；离线测试把 requests 换成罐头响应，其余全走真件。
+# 用法: python run.py input.md --pipeline alert-runbook -o output/alert_runbook.md
+_name: alert-runbook
+_version: "1.0"
+description: 告警事件处置手册（HttpRequest 取告警 → Transform 逐条渲染处置步骤 → SafeWriter）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: http_request
+    version: "1.0"
+    timeout: 60
+    dependencies: []
+    config:
+      url: https://alerts.example.com/api/v1/alerts?status=firing
+      method: GET
+      expect: json
+      timeout_s: 15
+      max_bytes: 200000
+      headers:
+        Accept: application/json
+        User-Agent: doc-pipeline-engine
+
+  # foreach 逐条展开：http_request 声明 `response` 产物（响应 JSON 整体），
+  # 这里取其中 alerts 数组逐条投递。模板里 item.* 用告警对象的字段名；
+  # max_items 是显式上限，超限报错而不是悄悄只渲染前几条——处置手册少一条
+  # 告警是最难查的那种失真。
+  - name: transform
+    version: "1.0"
+    timeout: 60
+    dependencies: ["http_request"]
+    foreach:
+      over: artifacts.response.alerts
+      max_items: 10
+    config:
+      template: |
+        ## [{{item.severity}}] {{item.name}}
+
+        - 服务: {{item.service}}
+        - 实例: {{item.instance}}
+        - 触发时间: {{item.started_at}}
+        - 摘要: {{item.summary}}
+        - 处置步骤: {{item.runbook}}
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["transform"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+topology:
+  type: dag
+  levels:
+    - [http_request]
+    - [transform]
+    - [safe_writer]
+
+  edges:
+    - [http_request, transform]
+    - [transform, safe_writer]
+
+pipeline:
+  timeout: 300
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false
