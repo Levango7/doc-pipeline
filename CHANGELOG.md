@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-08·续24，队列多机：真跨进程判据 + 两实例共享一库跑通）
+
+- **背景**：队列与 worker 的代码早已在位，但"队列多机"的既有判据全跑在**同进程多线程**
+  上（`tests/test_worker.py` 的注释自己写着"等价于两个进程共用同一份 tasks.db"）——那是类比，
+  不是实证。product-spec §2.1 验收线的原文是"**两实例共享一库并发跑通**"。
+- **新增 `tests/test_multi_process_workers.py`**（4 条，真 subprocess 进程）：
+  - 互斥：8 个独立解释器进程同时抢 6 条任务，每条恰好被抢到一次；
+  - 租约回收：持任务的子进程被 `kill()` 后，另一进程 `recover(stale_seconds=…)` 把它翻回
+    pending 并能被再次领走；
+  - 活 owner 不被抢：owner 进程存活期间，另一进程回收必须返回 0（否则双跑）；
+  - CLI 巡检：`run.py --worker --once` 空库退出码 0、不卡死。
+- **新增 `tests/test_two_instances_one_queue.py`**（1 条，**跑真流水线**）：两个真 `TaskWorker`
+  进程共享一份 `tasks.db`，用 mock 搜索的 `test_pipeline` 把 4 条任务真跑完——断言无丢失
+  （全部 done + 产物在盘）、无重复领取（两进程领取集合互不相交）、归属留痕（`worker_id`
+  与领取者一致）。
+- **反向验证（判据必须能被命中）**：摘掉 `acquire` 的 `AND status='pending'` 守卫后，
+  跨进程互斥用例当场转红（实测）；验完原样还原。
+- **实现期踩到并修掉一个测试写法陷阱**：子进程 worker 会打大量日志，用 `subprocess.PIPE`
+  而不读取会把管道缓冲区写满、子进程阻塞在写日志上——首次跑真端到端等了 900s 超时。
+  最小复现证明 worker 本身正常（任务 done、产物在盘、`shutdown()` 返回、进程自行退出），
+  改成重定向到日志文件后 11s 通过。这条记在测试注释里，避免后人重踩。
+- **文档**：README 增「多机 worker（共享一份任务队列）」小节——三条并发契约（绝不双跑 /
+  崩溃可接管 / 活 owner 不被抢）与实验证；如实标注边界：`_pid_alive` 是同机 pid 表判据，
+  "跨机接管"只在共享文件系统 + 共享 pid 命名空间下成立，真跨主机请用 `/tasks/{id}/rerun`。
+  product-spec 触发方式轴按实测更新为 **6/6 达标**（剩余边界同上）。
+
 ### Added（2026-10-08·续23，外部插件示例包 + 真 venv 安装即发现的端到端判据）
 
 - **背景**：entry_points 发现（续21）落地时只有"打桩 entry_points()"的单元判据；

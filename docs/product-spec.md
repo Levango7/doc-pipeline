@@ -58,7 +58,7 @@
 | 轴 | 现状 | 目标 | 依据 |
 |---|---|---|---|
 | 任务类型（真实跑通的 pack） | **2**（docgen 系 / api-report） | **≥10** | 〔实测〕两条都跑通；其余 8 条 YAML 是 docgen 变体 |
-| 触发方式 | **5**（CLI / HTTP `POST /api/tasks` / MCP stdio / **定时 `--triggers`** / **入站 webhook**〔均 2026-10-08 落地〕） | **≥6** | 〔实测〕`tests/test_triggers.py` 钉定时提交路径、`tests/test_webhooks.py` 钉 HMAC/Token 鉴权与审计留痕；队列多机未做 |
+| 触发方式 | **6**（CLI / HTTP `POST /api/tasks` / MCP stdio / **定时 `--triggers`** / **入站 webhook** / **队列多机 worker**〔均 2026-10-08 落地〕） | **≥6** | 〔实测〕`tests/test_triggers.py` 钉定时提交路径、`tests/test_webhooks.py` 钉 HMAC/Token 鉴权与审计留痕、`tests/test_multi_process_workers.py` 钉真跨进程互斥与租约回收（边界：跨主机接管需共享 pid 命名空间） |
 | 交付形态 | **5**（md / docx / pdf / **xlsx / pptx**〔2026-10-08 加入结构化子集〕） | **≥5** | 〔实测〕`tests/test_renderer.py` 读回判真；xlsx/pptx 为结构化子集而非全量转换 |
 | 扩展来源 | **2**（本仓 `agents/` glob + **entry_points**〔2026-10-08 落地，group `doc_pipeline.agents`〕）；第三方插件实测数仍为 0 | **≥2 且第三方插件 ≥5** | 〔实测〕`tests/test_agent_loader.py::TestEntryPointPlugins` 八条钉住 发现/加载/沙箱/同名优先 |
 
@@ -157,7 +157,7 @@
 | MCP Server | **已达标**（2026-10-08）：6 tools——新增通用 `run_workflow(name, inputs)`（inputs 按「## 键」渲染为输入文档）；banner/日志改 stderr 与 `serverInfo.version` 接 `__version__` 均已修（FP-3 关闭）；真 stdio 往返测试在位（`tests/test_mcp_server.py::TestMCPOverRealStdio`）。原现状留档：5 tools 全是文档动词 / banner 污染 stdout / version 恒 `unknown`〔实测〕 | 加通用 `run_workflow(name, inputs)`；banner/日志改 stderr；version 接 `__version__` | 一条**真实 stdio 往返**测试通过 |
 | HTTP 执行 API | 只有"提交文档生成任务"〔静态：`openapi_spec.py:126`〕 | `POST /api/workflows/{name}/runs` 接受任意 payload | 用非文档 pack 跑通该端点 |
 | CLI | 功能完整但命名满是文档味（banner、argparse 描述、`--enhance`） | 改名 + 动词收敛为 `run / plan / lock / pack / plugin` | `--help` 里不再出现"文档生成流水线"字样 |
-| 触发方式 | **5 种**（CLI / HTTP API / MCP / **定时** / **入站 webhook**〔均 2026-10-08 落地：`POST /api/webhooks/<name>`，HMAC 签名或 Token 鉴权、密钥未配置 fail-closed、每次调用成败落 `audit/webhooks.jsonl`〕）；队列多机未做 | 6 种（+ 定时 + inbound webhook） | 定时触发的 run 出现在同一队列与观测面（同 `run_plan` 路径，`tests/test_triggers.py` 钉住）；webhook 入站鉴权与审计均已兑现（`tests/test_webhooks.py` 钉住） |
+| 触发方式 | **6 种**（CLI / HTTP API / MCP / **定时** / **入站 webhook** / **队列多机 worker**〔均 2026-10-08 落地〕）；多机并发契约由真跨进程判据实证（互斥 / 崩溃接管 / 活 owner 不被抢），跨主机接管需共享 pid 命名空间 | 6 种（+ 定时 + inbound webhook） | 定时触发的 run 出现在同一队列与观测面（同 `run_plan` 路径，`tests/test_triggers.py` 钉住）；webhook 入站鉴权与审计均已兑现（`tests/test_webhooks.py`）；多机 worker 判据见 `tests/test_multi_process_workers.py` |
 
 ### 5.4 治理层
 

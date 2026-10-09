@@ -653,6 +653,32 @@ curl -X POST http://127.0.0.1:8910/api/webhooks/ci-deploy \
 
 `GET /api/webhooks`（管理鉴权）可查看已配置的 webhook 清单（不含密钥值）。
 
+### 多机 worker（共享一份任务队列）
+
+`--worker` 可以起多份、跑在多台机器上——前提是 `DOC_PIPELINE_STATE_DIR` 指向**同一份
+持久卷**（`tasks.db` 是 SQLite WAL，跨机共享需要是真共享文件系统，不是本地盘各自一份）。
+
+```bash
+# 机器 A / 机器 B / 机器 C 各起一个（同一份 state 目录）
+DOC_PIPELINE_STATE_DIR=/mnt/shared/dp-state python run.py --worker --worker-id=node-a
+```
+
+并发契约由 SQL 守卫保证，不靠时钟与运气：
+
+- **同一任务绝不双跑**：`acquire` 是「SELECT pending 一条 → UPDATE ... AND status='pending'」，
+  靠 `cursor.rowcount` 判定归属，两个 worker 同时抢只有一方 rowcount=1（跨进程实证见
+  `tests/test_multi_process_workers.py`：8 个真进程抢 6 条任务，每条恰好被抢到一次；
+  摘掉那条 `AND status='pending'` 守卫，该用例当场转红）；
+- **崩溃可接管**：owner 进程被强杀后行会停在 running，别的 worker 的 `reclaim_stale`
+  在「`owner_pid` 已死 **且** 超过 `--lease-stale`」时把它翻回 pending 重跑（实证：真子进程
+  被 kill 后被另一进程回收）；
+- **活着的 owner 不会被抢**：只有 `_pid_alive(owner_pid)` 为假才回收——否则会把正在跑的
+  任务翻回 pending 造成双跑（实证：持任务的子进程存活期间，另一进程 `recover` 返回 0）。
+
+> 边界：`_pid_alive` 的判据是**同机 pid 表**，所以「跨机接管」只在共享文件系统 + 共享 pid
+> 命名空间（同一容器/同一主机）下成立；真跨主机场景请用同一编排器上的 `/tasks/{id}/rerun`
+> 或把 `--lease-stale` 调小配合外部健康检查——跨主机 pid，本仓不做猜测。
+
 ### 事件钩子（Event Hooks）
 
 通过 `POST /api/events/hooks` 注册 HTTP 回调，流水线事件触发时异步 POST JSON 到指定 URL：
@@ -748,7 +774,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2198 个测试本机全绿**（`2198 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
+**2203 个测试本机全绿**（`2203 passed, 1 skipped, 6 deselected`，2026-10-08 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -761,6 +787,7 @@ MCP 通用入口那批加了 6 条判据（run_workflow 5 / 序列化形状 1）
 entry_points 插件那批加了 8 条判据（发现/加载/沙箱/同名优先）；
 入站 webhook 那批加了 28 条判据（配置/两种鉴权/审计留痕/HTTP 粘合层）；
 插件示例包那批加了 4 条判据（包形状 3 / 真 venv 安装即发现 1）；
+队列多机那批加了 5 条判据（真跨进程互斥 / 跨进程租约回收 / 活 owner 不被抢 / CLI 巡检 / 两实例共享一库跑真流水线）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有
