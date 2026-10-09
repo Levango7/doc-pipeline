@@ -29,7 +29,12 @@ def audit_path(channel: str) -> Path:
 
 
 def write_audit(channel: str, record: dict) -> str | None:
-    """向通道追加一行审计（含时间戳）。成功返回 None，失败返回错误信息。"""
+    """向通道追加一行审计（含时间戳）。成功返回 None，失败返回错误信息。
+
+    故意接住**所有**异常（不只 OSError）：审计失效可以，但审计失效把调用方的
+    请求打成 500 不行。调用方拿到错误字符串后须如实回报（响应带 audit_error）
+    ——失败被看见，不算静默。
+    """
     try:
         p = audit_path(channel)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -38,7 +43,7 @@ def write_audit(channel: str, record: dict) -> str | None:
         with _LOCK, open(p, "a", encoding="utf-8") as f:
             f.write(line + "\n")
         return None
-    except OSError as e:
+    except Exception as e:  # noqa: BLE001 —— 见 docstring：审计不许炸调用方
         return str(e)
 
 

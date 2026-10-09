@@ -1152,13 +1152,15 @@ class AdminHandler(BaseHTTPRequestHandler):
 
         from . import audit as _audit
 
+        # handler 可能由 __new__ 构造（测试夹具/嵌入方），client_address 未必存在
+        client = getattr(self, "client_address", None)
         audit_error = _audit.write_audit("config", {
             "event": "config.set",
             "key": key,
             "old_value": self._redact_value(str(key), old_value),
             "new_value": self._redact_value(str(key), value),
             "key_id": self._key_identity(),
-            "client": self.client_address[0] if self.client_address else "?",
+            "client": client[0] if client else "?",
         })
         payload: dict = {"key": key, "old_value": old_value,
                          "new_value": value, "applied": True}
