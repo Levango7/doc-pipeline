@@ -1,0 +1,23 @@
+agents:
+  http_request:
+    config_hash: 15bdb80b036d
+    dependencies: []
+    pool_size: 1
+    version: '1.0'
+  safe_writer:
+    config_hash: a5047e77162a
+    dependencies:
+    - transform
+    pool_size: 1
+    version: '2.0'
+  transform:
+    config_hash: 411d4d1879d2
+    dependencies:
+    - http_request
+    pool_size: 1
+    version: '1.0'
+created_at: '2026-10-10T01:56:45'
+node_count: 3
+pipeline: k8s-patrol
+plan_id: a4d8be8c
+topology_hash: 1bcfda6a15df

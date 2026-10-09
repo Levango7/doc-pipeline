@@ -305,22 +305,36 @@ class RequirementsAnalyzerAgent(BaseAgent):
         if not raw_input:
             return {"status": "skip", "message": "无输入内容"}
 
+        # 节点级配置按请求解析：DAG 路径把 YAML 节点的 config 放在
+        # payload["config"]，构造期拿到的是空 dict —— 不读它 = YAML 里写的
+        # `llm_enabled` / `confidence_threshold` / `max_questions` 被静默忽略
+        # （实测：声明 llm_enabled: false 仍会尝试 LLM 路径）。只解析成局部量、
+        # 不改实例状态：同一实例可能被多条流水线并发复用。
+        node_cfg = payload.get("config") or {}
+        llm_enabled = node_cfg.get("llm_enabled", self._llm_enabled)
+        threshold = float(node_cfg.get("confidence_threshold",
+                                       self._confidence_threshold))
+        max_questions = int(node_cfg.get("max_questions", self._max_questions))
+        # 规则/LLM 路径共用的领域配置（constraints/template/language）也按
+        # 节点级覆盖合并，避免同一路径上出现"一半配置生效一半不生效"。
+        merged_cfg = {**self.config, **node_cfg}
+
         self.report(AgentStatus.RUNNING, f"分析需求: {raw_input[:60]}...")
 
         try:
-            if self._llm_enabled:
-                spec = self._analyze_with_llm(raw_input)
+            if llm_enabled:
+                spec = self._analyze_with_llm(raw_input, merged_cfg)
             else:
-                spec = _rule_based_analysis(raw_input, self.config)
+                spec = _rule_based_analysis(raw_input, merged_cfg)
         except Exception as e:
             self.log_warning(f"LLM 分析失败，回退到规则路径: {e}")
-            spec = _rule_based_analysis(raw_input, self.config)
+            spec = _rule_based_analysis(raw_input, merged_cfg)
 
         # 置信度低于阈值时追加追问建议
-        if spec.confidence < self._confidence_threshold:
-            spec.ambiguities = spec.ambiguities[:self._max_questions]
+        if spec.confidence < threshold:
+            spec.ambiguities = spec.ambiguities[:max_questions]
             self.log_warning(
-                f"置信度 {spec.confidence:.2f} 低于阈值 {self._confidence_threshold}，"
+                f"置信度 {spec.confidence:.2f} 低于阈值 {threshold}，"
                 f"生成 {len(spec.ambiguities)} 条追问建议"
             )
 
@@ -328,7 +342,7 @@ class RequirementsAnalyzerAgent(BaseAgent):
             "status": "ok",
             "task_id": task_id,
             "spec": spec.to_dict(),
-            "needs_clarification": spec.confidence < self._confidence_threshold,
+            "needs_clarification": spec.confidence < threshold,
             "confidence": spec.confidence,
         }
 
@@ -336,8 +350,8 @@ class RequirementsAnalyzerAgent(BaseAgent):
         self.publish("requirements_analyzer.done", result)
         return result
 
-    def _analyze_with_llm(self, raw: str) -> DocumentSpec:
-        return _llm_analysis(raw, self.config)
+    def _analyze_with_llm(self, raw: str, config: dict | None = None) -> DocumentSpec:
+        return _llm_analysis(raw, config if config is not None else self.config)
 
     @staticmethod
     def _resolve_raw_input(payload: dict) -> str:

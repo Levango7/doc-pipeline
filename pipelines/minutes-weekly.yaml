@@ -1,0 +1,85 @@
+# 会议纪要 → 周报（pack：会议系统 API → 逐议题渲染周报骨架 → 落盘）
+#
+# 任务类型：把每次会议的议题/决议/负责人/截止日拉回来，逐议题渲染成周报的
+# 行动项章节。与 alert-runbook 的区别在渲染契约：那条每节是"处置手册"
+# （严重级别 + 步骤），这条每节是可追踪的**行动项表**（负责人/截止/状态），
+# 供周会直接过条目。
+#
+# 出网只发生在取纪要上；离线测试把 requests 换成罐头响应，其余全走真件。
+# 用法: python run.py input.md --pipeline minutes-weekly -o output/weekly.md
+_name: minutes-weekly
+_version: "1.0"
+description: 会议纪要转周报（HttpRequest 取议题 → Transform 逐议题渲染行动项 → SafeWriter）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: http_request
+    version: "1.0"
+    timeout: 60
+    dependencies: []
+    config:
+      url: https://minutes.example.com/api/v1/meetings/latest
+      method: GET
+      expect: json
+      timeout_s: 15
+      max_bytes: 200000
+      headers:
+        Accept: application/json
+        User-Agent: doc-pipeline-engine
+
+  # foreach 逐议题展开：每议题一节，行动项字段缺失会在渲染期如实报错
+  # （缺字段不该写成空值出厂）。
+  - name: transform
+    version: "1.0"
+    timeout: 60
+    dependencies: ["http_request"]
+    foreach:
+      over: artifacts.response.agenda
+      max_items: 15
+    config:
+      template: |
+        ## {{item.topic}}
+
+        - 决议: {{item.decision}}
+        - 负责人: {{item.owner}}
+        - 截止: {{item.due}}
+        - 状态: {{item.status}}
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["transform"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+topology:
+  type: dag
+  levels:
+    - [http_request]
+    - [transform]
+    - [safe_writer]
+
+  edges:
+    - [http_request, transform]
+    - [transform, safe_writer]
+
+pipeline:
+  timeout: 300
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

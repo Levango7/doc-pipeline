@@ -1,0 +1,113 @@
+# 数据集质检报告（pack：接口数据 → 声明式质检统计 → 质量门评分 → 落盘）
+#
+# 与 api-report 的区别：那条把接口字段"原样渲染"成报告；这条对数据做
+# **质检判定**——用 when 同一套条件语言过滤出异常记录（缺字段 / 数值越界），
+# 把"共 N 条、异常 M 条"的结论渲染成交付物，再交给质量门按 profile 评分。
+#
+# 这是质量门第一次被用在**机器生成的非文档产出**上（此前只服务 docgen 的
+# 写作链路）：阈值不过就如实失败，不因"反正不是文档"而放行。
+#
+# 出网只发生在取数上；离线测试把 requests 换成罐头响应，其余全走真件。
+# 用法: python run.py input.md --pipeline data-qc -o output/data_qc.md
+_name: data-qc
+_version: "1.0"
+description: 接口数据集质检报告（HttpRequest → Transform 判定统计 → QualityGate → SafeWriter）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: http_request
+    version: "1.0"
+    timeout: 60
+    dependencies: []
+    config:
+      # 返回 JSON 数组（记录集）的接口即可；换成本项目的取数接口
+      url: https://api.github.com/repos/apache/kafka/issues?state=all&per_page=5
+      method: GET
+      expect: json
+      timeout_s: 15
+      max_bytes: 200000
+      headers:
+        Accept: application/vnd.github+json
+        User-Agent: doc-pipeline-engine
+
+  # 质检判定：items 指向记录集；where 里两条规则任一命中即异常
+  # （标题缺失 / 评论数为负——负数在真实接口里出现就说明数据管道有问题）。
+  # 统计值不写进 set 而是直接进模板：items 存在时 set 的派生值不进模板探针，
+  # 写 {{len(items)}} 才是取到"过滤后条数"的可靠写法。
+  - name: transform
+    version: "1.0"
+    timeout: 60
+    dependencies: ["http_request"]
+    config:
+      items: artifacts.response
+      where:
+        any:
+          - {path: item.title, op: "falsy"}
+          - {path: item.comments, op: "<", value: 0}
+      template: |
+        # 数据集质检报告
+
+        | 指标 | 值 |
+        | --- | --- |
+        | 记录总数 | {{len(artifacts.response)}} |
+        | 异常条数 | {{len(items)}} |
+
+        ## 判定规则
+
+        1. 记录缺少标题（title 为空或缺失）——字段级完整性；
+        2. 评论数为负数——数值域越界，通常意味着上游数据管道写入了坏值。
+
+        任一规则命中即计入异常条数；详情以接口原始记录为准。
+
+  - name: quality_gate
+    version: "2.0"
+    timeout: 120
+    dependencies: ["transform"]
+    config:
+      quality_profile: technical-doc
+      # 机器生成的短报告：底线放宽到"确实有内容"，阈值按实测总分留出余量——
+      # 低于 45 分说明报告结构退化，仍然如实失败。
+      threshold: 45
+      max_regenerations: 0
+      min_output_chars: 120
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["quality_gate"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+topology:
+  type: dag
+  levels:
+    - [http_request]
+    - [transform]
+    - [quality_gate]
+    - [safe_writer]
+
+  edges:
+    - [http_request, transform]
+    - [transform, quality_gate]
+    - [quality_gate, safe_writer]
+
+pipeline:
+  timeout: 300
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

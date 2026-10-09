@@ -1,0 +1,82 @@
+# 需求 → 测试用例（pack：需求文本 → 规则解析 → 逐关键词渲染用例清单 → 落盘）
+#
+# 任务类型：把一段需求描述解析成结构化规格（类型/读者/深度/范围关键词），
+# 再对每个范围关键词渲染一条可执行用例骨架。它把 requirements_analyzer
+# 从 docgen 写作链里**独立出来**：不需要 LLM 写作也能出交付物，且规则路径
+# （llm_enabled: false）逐字可复现——同一段需求两次跑出的用例清单一致。
+#
+# 要语义级的需求理解，把 llm_enabled 改为 true：分析器会优先走 LLM，
+# 调用失败时仍自动回落到同一条规则路径（见 agents/requirements_analyzer.py）。
+#
+# 用法: python run.py input.md --pipeline spec-cases -o output/spec_cases.md
+#   input.md 的内容就是需求原文（首行起即可，不要求任何标记）。
+_name: spec-cases
+_version: "1.0"
+description: 需求转测试用例清单（RequirementsAnalyzer 规则解析 → Transform 逐关键词渲染 → SafeWriter）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: requirements_analyzer
+    version: "1.0"
+    timeout: 60
+    dependencies: []
+    config:
+      llm_enabled: false
+      confidence_threshold: 0.7
+      max_questions: 3
+
+  # foreach 逐关键词展开：spec.scope 是字符串列表，item 即关键词本身。
+  # index/count 由引擎注入，用来编号用例。
+  - name: transform
+    version: "1.0"
+    timeout: 60
+    dependencies: ["requirements_analyzer"]
+    foreach:
+      over: artifacts.spec.scope
+      max_items: 20
+    config:
+      template: |
+        ## 用例 {{index}}：{{item}}
+
+        - 前置条件：需求条目「{{item}}」已评审通过
+        - 验证步骤：围绕「{{item}}」执行正向路径与边界值验证
+        - 期望结果：系统行为与需求描述一致，无静默降级
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["transform"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+topology:
+  type: dag
+  levels:
+    - [requirements_analyzer]
+    - [transform]
+    - [safe_writer]
+
+  edges:
+    - [requirements_analyzer, transform]
+    - [transform, safe_writer]
+
+pipeline:
+  timeout: 300
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

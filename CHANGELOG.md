@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-09·续27，pack 2→11：九条新任务型流水线 + 每包一条真 E2E + 清册护栏）
+
+- **背景**：docs/product-spec.md §2 的验收线第 1 条「pack ≥10，且每个 pack 有至少
+  一条端到端测试真跑通（不是 mock 断言）」此前只有 2 条成立（docgen 系 /
+  api-report），其余 YAML 都是 docgen 变体——20x 口径里最重的"任务类型"轴一直是
+  2/10。本批把 §8 默认选型清单落地：**新增 9 条 pack，合计 11 条任务类型**。
+- **新增 9 条 pack**（每条 = 新任务语义，不是旧链换模板）：
+  - `intel-brief.yaml`：检索 → 逐条要点简报（researcher + transform foreach）；
+  - `kb-brief.yaml`：本地资料 → 建库检索 → 摘录卡（ingest + kb(hash) +
+    transform foreach；**全离线**，同一语料两次跑出同序卡片）；
+  - `data-qc.yaml`：数据集质检报告（http_request + transform 的 `where/any`
+    判定 + **quality_gate**——质量门首次服务机器生成的非文档产出）；
+  - `alert-runbook.yaml`：告警 JSON → 逐条处置手册（foreach 展开）；
+  - `deck-brief.yaml`：汇报要点 → Markdown 主产物 + **pptx 交付**（renderer）；
+  - `minutes-weekly.yaml`：会议纪要 → 逐议题行动项周报；
+  - `invoice-extract.yaml`：发票数据集 → 逐票要素台账（md + pptx）；
+  - `k8s-patrol.yaml`：K8s Nodes API → 逐节点巡检报告；目标是**内网地址**，
+    因此是 `allow_hosts` 显式放行的出厂消费者（判据同时断言
+    `guard == "allowlist"`，不静默放行）；
+  - `spec-cases.yaml`：需求文本 → 规则解析 → 逐关键词用例清单（`llm_enabled:
+    false`，无 LLM 逐字可复现）。
+  每条都配了独立 `*.lock`（config_hash + 拓扑指纹）。
+- **两处真缺陷（新 pack 逼出来的，实测后修）**：
+  - `renderer_agent`：节点级 config 在 DAG 模式下被**静默忽略**——构造期只读
+    注册时的空 config，YAML 里写的 `formats` / `output_dir` / `title` 不生效
+    （实测：声明 `formats: ["pptx"]` 的流水线仍渲染全部四种格式、`output_dir`
+    也落在默认目录）。修复：按请求从 `payload["config"]` 解析成局部量
+    （不改实例状态，并发复用不串台）。
+  - `requirements_analyzer`：同类问题——`llm_enabled` / `confidence_threshold` /
+    `max_questions` 只在构造期读，YAML 里写 `llm_enabled: false` 仍会走 LLM 路径。
+    修复同上一并：按请求解析，规则/LLM 路径共用合并后的领域配置。
+  - 两处各配回归判据（renderer 2 条 / analyzer 2 条），并做反向验证：把修复改回
+    旧写法，对应判据转红。
+- **测试**：新增 `tests/test_pack_suite.py`（32 条）——
+  - 9 条 E2E：真 Scheduler → 真 DAGExecutor → 真 Agent → 真落盘，只在外部 IO
+    边界换罐头（HTTP 响应 / 搜索引擎 / url_guard DNS 确定性映射），判据落在
+    交付物内容上（含 pptx 读回幻灯片标题、质量门通过分、allowlist 留痕）；
+  - `TestPackInventory` 清册护栏：`PACK_E2E` 登记表把"≥10 条 pack、每条 YAML +
+    lock 且锁校验通过、每条有具名 E2E 判据类"钉成会变红的断言——新增 pack 忘
+    登记、锁漂移未重锁、判据被删都会暴露。
+  全量 **2249 passed, 1 skipped, 6 deselected**（本机 2026-10-09 实测）；
+  README 计数、批线、流水线树同批更新；product-spec §2 任务类型轴按实测改为
+  **11**（组合数 120 → 660 重算）。
+
 ### Added（2026-10-09·续26，`/api/config` 变更审计：共用审计模块 + 值脱敏 + 查询端点）
 
 - **编号说明**：与并行批「acquire 竞争重试」（续25）同窗口落地，按其先合并的顺序

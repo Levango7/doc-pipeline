@@ -1,0 +1,29 @@
+agents:
+  http_request:
+    config_hash: 44b26d809d44
+    dependencies: []
+    pool_size: 1
+    version: '1.0'
+  quality_gate:
+    config_hash: 0c945e507638
+    dependencies:
+    - transform
+    pool_size: 1
+    version: '2.0'
+  safe_writer:
+    config_hash: a5047e77162a
+    dependencies:
+    - quality_gate
+    pool_size: 1
+    version: '2.0'
+  transform:
+    config_hash: 6f7915073117
+    dependencies:
+    - http_request
+    pool_size: 1
+    version: '1.0'
+created_at: '2026-10-10T01:56:45'
+node_count: 4
+pipeline: data-qc
+plan_id: 13de9f7f
+topology_hash: 852ec81cb5f2

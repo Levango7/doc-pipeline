@@ -1,0 +1,23 @@
+agents:
+  researcher:
+    config_hash: fc8bea7f75bb
+    dependencies: []
+    pool_size: 1
+    version: '2.0'
+  safe_writer:
+    config_hash: a5047e77162a
+    dependencies:
+    - transform
+    pool_size: 1
+    version: '2.0'
+  transform:
+    config_hash: bb436ee185bf
+    dependencies:
+    - researcher
+    pool_size: 1
+    version: '1.0'
+created_at: '2026-10-10T01:56:45'
+node_count: 3
+pipeline: intel-brief
+plan_id: 8144acaf
+topology_hash: 27d79df48969

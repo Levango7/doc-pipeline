@@ -774,7 +774,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2214 个测试本机全绿**（`2214 passed, 1 skipped, 6 deselected`，2026-10-09 本机全量实测；
+**2249 个测试本机全绿**（`2249 passed, 1 skipped, 6 deselected`，2026-10-09 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -790,6 +790,9 @@ entry_points 插件那批加了 8 条判据（发现/加载/沙箱/同名优先�
 队列多机那批加了 5 条判据（真跨进程互斥 / 跨进程租约回收 / 活 owner 不被抢 / CLI 巡检 / 两实例共享一库跑真流水线）；
 acquire 竞争重试那批加了 2 条判据（抢输后重试下一条 / 真空才返回 None）；
 配置审计那批加了 9 条判据（变更落 JSONL / 敏感值脱敏 / 写盘失败不静默 / 读回新→旧 / 坏行跳过 / 两通道共用实现）；
+pack 套件那批加了 32 条判据（9 条新任务型 pack 各一条真 E2E：情报简报 / 本地资料摘录 / 数据集质检 /
+告警处置手册 / 汇报演示稿 / 会议纪要周报 / 发票要素抽取 / K8s 巡检 / 需求转用例；
+外加 pack 清册护栏 3 类 ×11 条 + renderer/analyzer 节点级配置生效回归 4 条）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有
@@ -906,6 +909,15 @@ doc-pipeline/
 │   ├── kb-docgen.yaml   # 本地资料 → 知识库接地（ingest/kb/writer 已接线）
 │   ├── api-report.yaml  # 通用件示例：JSON API → transform 挑字段 → 落盘（无文档领域节点）
 │   ├── api-digest.yaml  # foreach 消费者：列表接口 → 同一个 Agent 逐项渲染 → 聚合落盘
+│   ├── intel-brief.yaml # 情报简报：检索 → 逐条要点（foreach）→ 落盘
+│   ├── kb-brief.yaml    # 本地资料摘录卡：ingest → kb(hash) → 逐条摘录 → 落盘（全离线）
+│   ├── data-qc.yaml     # 数据集质检：JSON → where 判定统计 → 质量门 → 落盘
+│   ├── alert-runbook.yaml # 告警处置手册：告警 JSON → 逐条处置步骤 → 落盘
+│   ├── deck-brief.yaml  # 汇报演示稿：要点 JSON → 分节渲染 → md + pptx
+│   ├── minutes-weekly.yaml # 会议纪要周报：议题 JSON → 逐议题行动项 → 落盘
+│   ├── invoice-extract.yaml # 发票要素抽取：逐票要素台账 → md + pptx
+│   ├── k8s-patrol.yaml  # K8s 巡检：内网 API（allow_hosts 放行）→ 逐节点报告
+│   ├── spec-cases.yaml  # 需求转测试用例：规则解析 → 逐关键词用例清单（全离线）
 │   ├── three_pass.yaml  # 三阶段流水线（尾巴阈值/重试与片段不同，故不引用片段）
 │   ├── test_pipeline.yaml
 │   └── *.lock           # 版本锁定：config_hash + 拓扑指纹，漂移即拒绝执行

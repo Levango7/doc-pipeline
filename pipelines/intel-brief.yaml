@@ -1,0 +1,80 @@
+# 竞品/技术情报简报（pack：检索 → 逐条渲染要点 → 落盘）
+#
+# 任务类型与 docgen 系不同：产出不是"一篇文档"，而是"检索结果的要点清单"——
+# 没有 writer、没有质量门，只有检索、声明式变形与落盘三段。这条 pack 存在的
+# 意义是证明引擎的检索件（researcher）与通用变形件（transform）能在**没有
+# LLM 写作**的前提下拼出交付物：把每条搜索结果的标题/链接/摘要逐条渲染。
+#
+# 出网只发生在搜索引擎调用上；离线测试把引擎管理器换成罐头响应，其余全走真件。
+# 用法: python run.py input.md --pipeline intel-brief -o output/intel_brief.md
+_name: intel-brief
+_version: "1.0"
+description: 竞品/技术情报简报（Researcher → Transform 逐条渲染 → SafeWriter）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: researcher
+    version: "2.0"
+    timeout: 300
+    dependencies: []
+    config:
+      search_engines:
+        - bocha
+        - tavily
+        - bing
+        - sogou
+      max_results: 8
+      min_score: 0.3
+
+  # 展开声明：over 指 researcher 声明的产物 results（列表）。max_items 是显式
+  # 上限：结果多于 8 条时这里报错，而不是悄悄只渲染前几条。
+  - name: transform
+    version: "1.0"
+    timeout: 60
+    dependencies: ["researcher"]
+    foreach:
+      over: artifacts.results
+      max_items: 8
+    config:
+      template: |
+        - [{{item.title}}]({{item.url}})
+          {{item.snippet}}（来源: {{item.source}}）
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["transform"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+topology:
+  type: dag
+  levels:
+    - [researcher]
+    - [transform]
+    - [safe_writer]
+
+  edges:
+    - [researcher, transform]
+    - [transform, safe_writer]
+
+pipeline:
+  timeout: 300
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

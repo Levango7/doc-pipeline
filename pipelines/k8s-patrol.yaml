@@ -1,0 +1,88 @@
+# K8s 集群巡检报告（pack：集群 API → 逐节点渲染巡检结论 → 落盘）
+#
+# 任务类型：从集群 Nodes 接口拉节点清单，逐节点渲染状态/角色/kubelet 版本，
+# 产出一份可贴进值班群的巡检报告。与其它 http 系 pack 的关键区别：目标是
+# **内网地址**，因此它同时是 `allow_hosts`（显式内网放行名单）的出厂消费者——
+# 出网校验默认只允许公网；要指向内网必须在这里逐主机列名，命中时产物里会
+# 带 guard: "allowlist" 留痕（不静默放行）。
+#
+# 出网只发生在取数上；离线测试把 requests 换成罐头响应，其余全走真件。
+# 用法: python run.py input.md --pipeline k8s-patrol -o output/k8s_patrol.md
+_name: k8s-patrol
+_version: "1.0"
+description: K8s 集群巡检报告（HttpRequest 内网放行 → Transform 逐节点渲染 → SafeWriter）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: http_request
+    version: "1.0"
+    timeout: 60
+    dependencies: []
+    config:
+      url: http://k8s-api.internal:8080/api/v1/nodes
+      method: GET
+      expect: json
+      timeout_s: 15
+      max_bytes: 400000
+      # 内网主机必须显式列名；漏一个 → 出站请求被拒（blocked），
+      # 而不是"降级为直接请求"。换成你自己的集群 API 主机名。
+      allow_hosts:
+        - k8s-api.internal
+      headers:
+        Accept: application/json
+        User-Agent: doc-pipeline-engine
+
+  - name: transform
+    version: "1.0"
+    timeout: 60
+    dependencies: ["http_request"]
+    foreach:
+      over: artifacts.response.items
+      max_items: 50
+    config:
+      template: |
+        ## 节点 {{item.metadata.name}}
+
+        - 状态: {{item.status.conditions.0.status}}
+        - kubelet: {{item.status.nodeInfo.kubeletVersion}}
+        - 容器运行时: {{item.status.nodeInfo.containerRuntimeVersion}}
+        - 操作系统: {{item.status.nodeInfo.osImage}}
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["transform"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+topology:
+  type: dag
+  levels:
+    - [http_request]
+    - [transform]
+    - [safe_writer]
+
+  edges:
+    - [http_request, transform]
+    - [transform, safe_writer]
+
+pipeline:
+  timeout: 300
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false

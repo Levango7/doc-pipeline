@@ -1,0 +1,95 @@
+# 本地资料知识摘要卡（pack：摄入 → 建库检索 → 摘录渲染 → 落盘）
+#
+# 与 kb-docgen 的区别：那条是"用资料接地写长文"（要 LLM 写作），这条只做
+# **摘录**——把检索命中逐条渲染成摘要卡（标题/原文/出处/相关度），不生成
+# 新句子。也因此它是纯离线件：无 LLM Key、无网络也能产出可交付的摘要卡，
+# 适合"先看资料里有什么"的快速盘料场景。
+#
+# embedder 固定 hash（词法检索）：语义模型（auto）要下载权重，装上就联网、
+# 离线机器直接挂；摘录场景里查询词就是主题词本身，词法检索足够，且结果
+# 可复现——同一份语料两次跑出的卡片顺序一致。要语义检索改成 auto 即可。
+#
+# 用法: python run.py input.md --pipeline kb-brief -o output/kb_brief.md
+#   input.md 里写主题与资料清单（每行一个路径），与 kb-docgen 同一输入格式。
+_name: kb-brief
+_version: "1.0"
+description: 本地资料知识摘要卡（Ingest → KnowledgeBase(hash) → Transform 摘录 → SafeWriter）
+
+defaults:
+  parallelism:
+    mode: single
+    max_workers: 1
+
+agents:
+  - name: ingest
+    version: "1.0"
+    timeout: 300
+    dependencies: []
+    config:
+      output_dir: output/ingested
+      ocr_enabled: true
+      files_from_input: true
+
+  - name: knowledge_base
+    version: "1.0"
+    timeout: 300
+    dependencies: ["ingest"]
+    config:
+      action: index_and_search
+      db_path: kb_brief.db
+      embedder: hash
+      top_k: 6
+
+  # 逐条渲染命中（foreach 展开）：每条命中拿到 item/index/count，
+  # 模板里 item.content 就是切块原文——不做改写，只做摘录与标注出处。
+  - name: transform
+    version: "1.0"
+    timeout: 60
+    dependencies: ["knowledge_base"]
+    foreach:
+      over: upstream.knowledge_base.results
+      max_items: 12
+    config:
+      template: |
+        ### {{item.title}}（{{item.source}}）
+
+        {{item.content}}
+
+        > 相关度: {{item.score}}
+
+  - name: safe_writer
+    version: "2.0"
+    timeout: 300
+    dependencies: ["transform"]
+    config:
+      backup_dir: backups
+      atomic: true
+
+topology:
+  type: dag
+  levels:
+    - [ingest]
+    - [knowledge_base]
+    - [transform]
+    - [safe_writer]
+
+  edges:
+    - [ingest, knowledge_base]
+    - [knowledge_base, transform]
+    - [transform, safe_writer]
+
+pipeline:
+  timeout: 900
+  retry:
+    max_attempts: 2
+    backoff: exponential
+    initial_delay: 1
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    recovery_timeout: 60
+  checkpoint:
+    enabled: true
+    dir: checkpoints
+    keep_on_success: false
+  fail_fast: false
