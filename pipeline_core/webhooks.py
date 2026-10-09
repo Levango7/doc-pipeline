@@ -22,20 +22,17 @@ import hmac
 import logging
 import os
 import tempfile
-import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from artesian.fast_json import dumps as _fast_dumps
 from artesian.fast_json import loads as _fast_loads
 
+from . import audit
 from . import scheduler as _scheduler_mod
 from .ids import new_task_id
 from .input_docs import render_inputs_doc
-from .state_paths import state_root
 
 _logger = logging.getLogger(__name__)
 
@@ -127,24 +124,13 @@ def load_webhooks(path: str | Path,
 
 
 def _audit_path() -> Path:
-    return state_root() / "audit" / "webhooks.jsonl"
-
-
-_AUDIT_LOCK = threading.Lock()
+    """本通道的审计文件路径（实现收口在 pipeline_core.audit）。"""
+    return audit.audit_path("webhooks")
 
 
 def write_audit(record: dict) -> str | None:
     """追加一行审计（JSONL，含时间戳）。失败返回错误信息——调用方须如实回报。"""
-    try:
-        p = _audit_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        line = _fast_dumps({"ts": datetime.now().isoformat(timespec="seconds"),
-                            **record}, ensure_ascii=False)
-        with _AUDIT_LOCK, open(p, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-        return None
-    except OSError as e:
-        return str(e)
+    return audit.write_audit("webhooks", record)
 
 
 def _header(headers: Any, name: str) -> str:
