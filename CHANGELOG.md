@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-09·续26，`/api/config` 变更审计：共用审计模块 + 值脱敏 + 查询端点）
+
+- **编号说明**：与并行批「acquire 竞争重试」（续25）同窗口落地，按其先合并的顺序
+  本批顺延为续26。
+- **背景**：docs/product-spec.md §5.4 的判据"每次 `/api/config` 变更有审计记录"此前是空的——
+  变更只写进程内结构化日志，没有可落盘、可查回的持久留痕。
+- **新增 `pipeline_core/audit.py`**：把 webhook 那套 JSONL 审计（续22）抽成共用模块——
+  `audit_path` / `write_audit` / `read_audit` 三个函数，webhooks 与 config 两条通道
+  共用同一份实现（不做第二份"差不多的写盘代码"，格式不会各自漂移）；
+  读回端对半行坏行跳过，不因一行炸整份读取。`write_audit` 接住**所有**异常并返回
+  错误字符串——审计失效可以，审计失效把业务请求打成 500 不行（全量跑抓出的实测缺陷）。
+- **`admin_api._handle_config_set`**：每次变更追加 `audit/config.jsonl`——
+  key / 新旧值 / 客户端地址 / 凭证指纹（sha256 前 12 位）；**敏感键名**
+  （含 token / secret / password / api_key）的值只记脱敏形状（类型 + 长度），不落明文；
+  写盘失败不静默：响应带 `audit_error`，且**不回滚已应用的配置变更**（如实回报而非假装无事）。
+  handler 的 `client_address` 用 `getattr` 兜底（`__new__` 构造的夹具/嵌入方没有它）。
+- **新增 `GET /api/config/audit`**（管理鉴权）：读回最近记录（新→旧，`limit` ≤ 500，
+  非法值兜底 50）。OpenAPI 规范同步补该端点与 `POST /api/config` 的审计语义说明。
+- **一处 patch 点修正**：`webhooks.py` 的本地 `write_audit` 改为转发共用模块后，
+  `test_webhooks.py` 里"审计写盘失败"用例的 patch 目标（`wh._audit_path`）失焦——
+  跟到 `pipeline_core.audit.audit_path`，否则就是"打了补丁但没命中"的假绿。
+- **测试**：新增 `tests/test_config_audit.py` 9 条——变更落审计（含旧值/客户端/指纹）、
+  敏感值脱敏（断言明文不在文件里）、非敏感键不脱、写盘失败如实回报且不回滚、
+  被拒请求不落审计、读回新→旧、`limit` 非法兜底、坏行跳过、两通道共用实现。
+  全量 **2214 passed, 1 skipped, 6 deselected**（本机 2026-10-09 实测），
+  coverage 见 README；README 计数与批线同批更新。
+
 ### Fixed（2026-10-09·续25，`acquire` 抢输竞争被误报成"队列空"——重试下一条）
 
 - **现象**：P7 的跨进程判据（8 进程抢 6 条、各 `acquire` 一次）在**全量负载**下偶发
