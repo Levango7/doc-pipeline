@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed（2026-10-09·续25，`acquire` 抢输竞争被误报成"队列空"——重试下一条）
+
+- **现象**：P7 的跨进程判据（8 进程抢 6 条、各 `acquire` 一次）在**全量负载**下偶发
+  转红，单跑必绿——典型的竞争缺陷现场。
+- **根因（实测复现，不是推断）**：`acquire` 的 `UPDATE ... AND status='pending'` 返回
+  `rowcount=0` 时直接 `return None`。但 `rowcount=0` 只说明"这一条被别的 worker 先拿了"，
+  队列里可能还有别的 pending——调用方却把 None 读成"没活了"。
+  - 压力复现（12 进程同步起跑抢 6 条任务）：**11/15 轮有任务没人认领**（claimed=1~5）；
+  - 修复后同一脚本：**0/15 轮丢失**。
+- **修复**：`rowcount=0` → `conn.rollback()`（本事务快照已过期）→ `continue` 重试下一条；
+  队列真空时 SELECT 无行才返回 None。推进性有界（每轮把一条被抢走的行从候选排除）。
+- **回归判据**（`tests/test_task_queue.py::TestAcquireLostRace`，2 条）：
+  - 用连接包装器**确定性**注入竞争窗口（SELECT 与 UPDATE 之间让第二个连接抢走），
+    断言重试领到下一条而非 None；
+  - 抢输且无下一条时必须返回 None（重试不许把"真没活"变成死循环）。
+  - 反向验证：把修复改回 `return None`，第一条用例转红、第二条仍绿——判据精确打在缺陷上。
+- 全量 **2205 passed, 1 skipped, 6 deselected**（本机 2026-10-09 实测）；README 计数
+  与批线同批更新。
+
 ### Added（2026-10-08·续24，队列多机：真跨进程判据 + 两实例共享一库跑通）
 
 - **背景**：队列与 worker 的代码早已在位，但"队列多机"的既有判据全跑在**同进程多线程**

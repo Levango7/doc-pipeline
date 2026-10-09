@@ -161,34 +161,44 @@ class TaskQueue:
         """原子出队：取一条 pending 任务，标记为 running。
 
         多 worker 安全：SQLite 事务保证同一任务不会被两个 worker acquire。
+
+        **抢输竞争 ≠ 没活**：`UPDATE ... AND status='pending'` 返回 rowcount=0
+        只说明"这一条被别的 worker 先拿了"，队列里可能还有别的 pending。旧实现在
+        这里直接 `return None`，调用方读到的是"队列空了"——齐射场景实测 12 进程
+        抢 6 条任务，11/15 轮有任务没人认领（P7 的多进程判据在全量负载下偶发转红，
+        根因即此）。现在改为**重试下一条**：rollback 结束本事务拿新快照，再判一次。
+        推进性：每轮要么认领成功、要么把已被抢走的那条从候选里排除，有限步内终止
+        （队列真空时 SELECT 无行 → 返回 None）。
         """
         with self._lock, self._get_conn() as conn:
-            row = conn.execute(
-                "SELECT task_id, pipeline_name, input_file, config_json "
-                "FROM task_queue WHERE status = 'pending' "
-                "ORDER BY created_at ASC LIMIT 1"
-            ).fetchone()
-            if not row:
-                return None
-            task_id, pipeline_name, input_file, config_json = row
-            now = time.time()
-            cursor = conn.execute(
-                "UPDATE task_queue SET status = 'running', started_at = ?, worker_id = ?, "
-                "owner_pid = ? WHERE task_id = ? AND status = 'pending'",
-                (now, worker_id, os.getpid(), task_id),
-            )
-            # 修复 P0 回归：原用 conn.total_changes == 0 判断 UPDATE 是否生效，
-            # 但连接复用后 total_changes 累积历史变更，永远 > 0，
-            # 导致并发场景下两个 worker 可能 acquire 同一任务（数据竞争）。
-            # 改用 cursor.rowcount：仅反映本次 UPDATE 的行数。
-            if cursor.rowcount == 0:
-                return None
-            return {
-                "task_id": task_id,
-                "pipeline_name": pipeline_name,
-                "input_file": input_file,
-                "config": _fast_loads(config_json) if config_json else {},
-            }
+            while True:
+                row = conn.execute(
+                    "SELECT task_id, pipeline_name, input_file, config_json "
+                    "FROM task_queue WHERE status = 'pending' "
+                    "ORDER BY created_at ASC LIMIT 1"
+                ).fetchone()
+                if not row:
+                    return None
+                task_id, pipeline_name, input_file, config_json = row
+                now = time.time()
+                cursor = conn.execute(
+                    "UPDATE task_queue SET status = 'running', started_at = ?, worker_id = ?, "
+                    "owner_pid = ? WHERE task_id = ? AND status = 'pending'",
+                    (now, worker_id, os.getpid(), task_id),
+                )
+                # rowcount 而非 total_changes：连接复用后 total_changes 累积历史
+                # 变更、永远 > 0，会把"被别人抢走"误判成"认领成功"（此前的 P0 回归）。
+                if cursor.rowcount == 0:
+                    # 该行已被别人改成 running，本事务快照已过期；必须回滚，
+                    # 否则下一轮 SELECT 仍读旧快照、会在同一条上打转。
+                    conn.rollback()
+                    continue
+                return {
+                    "task_id": task_id,
+                    "pipeline_name": pipeline_name,
+                    "input_file": input_file,
+                    "config": _fast_loads(config_json) if config_json else {},
+                }
 
     def complete(self, task_id: str, result: dict = None, error: str = ""):
         """标记任务完成或失败"""
