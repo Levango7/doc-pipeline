@@ -1,4 +1,5 @@
 """TaskQueue — 持久化任务队列测试"""
+import sqlite3
 import threading
 
 import pytest
@@ -144,3 +145,74 @@ class TestTaskQueue:
     def test_get_nonexistent(self, queue):
         """查询不存在的任务"""
         assert queue.get("nonexistent") is None
+
+
+class TestAcquireLostRace:
+    """抢输竞争（UPDATE rowcount=0）≠ 队列空：必须重试下一条。
+
+    实测来源：P7 的跨进程判据（8 进程抢 6 条、各 acquire 一次）在全量负载下
+    偶发转红；12 进程同步齐射压力复现 11/15 轮有任务没人认领。根因是旧实现
+    在 rowcount=0 时直接 `return None`，调用方把"被别人抢先"读成了"没活了"。
+
+    这里的复现是**确定性的**：用连接包装器精确注入竞争窗口（SELECT 与
+    UPDATE 之间让第二个连接把该任务抢走），不靠线程时序碰运气——
+    反向验证过：把 acquire 改回 `return None`，本类两条用例都转红。
+    """
+
+    @staticmethod
+    def _wrap_steal_first_claim(q, db, thief_id="thief"):
+        """让 q 的连接在第一次领取 UPDATE 前，先把当前目标任务抢走。"""
+        real = q._get_conn()
+
+        class _StealOnFirstClaim:
+            def __init__(self):
+                self._fired = False
+
+            def execute(self, sql, params=()):
+                if (not self._fired and isinstance(sql, str)
+                        and sql.strip().startswith(
+                            "UPDATE task_queue SET status = 'running'")):
+                    self._fired = True
+                    # 模拟第二个 worker 在 SELECT 与 UPDATE 之间抢先领走
+                    with sqlite3.connect(db, timeout=5) as thief:
+                        thief.execute(
+                            "UPDATE task_queue SET status='running', worker_id=? "
+                            "WHERE task_id=? AND status='pending'",
+                            (thief_id, params[-1]))
+                return real.execute(sql, params)
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def __enter__(self):
+                real.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return real.__exit__(*exc)
+
+        q._get_conn = _StealOnFirstClaim  # type: ignore[method-assign]
+        return real
+
+    def test_retries_next_pending_after_losing_race(self, tmp_path):
+        db = str(tmp_path / "tasks.db")
+        q = TaskQueue(db_path=db)
+        q.submit("t1", "p", "a.md")
+        q.submit("t2", "p", "b.md")
+        self._wrap_steal_first_claim(q, db)
+
+        task = q.acquire(worker_id="w1")
+        assert task is not None, "抢输竞争被误报成队列空——t2 还在 pending"
+        assert task["task_id"] == "t2"
+        assert q.get("t1")["worker_id"] == "thief"   # 被抢走的那条归属对手
+        assert q.get("t2")["worker_id"] == "w1"
+
+    def test_returns_none_only_when_truly_empty(self, tmp_path):
+        """抢输且没有下一条时必须返回 None——重试不许把"真没活"变成死循环。"""
+        db = str(tmp_path / "tasks.db")
+        q = TaskQueue(db_path=db)
+        q.submit("t1", "p", "a.md")
+        self._wrap_steal_first_claim(q, db)
+
+        assert q.acquire(worker_id="w1") is None
+        assert q.get("t1")["worker_id"] == "thief"
