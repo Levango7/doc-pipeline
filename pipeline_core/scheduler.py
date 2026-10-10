@@ -160,6 +160,7 @@ class ExecutionPlan:
 # 领域 Agent 的名字与默认值写死在 core 里。
 
 from . import config_schema as _config_schema  # noqa: E402
+from . import paths  # noqa: E402
 
 
 def installed_pipelines(pipeline_dir: str | Path | None = None) -> list[str]:
@@ -171,8 +172,7 @@ def installed_pipelines(pipeline_dir: str | Path | None = None) -> list[str]:
       2. 测试普遍 patch `scheduler.Scheduler` 类，目录查询跟着变 mock 后
          `list(MagicMock())` 是空迭代，可用清单被无声吞成空。
     """
-    root = Path(pipeline_dir) if pipeline_dir else (
-        Path(__file__).parent.parent / "pipelines")
+    root = Path(pipeline_dir) if pipeline_dir else paths.pipelines_dir()
     return sorted(p.stem for p in root.glob("*.yaml") if not p.name.startswith("_"))
 
 

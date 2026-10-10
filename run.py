@@ -148,6 +148,16 @@ def _load_config(args_args: argparse.Namespace, project_root: Path) -> dict:
 _PIPELINE_NAMES_CACHE: list[str] | None = None
 
 
+def _pipelines_dir() -> Path:
+    """流水线 YAML 根目录（经 pipeline_core.paths 收口）。
+
+    模块级函数而非 import 期常量：安装态（wheel data-files）与开发态
+    解析结果不同，且测试可通过 patch 它替换目录。"""
+    from pipeline_core.paths import pipelines_dir as _dir
+
+    return Path(_dir())
+
+
 def _available_pipeline_names() -> list[str]:
     """列出 pipelines/ 目录下可用的流水线名（yaml 文件 stem）。
 
@@ -156,7 +166,7 @@ def _available_pipeline_names() -> list[str]:
     global _PIPELINE_NAMES_CACHE
     if _PIPELINE_NAMES_CACHE is not None:
         return list(_PIPELINE_NAMES_CACHE)
-    pipelines_dir = Path(__file__).parent / "pipelines"
+    pipelines_dir = _pipelines_dir()
     if not pipelines_dir.exists():
         _PIPELINE_NAMES_CACHE = []
         return []
@@ -190,9 +200,8 @@ def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestr
     """尝试从 YAML 文件解析 pipeline plan；失败时返回 (None, False) 表示应走 legacy 路径"""
     from pipeline_core.scheduler import LockfileMismatchError, Scheduler
     sched = Scheduler()
-    base_dir = Path(__file__).parent
     pipeline_files = _resolve_pipeline_files(
-        args_args.pipeline, args_args.pipeline_file, base_dir / "pipelines")
+        args_args.pipeline, args_args.pipeline_file, _pipelines_dir())
     if not pipeline_files:
         available = ", ".join(_available_pipeline_names())
         print(f"[run] ERROR: 未找到流水线 '{args_args.pipeline}'"

@@ -119,22 +119,11 @@ class TestSmallHelpers:
             def exists(self):
                 return True
 
-            def __truediv__(self, other):
-                return self
-
             def glob(self, pat):
                 glob_calls.append(pat)
                 return [pathlib.Path("docgen.yaml")]
 
-        class _FakePath:
-            def __init__(self, *a, **k):
-                pass
-
-            @property
-            def parent(self):
-                return _FakeDir()
-
-        monkeypatch.setattr(run, "Path", _FakePath)
+        monkeypatch.setattr(run, "_pipelines_dir", lambda: _FakeDir())
         monkeypatch.setattr(run, "_PIPELINE_NAMES_CACHE", None)
         assert run._available_pipeline_names() == ["docgen"]
         assert run._available_pipeline_names() == ["docgen"]
@@ -154,15 +143,7 @@ class TestSmallHelpers:
             def __truediv__(self, other):
                 return self
 
-        class _FakePath:
-            def __init__(self, *a, **k):
-                pass
-
-            @property
-            def parent(self):
-                return _FakeDir()
-
-        monkeypatch.setattr(run, "Path", _FakePath)
+        monkeypatch.setattr(run, "_pipelines_dir", lambda: _FakeDir())
         monkeypatch.setattr(run, "_PIPELINE_NAMES_CACHE", None)
         assert run._available_pipeline_names() == []
         assert run._PIPELINE_NAMES_CACHE == []  # 空目录结果同样缓存

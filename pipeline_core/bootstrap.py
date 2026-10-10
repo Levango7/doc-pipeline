@@ -167,22 +167,26 @@ def _check_dependencies(report: StartupReport):
 
 
 def _check_project_structure(report: StartupReport, project_root: Path):
-    """检查项目目录结构"""
-    required_dirs = ["pipeline_core", "agents", "pipelines", "scripts", "tests"]
-    for d in required_dirs:
+    """检查项目目录结构（只认引擎自己的件；pack 的齐不齐见 _check_pipeline_config）
+
+    此前这里把 docgen 这一个 pack 的文件写死为必需（agents 下的 writer、
+    agents 下的 researcher、pipelines 下的 docgen）外加开发目录 tests/。换上
+    另一套 pack、甚至只装引擎时，这些行与实际能否运行无关地红。
+    product-spec P0 判据 1 要求的是反过来的方向：干净 venv 装完不红。
+    """
+    engine_dirs = ["pipeline_core", "agents", "scripts"]
+    for d in engine_dirs:
         if (project_root / d).is_dir():
             report.add(CheckResult(f"目录 {d}/", "ok", "存在"))
         else:
             report.add(CheckResult(f"目录 {d}/", "error", "缺失"))
 
-    # 关键文件
+    # 关键文件：只留引擎自身三件。writer/researcher/docgen.yaml 是 pack 件，
+    # 归 _check_pipeline_config 按清册量（装上什么报什么，没装不红）。
     key_files = [
         ("pipeline_core/__init__.py", True),
         ("pipeline_core/dag_executor.py", True),
         ("pipeline_core/scheduler.py", True),
-        ("agents/writer.py", True),
-        ("agents/researcher.py", True),
-        ("pipelines/docgen.yaml", True),
         (".env", False),
         ("config.json", False),
     ]
@@ -235,22 +239,34 @@ def _check_search_engines(report: StartupReport):
 
 
 def _check_pipeline_config(report: StartupReport, project_root: Path):
-    """检查流水线配置"""
-    docgen = project_root / "pipelines" / "docgen.yaml"
-    if not docgen.exists():
-        report.add(CheckResult("流水线配置", "error", "docgen.yaml 不存在"))
-        return
+    """检查流水线配置：按清册报数，不点名具体 pack
+
+    此前这里写死只读 `pipelines 下的 docgen 流水线`，装别的 pack 时这条要么红
+    （没有 docgen.yaml）要么只字不提实际装了什么。现在按 pack 清册报：
+    有几条可跑、引用的 agent 齐了几个、缺谁。
+    """
+    from . import pack_manifest
+
     try:
-        import yaml
-        with open(docgen, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
-        agents = cfg.get("agents", [])
-        topology = cfg.get("topology", {})
-        levels = topology.get("levels", [])
-        report.add(CheckResult("流水线配置", "ok",
-                               f"{len(agents)} 个 agent, {len(levels)} 层 DAG"))
+        manifest = pack_manifest.stats()
     except Exception as e:
-        report.add(CheckResult("流水线配置", "error", f"解析失败: {e}"))
+        report.add(CheckResult("pack 清册", "error", f"清点失败: {e}"))
+        return
+
+    if manifest["packs"] == 0:
+        report.add(CheckResult("pack 清册", "warn",
+                               "没有可执行的 pack（pipelines/ 下无流水线）；"
+                               "引擎可启动，但没有可跑的活"))
+    else:
+        report.add(CheckResult("pack 清册", "ok",
+                               f"{manifest['packs']} 条流水线可跑，"
+                               f"{manifest['agents']} 个 agent 可用"))
+    if manifest["agents_missing"]:
+        report.add(CheckResult("agent 齐备性", "error",
+                               f"流水线引用了装不上的 agent: "
+                               f"{', '.join(manifest['agents_missing'])}"))
+    else:
+        report.add(CheckResult("agent 齐备性", "ok", "所有流水线引用的 agent 均可解析"))
 
 
 def _check_output_dirs(report: StartupReport, project_root: Path):

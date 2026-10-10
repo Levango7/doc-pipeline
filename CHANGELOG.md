@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed（2026-10-09·续29，pack 拆包：`--check` 解绑 + `pip install .` 可用）
+
+- **背景**：product-spec §3 P0 判据 1「干净 venv 装完后 `--check` 不红」此前
+  被两件事同时破坏，本批一次修掉：
+  1. `bootstrap.py` 把 docgen 这一个 pack 的件写死为必需（三个 key_files）
+     外加开发目录 `tests/`——装上别的 pack 或只装引擎时，这些行与实际能否
+     运行无关地红（实测旧态：26 OK / 1 WARN / 1 ERROR，红的就是 docgen.yaml）；
+  2. `pipelines/*.yaml`、`quality/`、`prompts/`、`scripts/checker_rules.yaml`
+     不在任何 wheel 数据里——`pip install .` 装出一个**没有流水线的引擎**。
+- **新增 `pipeline_core/pack_manifest.py`**：引擎回答"装了什么"的唯一入口。
+  pack 数 = 非 `_` 前缀的流水线；agent 名按模块级 `AGENT_NAME` 派生（不是
+  文件 stem，14 个里 7 个不同名，按文件名比会产生假缺失）；`call` 节点不算
+  agent，但会追溯它指向的子流水线（否则 `quality_tail` 被误报缺失）。
+- **新增 `pipeline_core/paths.py`**：资源路径收口。`pipelines/` 的位置此前由
+  scheduler / mcp_server / admin_api / worker / run.py 五处各自推导，现在统一
+  走这里；解析顺序为 env `DOC_PIPELINE_ROOT` → 源码树 → 安装态。安装态落点
+  是实测出来的：`[tool.setuptools.data-files]` 装到 **`sys.prefix/pipelines`**
+  （不是 site-packages），且 wheel 会先建一个**空** `site-packages/pipelines`
+  目录——只判 `is_dir()` 会被它骗过（实测踩过），判据改成"有 yaml 才算命中"。
+- **`--check` 现在按清册报数**：`pack 清册`（几条流水线可跑、几个 agent 可用）
+  + `agent 齐备性`（引用不到的 agent 逐名列）。装什么报什么，没装不红。
+- **打包修复**：`pyproject.toml` 的 `data-files` 增加 `pipelines`（yaml / lock /
+  quality / prompts 四类），`package-data` 增加 `scripts/checker_rules.yaml`。
+- **真安装验证**（新判据 `tests/test_installable_product.py`）：真打 wheel →
+  真 venv（`--system-site-packages`）→ 真装 → 从中立 cwd 跑
+  `run_startup_check()`，断言零 ERROR、pack 清册 > 0、无 agent 缺失。
+  本机实测：23 条 pack / 14 agents / 0 红。
+- **测试**：新增 `tests/test_pack_manifest.py` 8 条（清册与 scheduler 同源、
+  片段不算 pack、AGENT_NAME 派生、call 不算缺失且其子流水线 agent 进清册、
+  AST 不 import、拼错 agent 名必被抓）+ `tests/test_installable_product.py`
+  4 条。反向验证：把派生改回文件 stem，相关判据转红。
+- README 计数 2259 → 2266。
+
 ### Fixed（2026-10-09·续28，SQLite 并发首建竞态：WAL 切换重试 + 幂等加列）
 
 - **背景**：main 侧 CI 的 `test (3.14)` 腿在全量负载下变红，失败点是

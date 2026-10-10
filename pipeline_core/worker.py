@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import paths
 from .scheduler import LockfileMismatchError, Scheduler, installed_pipelines
 from .task_queue import TaskQueue
 
@@ -39,8 +40,6 @@ logger = logging.getLogger("worker")
 DEFAULT_POLL_INTERVAL = 1.0
 #: 租约过期阈值：running 且 owner_pid 已死、且超过这个时长才回收
 DEFAULT_LEASE_STALE_SECONDS = 900.0
-
-_PROJECT_ROOT = Path(__file__).parent.parent.absolute()
 
 
 class TaskWorker:
@@ -51,8 +50,8 @@ class TaskWorker:
                  agents_dir: str = "", pipeline_dir: str = "",
                  lease_stale_seconds: float = DEFAULT_LEASE_STALE_SECONDS,
                  log: logging.Logger | None = None):
-        self.agents_dir = agents_dir or str(_PROJECT_ROOT / "agents")
-        self.pipeline_dir = Path(pipeline_dir or (_PROJECT_ROOT / "pipelines"))
+        self.agents_dir = agents_dir or str(paths.agents_dir())
+        self.pipeline_dir = Path(pipeline_dir or str(paths.pipelines_dir()))
         self.queue = queue or TaskQueue()
         self.scheduler = scheduler or Scheduler(agents_dir=self.agents_dir,
                                                 pipeline_dir=str(self.pipeline_dir))

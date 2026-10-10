@@ -40,6 +40,7 @@ from artesian.fast_json import dumps as _fast_dumps
 from artesian.fast_json import loads as _fast_loads
 
 from . import __version__ as SERVER_VERSION
+from . import paths
 from . import scheduler as _scheduler_mod
 from .artifacts import task_output
 from .ids import new_task_id
@@ -478,7 +479,7 @@ class MCPServer:
         return self._tool_result(req_id, result)
 
     def _tool_list_pipelines(self, req_id: Any, args: dict) -> dict:
-        pipelines_dir = PROJECT_ROOT / "pipelines"
+        pipelines_dir = paths.pipelines_dir()
         pipelines = []
         for f in sorted(pipelines_dir.glob("*.yaml")):
             if not f.name.startswith("test_"):
