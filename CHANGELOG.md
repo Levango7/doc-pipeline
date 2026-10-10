@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-10·续31，交付形态补缺：结构化 JSON 落库 + HTML 站点 + renderer html）
+
+- **背景**：product-spec §2.1 验收线第 4 条原文要求五种交付形态
+  「md / docx / pdf / 结构化 JSON 落库 / HTML 站点」，此前后两种不存在：
+  结构化结果只有 checkpoint 里的诊断报告（非交付物、查不了），HTML 只在
+  `run.py --export` 有一把单页转换（进不了流水线声明）。
+- **交付账本 `pipeline_core/deliveries.py`**：每轮 run_plan 收尾（**含失败**）
+  向 `deliveries.db`（SQLite WAL，跟随 DOC_PIPELINE_STATE_DIR 隔离）记一行
+  完整结构化记录——run/pipeline/plan_id/起止与耗时/output_path/error +
+  **节点级状态/尝试次数/耗时**。`get(run_id)` / `list(limit)` 读回。
+  收尾钩子永不外抛（交付失败只记 warning，不把运行判红）；账本的意义就是
+  失败也可查，所以失败运行也落账、但不写交付文件。
+- **声明式交付 `pipeline.deliver`**（YAML pipeline 段，不进 topology/lock）：
+  - `json: <path>` —— DONE 时把与账本同形状的结构化记录写成 JSON 文件；
+  - `site: <dir>` —— DONE 且有产物时构建静态站点（index 导航 + 产物页 +
+    返回链接，slug 强制 ASCII 文件名）。
+- **引擎交付原语 `pipeline_core/html_export.py`**：Markdown → HTML 字符串
+  与站点构建的唯一实现（纯标准库、离线）；`scripts/format_converter` 的
+  html 路径改为委托它（消重 ~150 行，文件入出 API 不变，23 条既有判据全绿）。
+- **renderer `html` 后端**：`docpipeline/renderer.py` 新增 html（不依赖可选包、
+  永远可用）；`formats: ["html"]` 从此进得了流水线声明。交付形态 5 → 7。
+- **测试** `tests/test_delivery_forms.py`（9 条）：账本三判据（读回一致 /
+  幂等覆盖 / 缺 run_id 拒绝）+ 引擎原语两条 + renderer 两条 +
+  **真 E2E 两条**——一条声明三交付物真跑（html / deliver.json / 账本行 /
+  站点四者互相一致），一条失败路径（账本必记 failed、不写交付文件）。
+  反向验证：摘掉收尾钩子，两条 E2E 即红。
+- **spec**：§2 交付形态轴 5→7、§2.1 第 4 条标注达标、组合数 3960 → **5544**
+  （11×6×7×12，相对基线 18 为 308x）。
+
+
 ### Added（2026-10-10·续30，第三方插件生态面补足至 6 个真 pip 包）
 
 - **背景**：product-spec §2.1 验收线第 2 条要求「第三方插件 ≥5，由**外部 pip

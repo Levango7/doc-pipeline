@@ -197,7 +197,7 @@ class FormatConverter:
 
     def markdown_to_html(self, md_path: str, html_path: str = None,
                          title: str = "文档", css: str = None) -> str:
-        """Markdown → HTML
+        """Markdown → HTML（转换逻辑在 pipeline_core.html_export，此处只做文件 IO）
 
         Args:
             md_path: Markdown 文件路径
@@ -207,29 +207,12 @@ class FormatConverter:
 
         Returns: HTML 内容字符串
         """
-        md_file = Path(md_path)
-        with open(md_file, encoding="utf-8") as f:
-            md_content = f.read()
+        # 2026-10-10 消重：块级/行内转换收口到引擎交付原语（html_export），
+        # 这里保留既有文件入出 API；run.py --export 与 renderer html 后端共用同一实现。
+        md_content = Path(md_path).read_text(encoding="utf-8")
 
-        html_body = self._markdown_to_html_body(md_content)
-
-        if css is None:
-            css = self._default_css()
-
-        html = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
-    <style>{css}</style>
-</head>
-<body>
-    <div class="container">
-{html_body}
-    </div>
-</body>
-</html>"""
+        from pipeline_core.html_export import markdown_to_html_string
+        html = markdown_to_html_string(md_content, title=title, css=css)
 
         if html_path:
             html_out = Path(html_path)
@@ -239,131 +222,6 @@ class FormatConverter:
             logger.info(f"HTML 已写入: {html_out}")
 
         return html
-
-    def _markdown_to_html_body(self, md: str) -> str:
-        """简单 Markdown → HTML 转换（不依赖外部库）"""
-        lines = md.split("\n")
-        html_lines = []
-        in_code = False
-        in_table = False
-        in_list = False  # P1 修复：跟踪列表状态以正确包裹 <ul>
-
-        for line in lines:
-            # 代码块
-            if line.strip().startswith("```"):
-                if in_code:
-                    html_lines.append("</code></pre>")
-                    in_code = False
-                else:
-                    lang = line.strip()[3:].strip()
-                    html_lines.append(f'<pre><code class="language-{lang}">')
-                    in_code = True
-                continue
-
-            if in_code:
-                html_lines.append(self._escape_html(line))
-                continue
-
-            # 标题
-            m = re.match(r"^(#{1,6})\s+(.*)", line)
-            if m:
-                level = len(m.group(1))
-                text = self._inline_md(m.group(2))
-                html_lines.append(f"<h{level}>{text}</h{level}>")
-                continue
-
-            # 表格
-            if "|" in line and line.strip().startswith("|"):
-                cells = [c.strip() for c in line.split("|")[1:-1]]
-                # P1 修复：空 cells 不应视为分隔行（all([]) == True 的陷阱）
-                if cells and all(re.match(r"^[-:]+$", c) for c in cells):
-                    continue  # 分隔行
-                if not in_table:
-                    html_lines.append("<table>")
-                    in_table = True
-                    html_lines.append("<thead><tr>")
-                    for c in cells:
-                        html_lines.append(f"<th>{self._inline_md(c)}</th>")
-                    html_lines.append("</tr></thead><tbody>")
-                else:
-                    html_lines.append("<tr>")
-                    for c in cells:
-                        html_lines.append(f"<td>{self._inline_md(c)}</td>")
-                    html_lines.append("</tr>")
-                continue
-            elif in_table:
-                html_lines.append("</tbody></table>")
-                in_table = False
-
-            # 列表
-            m = re.match(r"^[\s]*[-*+]\s+(.*)", line)
-            if m:
-                # P1 修复：列表项需用 <ul> 包裹，否则 HTML 不合法
-                if not in_list:
-                    html_lines.append("<ul>")
-                    in_list = True
-                html_lines.append(f"<li>{self._inline_md(m.group(1))}</li>")
-                continue
-            elif in_list:
-                html_lines.append("</ul>")
-                in_list = False
-
-            # 引用
-            if line.strip().startswith(">"):
-                text = self._inline_md(line.strip()[1:].strip())
-                html_lines.append(f"<blockquote>{text}</blockquote>")
-                continue
-
-            # 分隔线
-            if re.match(r"^---+\s*$", line):
-                html_lines.append("<hr>")
-                continue
-
-            # 普通段落
-            if line.strip():
-                html_lines.append(f"<p>{self._inline_md(line)}</p>")
-            else:
-                html_lines.append("")
-
-        if in_table:
-            html_lines.append("</tbody></table>")
-        if in_list:
-            html_lines.append("</ul>")
-        if in_code:
-            html_lines.append("</code></pre>")
-
-        return "\n        ".join(html_lines)
-
-    def _inline_md(self, text: str) -> str:
-        """行内 Markdown 转换"""
-        # 粗体
-        text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
-        # 斜体
-        text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
-        # 行内代码
-        text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
-        # 链接
-        text = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', text)
-        return text
-
-    def _escape_html(self, text: str) -> str:
-        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    def _default_css(self) -> str:
-        return """
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-               line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }
-        h1, h2, h3, h4, h5, h6 { margin-top: 1.5em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; }
-        pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow: auto; }
-        code { background: #f6f8fa; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
-        pre code { background: none; padding: 0; }
-        table { border-collapse: collapse; width: 100%; }
-        th, td { border: 1px solid #ddd; padding: 8px 12px; }
-        th { background: #f6f8fa; }
-        blockquote { border-left: 4px solid #ddd; margin: 0; padding-left: 16px; color: #666; }
-        hr { border: none; border-top: 2px solid #eee; }
-        a { color: #0366d6; text-decoration: none; }
-        """
 
     # ─── Markdown → Word ──────────────────────────
 

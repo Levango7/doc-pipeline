@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .event_hook import emit_event
 from .executor_factory import create_executor
@@ -735,6 +735,7 @@ class PipelineOrchestrator:
                   steps=len(task.steps))
         self._generate_report(task)
         self._notify_callbacks(task)
+        self._deliver(task, plan)
 
         self.bus.publish("pipeline.finished", "orchestrator", {
             "task_id": task.id,
@@ -943,6 +944,7 @@ class PipelineOrchestrator:
                   steps=len(task.steps))
         self._generate_report(task)
         self._notify_callbacks(task)
+        self._deliver(task, plan)
 
         self.bus.publish("pipeline.finished", "orchestrator", {
             "task_id": task.id,
@@ -1080,6 +1082,117 @@ class PipelineOrchestrator:
             self._finalize_plan_task_async(task, plan)
 
         return task
+
+    # ── 交付（结构化 JSON 落库 + 声明式 JSON 文件 / HTML 站点） ─────────────
+
+    def _build_delivery_record(self, task: PipelineTask,
+                               plan: ExecutionPlan) -> dict[str, Any]:
+        """一轮运行的结构化记录：节点级状态/耗时 + 产物路径。
+
+        这是交付账本（deliveries.db）与 deliver.json 文件共用的唯一形状。
+        """
+        nodes: list[dict[str, Any]] = []
+        for level in getattr(plan, "levels", []) or []:
+            for node in level:
+                dag_node = task.dag_nodes.get(node.agent_name)
+                if dag_node is None:
+                    continue
+                duration = None
+                if dag_node.finished_at and dag_node.started_at:
+                    duration = round(dag_node.finished_at - dag_node.started_at, 3)
+                nodes.append({
+                    "node": dag_node.name,
+                    "agent": agent_of(dag_node.agent_name),
+                    "status": dag_node.status,
+                    "attempts": dag_node.attempts,
+                    "duration_sec": duration,
+                    "error": dag_node.error or "",
+                })
+        finished = float(task.finished_at or 0.0)
+        started = float(task.started_at or 0.0)
+        return {
+            "run_id": task.id,
+            "pipeline": plan.pipeline_name,
+            "plan_id": plan.plan_id,
+            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "input_file": task.input_file,
+            "started_at": started,
+            "finished_at": finished,
+            "duration_sec": round(finished - started, 3) if finished else None,
+            "output_path": task.output_path,
+            "error": task.error or "",
+            "nodes": nodes,
+        }
+
+    def _deliver(self, task: PipelineTask, plan: ExecutionPlan) -> None:
+        """交付收尾（绝不外抛：交付失败记 warning，不把运行判红）。
+
+        1. **落库**（默认开）：完整结构化记录进 deliveries.db（含失败运行——
+           账本的意义就是失败也可查）；
+        2. `pipeline.deliver.json: <path>` 声明时：同一记录写成 JSON 文件
+           （仅 DONE——失败运行没有"交付物"可声明）；
+        3. `pipeline.deliver.site: <dir>` 声明时：把本次产物构建成静态站点
+           （仅 DONE 且有产物内容）。
+        """
+        try:
+            rec = self._build_delivery_record(task, plan)
+        except Exception as e:  # noqa: BLE001
+            self._log("warning", "构建交付记录失败", task_id=task.id, error=str(e))
+            return
+
+        # 1) 落库：DONE 与 FAILED 都记（账本要能查失败）
+        try:
+            from .deliveries import DeliveryLedger
+            DeliveryLedger().record(rec)
+        except Exception as e:  # noqa: BLE001
+            self._log("warning", "交付落库失败", task_id=task.id, error=str(e))
+
+        if task.status != TaskStatus.DONE:
+            return
+        deliver_cfg: dict[str, Any] = {}
+        raw = getattr(plan, "raw", None)
+        if isinstance(raw, dict):
+            deliver_cfg = raw.get("pipeline", {}).get("deliver") or {}
+        if not isinstance(deliver_cfg, dict):
+            deliver_cfg = {}
+
+        # 2) JSON 文件（声明式）
+        json_path = str(deliver_cfg.get("json") or "").strip()
+        if json_path:
+            try:
+                target = Path(json_path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(
+                    json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+                self._log("info", "交付 JSON 已写入", task_id=task.id, path=str(target))
+            except Exception as e:  # noqa: BLE001
+                self._log("warning", "交付 JSON 写入失败",
+                          task_id=task.id, error=str(e))
+
+        # 3) HTML 站点（声明式）
+        site_dir = str(deliver_cfg.get("site") or "").strip()
+        if site_dir:
+            try:
+                markdown = ""
+                output = str(task.output_path or "")
+                if output and Path(output).suffix.lower() in (".md", ".markdown") \
+                        and Path(output).exists():
+                    markdown = Path(output).read_text(encoding="utf-8")
+                elif str(task.output_content or "").strip():
+                    markdown = task.output_content
+                if not markdown.strip():
+                    self._log("warning", "声明了 site 但没有 Markdown 产物可建站",
+                              task_id=task.id)
+                    return
+                from .html_export import build_site
+                info = build_site(
+                    [{"title": f"{plan.pipeline_name} 交付",
+                      "markdown": markdown, "slug": task.id}],
+                    site_dir, site_title=f"{plan.pipeline_name} 交付站点")
+                self._log("info", "交付站点已构建", task_id=task.id,
+                          index=info["index"], pages=info["page_count"])
+            except Exception as e:  # noqa: BLE001
+                self._log("warning", "交付站点构建失败", task_id=task.id, error=str(e))
 
     def _generate_report(self, task: PipelineTask):
         """生成执行报告"""

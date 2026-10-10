@@ -59,17 +59,17 @@
 |---|---|---|---|
 | 任务类型（真实跑通的 pack） | **11**（docgen 系 / api-report / intel-brief / kb-brief / data-qc / alert-runbook / deck-brief / minutes-weekly / invoice-extract / k8s-patrol / spec-cases〔最后 9 条 2026-10-09 落地〕） | **≥10** | 〔实测〕每条 pack 一条真 E2E：9 条在 `tests/test_pack_suite.py`（真 Scheduler→DAG→Agent→落盘，只换外部 IO），存量两条在 `test_kb_pipeline_wiring` / `test_generic_agents`；`TestPackInventory` 清册护栏逐条钉住 YAML + lock + 锁校验 + 判据类存在 |
 | 触发方式 | **6**（CLI / HTTP `POST /api/tasks` / MCP stdio / **定时 `--triggers`** / **入站 webhook** / **队列多机 worker**〔均 2026-10-08 落地〕） | **≥6** | 〔实测〕`tests/test_triggers.py` 钉定时提交路径、`tests/test_webhooks.py` 钉 HMAC/Token 鉴权与审计留痕、`tests/test_multi_process_workers.py` 钉真跨进程互斥与租约回收（边界：跨主机接管需共享 pid 命名空间） |
-| 交付形态 | **5**（md / docx / pdf / **xlsx / pptx**〔2026-10-08 加入结构化子集〕） | **≥5** | 〔实测〕`tests/test_renderer.py` 读回判真；xlsx/pptx 为结构化子集而非全量转换 |
+| 交付形态 | **7**（md / docx / pdf / xlsx / pptx / **html**〔2026-10-10：renderer 纯标准库后端〕/ **结构化 JSON 落库 + HTML 站点**〔2026-10-10：`pipeline.deliver.json/site` 声明式交付 + `deliveries.db` 账本〕） | **≥5**（第 4 条原文五种：md / docx / pdf / 结构化 JSON 落库 / HTML 站点——**已齐**） | 〔实测〕`tests/test_renderer.py` 读回判真；`tests/test_delivery_forms.py` 9 条（账本读回/站点导航/真 E2E 三交付物一致/失败运行也落账）；xlsx/pptx 为结构化子集而非全量转换 |
 | 扩展来源 | **2**（本仓 `agents/` glob + **entry_points**〔2026-10-08 落地，group `doc_pipeline.agents`〕）；第三方插件实测数 **6**（2026-10-10：`examples/plugin-*` 六个真 pip 包，判据 `tests/test_plugins_ecosystem.py` 真 venv 装机逐个验证） | **≥2 且第三方插件 ≥5** | 〔实测〕`tests/test_agent_loader.py::TestEntryPointPlugins` 八条钉住 发现/加载/沙箱/同名优先 |
 
-**组合数：120（2×6×5×2，2026-10-09 按实测轴值重算——旧值 100 用了过时的 triggers=5） → 660（11×6×5×2）**，相对最初立项基线 **18 为 36.7x，已越过 ≥20x（=360）承诺线**；四条验收线**全部成立**（第 2 条第三方插件 ≥5 已于 2026-10-10 达标：6 个真 pip 包；组合数随插件轴再乘一档至 3960）。
+**组合数：120（2×6×5×2，2026-10-09 按实测轴值重算——旧值 100 用了过时的 triggers=5） → 5544（11×6×7×12）**，相对最初立项基线 **18 为 308x**；四条验收线**全部成立**（第 2 条第三方插件 ≥5：6 个真 pip 包；第 4 条交付形态原文五种于 2026-10-10 齐备：结构化 JSON 落库 + HTML 站点补入，交付形态轴 5→7）。
 
 ### 2.1 验收线（四条同时成立才算达成）
 
 1. pack ≥ 10，且每个 pack 有至少一条端到端测试真跑通（不是 mock 断言）。**〔2026-10-09 达标：11 条 pack，11 条真 E2E，清册护栏 `TestPackInventory` 逐条钉住〕**
-2. 第三方插件 ≥ 5：由**外部 pip 包**提供 Agent，**本仓零改动**即被发现、注册、执行。
-3. 触发方式 ≥ 6：CLI / HTTP / MCP / inbound webhook / 定时 / 队列多机。
-4. 交付形态 ≥ 5：md / docx / pdf / 结构化 JSON 落库 / HTML 站点。
+2. 第三方插件 ≥ 5：由**外部 pip 包**提供 Agent，**本仓零改动**即被发现、注册、执行。**〔2026-10-10 达标：6 个真 pip 包，`tests/test_plugins_ecosystem.py` 真 venv 装机逐个验证；诚实边界：这些包仍在同一仓库内，非真正第三方发布〕**
+3. 触发方式 ≥ 6：CLI / HTTP / MCP / inbound webhook / 定时 / 队列多机。**〔2026-10-08 达标〕**
+4. 交付形态 ≥ 5：md / docx / pdf / 结构化 JSON 落库 / HTML 站点。**〔2026-10-10 达标：`pipeline.deliver.json` + `deliveries.db` 账本 + `pipeline.deliver.site` + renderer html 后端，`tests/test_delivery_forms.py` 9 条〕**
 
 > 第 2 条是 20x 的物理来源。自研 Agent 数量撑不到 20 倍，**扩展面**才撑得到。
 

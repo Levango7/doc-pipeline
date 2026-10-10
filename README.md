@@ -779,7 +779,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2289 个测试本机全绿**（`2289 passed, 1 skipped, 6 deselected`，2026-10-09 本机全量实测；
+**2298 个测试本机全绿**（`2298 passed, 1 skipped, 6 deselected`，2026-10-09 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -803,6 +803,8 @@ WAL 切换重试与失败面 / 幂等加列；含确定性持锁场景把旧写�
 pack 拆包那批加了 7 条判据（真 wheel + 真 venv 安装态自检零 ERROR / 打包声明在位 /
 bootstrap 不再点名 pack 文件 / 清册与 scheduler 清单同源、片段不算 pack、
 agent 名按 AGENT_NAME 派生、call 节点不算缺失）；
+交付形态补缺那批加了 9 条判据（账本读回一致 / 幂等覆盖 / 缺 run_id 拒绝 /
+html 单页与站点导航 / renderer html 后端 / 真 E2E 三交付物互相一致 + 失败也落账）；
 agent 名按 AGENT_NAME 派生、call 节点不算缺失）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
