@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed（2026-10-10·续32，命名清理第一步：banner/CLI 文案去领域味）
+
+- **背景**：product-spec §7.3 迁移动作序列第 7 步的第一小步「banner/CLI
+  文案」——引擎是领域无关的工作流运行时（docgen 只是第一个 pack，§1），
+  CLI 门面不该点名具体领域。验收判据原文：「`--help` 里不再出现
+  『文档生成流水线』字样」。
+- **改动**：`run.py` 三处（模块 docstring / banner / argparse description）
+  改为「Agent 工作流引擎」。动词收敛（`run / plan / lock / pack / plugin`）
+  与 `--enhance` 摘除是 breaking 变更，仍待后续小步。
+- **判据** `tests/test_cli_wording.py` 2 条：run.py 源码静态零命中（钉住
+  banner 与 description 的所有写入点）+ 真跑 `--help` 用户可见面零命中。
+  反向验证：banner 改回旧文案，静态判据即红（`--help` 不经过 main，所以
+  banner 字样只有静态判据能抓——两层判据各管一面）。
+- **spec**：§5.3 CLI 行、§7.3 第 7 步标注第一步完成。
+
+
 ### Added（2026-10-10·续31，交付形态补缺：结构化 JSON 落库 + HTML 站点 + renderer html）
 
 - **背景**：product-spec §2.1 验收线第 4 条原文要求五种交付形态

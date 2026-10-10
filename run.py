@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-run.py - 文档生成流水线入口 v3.1
+run.py - Agent 工作流引擎入口 v3.1
 ===============================
 核心特性：
   - 支持声明式流水线配置 (YAML) via Scheduler + run_plan
@@ -64,7 +64,7 @@ def print_banner():
     # 排在 initialize 响应之前，等于往协议通道里塞非 JSON 行。
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
-║          Doc-Pipeline v{__version__} - 文档生成流水线               ║
+║          Doc-Pipeline v{__version__} - Agent 工作流引擎             ║
 ║          声明式 DAG | 自动重做 | 熔断器 | 审计日志             ║
 ╚══════════════════════════════════════════════════════════════╝
 """, file=sys.stderr)
@@ -482,7 +482,7 @@ def _run_daemon(orch: PipelineOrchestrator) -> None:
 def build_arg_parser() -> argparse.ArgumentParser:
     """构建 CLI 参数解析器（含输入校验规则）"""
     parser = argparse.ArgumentParser(
-        description=f"文档生成流水线 v{__version__} - 声明式 DAG + 自动重做",
+        description=f"Agent 工作流引擎 v{__version__} - 声明式 DAG + 自动重做",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
