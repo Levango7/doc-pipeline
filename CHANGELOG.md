@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed（2026-10-09·续28，SQLite 并发首建竞态：WAL 切换重试 + 幂等加列）
+
+- **背景**：main 侧 CI 的 `test (3.14)` 腿在全量负载下变红，失败点是
+  `test_two_instances_one_queue` 的 `e2e-0 终态是 failed: database is locked`。
+  本机探针（两进程 × 80 轮同建四库）复现两个**首建期**竞态：
+  - `PRAGMA journal_mode=WAL` 切模式需要短暂独占锁，SQLite 明示此时**不走
+    busy handler**，而是自带一个约 0.45s 的内部重试窗口；竞争（两 worker
+    进程几乎同时首建同一批库）下窗口耗尽即抛 "database is locked"；
+  - `ALTER TABLE ... ADD COLUMN owner_pid` 的 check-then-act：两进程都判
+    "列不存在"、都执行 ALTER，后到者拿 "duplicate column name"。
+  两处都只在"两个进程同时第一次初始化同一批库"时现形，单进程测试与
+  隔离跑都看不见（探针实测 80 轮命中 4 次）。
+- **修复**：
+  - 新增 `pipeline_core/sqlite_util.py`：`enable_wal`（锁类错误退避重试，
+    非锁类错误立即抛，耗尽后仍抛——"没切成 WAL"必须是可见故障）+
+    `add_column_if_missing`（幂等加列，`duplicate column` 视为目标已达成）。
+  - 四处 SQLite 首建全部接入：`task_queue` / `cost_tracker` /
+    `quality_feedback` / `message_store`。
+  - 顺带修一条自身测试污染：新判据最初用 `os.environ.pop` 还原状态目录，
+    会把 conftest 的会话级 `DOC_PIPELINE_STATE_DIR` 一并删掉，把
+    `test_state_isolation` 抓红（全量实测暴露）——改为 `monkeypatch.setenv`
+    自动还原。
+- **测试**：新增 `tests/test_sqlite_concurrent_init.py` 9 条——
+  - 两进程同 state 目录并发首建四库 ×12 轮（真 subprocess、真初始化路径），
+    断言零异常；另跑"建完之后真能读写"（不只是没抛异常）；
+  - 确定性持锁判据：`BEGIN EXCLUSIVE` 持锁 1.2s（> SQLite 0.45s 内部窗口）
+    时旧写法必然抛、`enable_wal` 必然等到锁释放后切成功；护栏正例先证明
+    该场景能把旧写法打红（否则绿是空转）；
+  - 助手行为面：锁类重试次数 / 耗尽后抛 / 非锁类立即抛 / 幂等加列容忍
+    duplicate / 其他 OperationalError 照抛。
+  - 反向验证：把 `enable_wal` 改回直连 PRAGMA，确定性判据与重试判据双双转红。
+- 本机全量：**2259 passed, 1 skipped, 6 deselected**。
+
 ### Added（2026-10-09·续27，pack 2→11：九条新任务型流水线 + 每包一条真 E2E + 清册护栏）
 
 - **背景**：docs/product-spec.md §2 的验收线第 1 条「pack ≥10，且每个 pack 有至少

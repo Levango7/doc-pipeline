@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from . import state_paths
+from .sqlite_util import enable_wal
 
 logger = logging.getLogger(__name__)
 _DEFAULT_DB = os.path.join(Path(__file__).parent.parent.absolute(), "bus_data", "quality.db")
@@ -48,7 +49,9 @@ class QualityFeedback:
         """
         conn = sqlite3.connect(self._db_path, timeout=5, check_same_thread=False)
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
+            # 并发首建同一库时 SQLite 切 WAL 不走 busy handler，
+            # 直接抛 "database is locked"，必须自带重试（见 sqlite_util 模块头）。
+            enable_wal(conn)
             # busy_timeout 防止并发写入时立即抛 SQLITE_BUSY，与 cost_tracker 保持一致
             conn.execute("PRAGMA busy_timeout=3000")
             with conn:

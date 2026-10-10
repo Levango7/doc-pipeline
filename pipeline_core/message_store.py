@@ -24,6 +24,7 @@ from artesian.fast_json import dumps as _fast_dumps
 from artesian.fast_json import loads as _fast_loads
 
 from . import state_paths
+from .sqlite_util import enable_wal
 
 # ─── 常量 ─────────────────────────────────────
 
@@ -173,7 +174,9 @@ class PersistentStore:
                 check_same_thread=False,
                 factory=_TrackableConnection,
             )
-            conn.execute("PRAGMA journal_mode=WAL")
+            # 忙等：并发首建同一库时 SQLite 切 WAL 不走 busy handler，
+            # 直接抛 "database is locked"，必须自带重试（见 sqlite_util 模块头）。
+            enable_wal(conn)
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA busy_timeout=5000")
             self._local.conn = conn

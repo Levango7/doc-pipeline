@@ -30,6 +30,7 @@ from artesian.fast_json import dumps as _fast_dumps
 from artesian.fast_json import loads as _fast_loads
 
 from . import state_paths
+from .sqlite_util import add_column_if_missing, enable_wal
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,10 @@ class TaskQueue:
         if conn is None:
             conn = sqlite3.connect(self._db_path, timeout=5, check_same_thread=False,
                                    factory=_TrackableConnection)
-            conn.execute("PRAGMA journal_mode=WAL")
+            # WAL 切换自带忙等重试：多 worker 同时首建同一库时，SQLite 切
+            # journal mode 不走 busy handler，直接抛 "database is locked"
+            # （2026-10-09 探针复现，见 sqlite_util 模块头）。
+            enable_wal(conn)
             conn.execute("PRAGMA busy_timeout=3000")
             self._local.conn = conn
             self._conn_refs.add(weakref.ref(conn))
@@ -133,9 +137,9 @@ class TaskQueue:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON task_queue(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_created ON task_queue(created_at)")
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(task_queue)").fetchall()}
-            if "owner_pid" not in columns:
-                conn.execute("ALTER TABLE task_queue ADD COLUMN owner_pid INTEGER DEFAULT 0")
+            # 幂等加列：并发首建时 check-then-act 会撞 "duplicate column name"，
+            # 目标状态已达成，不算故障（同 sqlite_util.add_column_if_missing）。
+            add_column_if_missing(conn, "task_queue", "owner_pid", "INTEGER DEFAULT 0")
 
     def submit(self, task_id: str, pipeline_name: str, input_file: str,
                config: dict = None) -> bool:
