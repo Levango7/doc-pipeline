@@ -1066,8 +1066,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "active_tasks": len(orch.list_tasks()),
             "version": _v,
         }
-        from pathlib import Path
-        pipelines_dir = Path(orch.agents_dir).parent / "pipelines"
+        from . import paths
+        pipelines_dir = paths.pipelines_dir()
         if pipelines_dir.exists():
             pipeline_info["pipeline_files"] = [p.name for p in sorted(pipelines_dir.glob("*.yaml"))]
         self._json(pipeline_info)

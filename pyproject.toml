@@ -68,6 +68,25 @@ doc-pipeline = "run:main"
 packages = ["pipeline_core", "docpipeline", "agents", "scripts"]
 py-modules = ["run"]
 
+# 流水线 YAML / lock / quality profile / prompt 模板必须随 wheel 走。
+# 此前 packages 只列了 Python 包，pipelines/*.yaml 与 quality/、prompts/
+# 不在任何 Python 包里 —— `pip install .` 装出一个没有流水线的引擎，
+# 恰是 product-spec §3 P0 判据 1 要求消灭的形态（装完 --check 一片红）。
+# scripts/checker_rules.yaml 同理：它是 scripts 包旁边的数据文件，没声明
+# 时 markdown_checker 在安装态下找不到默认规则集。
+[tool.setuptools.package-data]
+scripts = ["checker_rules.yaml"]
+
+[tool.setuptools.data-files]
+# 装到 <site-packages>/pipelines。解析顺序见 pipeline_core.paths：
+# 源码树（仓库根/pipelines）优先，其次安装态这一份，env 可覆盖。
+pipelines = [
+    "pipelines/*.yaml",
+    "pipelines/*.lock",
+    "pipelines/quality/*.yaml",
+    "pipelines/prompts/*.yaml",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short -m 'not e2e'"
