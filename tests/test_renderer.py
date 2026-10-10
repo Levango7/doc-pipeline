@@ -236,7 +236,9 @@ class TestRenderDispatch:
 
     def test_supported_formats_reflects_env(self):
         avail = renderer.supported_formats()
-        assert set(avail) <= {"docx", "pdf", "xlsx", "pptx"}
+        # html 是纯标准库后端（html_export），永远在列；其余按可选包如实增减
+        assert "html" in avail
+        assert set(avail) <= {"docx", "pdf", "xlsx", "pptx", "html"}
 
     def test_clean_inline_variants(self):
         assert renderer.clean_inline("`a` **b** [c](d)") == "a b c (d)"

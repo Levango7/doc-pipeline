@@ -709,10 +709,27 @@ def render_pptx(markdown: str, output_path: str | Path,
             "tables": tables, "control_chars_stripped": stripped}
 
 
+def render_html(markdown: str, output_path: str | Path,
+                title: str = DEFAULT_TITLE) -> dict[str, Any]:
+    """Markdown → 单页 HTML（引擎交付原语，纯标准库、离线）。
+
+    与 docx/pdf/xlsx/pptx 不同：html 不依赖任何可选包，永远可用。
+    """
+    from pipeline_core.html_export import markdown_to_html_string
+
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    page = markdown_to_html_string(markdown, title=title)
+    path.write_text(page, encoding="utf-8")
+    return {"status": "ok", "path": str(path), "format": "html",
+            "size": path.stat().st_size}
+
+
 # ───────────────────────────── 统一入口 ─────────────────────────────
 
 _BACKENDS = {"docx": render_docx, "pdf": render_pdf,
-             "xlsx": render_xlsx, "pptx": render_pptx}
+             "xlsx": render_xlsx, "pptx": render_pptx,
+             "html": render_html}
 
 
 def render(markdown: str, output_path: str | Path, fmt: str = "docx",
@@ -726,7 +743,10 @@ def render(markdown: str, output_path: str | Path, fmt: str = "docx",
 
 
 def supported_formats() -> list[str]:
-    """当前环境实际可用的格式（供 API/Agent 如实回报能力）。"""
+    """当前环境实际可用的格式（供 API/Agent 如实回报能力）。
+
+    html 是纯标准库实现（html_export），不依赖可选包，永远在列。
+    """
     flags = {"docx": HAS_DOCX, "pdf": HAS_PDF,
-             "xlsx": HAS_XLSX, "pptx": HAS_PPTX}
+             "xlsx": HAS_XLSX, "pptx": HAS_PPTX, "html": True}
     return [f for f, ok in flags.items() if ok]
