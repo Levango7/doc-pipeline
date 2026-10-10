@@ -727,11 +727,16 @@ my_agent = "my_pkg.my_agent"
 `[entry_point:my_agent]`，且能作为任何 pipeline 的节点执行；同名时本仓
 `agents/*.py` 优先，插件不能悄悄顶掉内置 Agent。
 
-可运行的参考实现与完整契约说明见 [`examples/plugin-hello/`](examples/plugin-hello/README.md)：
-`pip install ./examples/plugin-hello` 后即可在 `--list-agents` 里看到 `char_stats`。
-该路径有一条**真 venv + 真 pip install** 的端到端判据（`tests/test_plugin_example.py`）——
-外部包装进 site-packages、空 agents 目录下仍被发现/注册/执行，是"本仓零改动"
-这条验收线的可复现证明。
+可运行的参考实现共**六个独立 pip 包**，与完整契约说明见
+[`examples/README.md`](examples/README.md)：`char_stats`（字符统计）、
+`keyword_extract`（关键词抽取）、`readability`（可读性）、`link_check`（链接清单）、
+`fact_coverage`（证据密度）、`tldr`（离线摘要）。`pip install ./examples/plugin-tldr`
+后即可在 `--list-agents` 里看到 `tldr`。
+
+判据分两层：`tests/test_plugin_example.py` 盯**示例包契约**（真 venv + 真
+pip install，空 agents 目录下仍被发现/注册/执行——"本仓零改动"的可复现证明）；
+`tests/test_plugins_ecosystem.py` 盯**生态面**：一次真装六个包，逐个断言被发现、
+被注册、被真实执行、来源标记 `entry_point:<name>`，数量不足 5 即红。
 
 ### Agent 安全沙箱
 
@@ -774,7 +779,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2271 个测试本机全绿**（`2271 passed, 1 skipped, 6 deselected`，2026-10-09 本机全量实测；
+**2289 个测试本机全绿**（`2289 passed, 1 skipped, 6 deselected`，2026-10-09 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -797,6 +802,7 @@ SQLite 并发首建那批加了 9 条判据（两进程同建四库真并发 12 
 WAL 切换重试与失败面 / 幂等加列；含确定性持锁场景把旧写法钉红）；
 pack 拆包那批加了 7 条判据（真 wheel + 真 venv 安装态自检零 ERROR / 打包声明在位 /
 bootstrap 不再点名 pack 文件 / 清册与 scheduler 清单同源、片段不算 pack、
+agent 名按 AGENT_NAME 派生、call 节点不算缺失）；
 agent 名按 AGENT_NAME 派生、call 节点不算缺失）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。

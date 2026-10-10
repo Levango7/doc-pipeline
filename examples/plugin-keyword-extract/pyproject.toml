@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doc-pipeline-plugin-keyword-extract"
+version = "0.1.0"
+description = "doc-pipeline 外部插件：keyword_extract Agent（中英混合关键词抽取，entry_points 接入，本仓零改动）"
+requires-python = ">=3.11"
+
+# 接入契约：group 固定为 doc_pipeline.agents；值是模块路径
+# （与内置 agents/*.py 同构：模块级 AGENT_NAME + BaseAgent 子类）。
+[project.entry-points."doc_pipeline.agents"]
+keyword_extract = "doc_pipeline_plugin_keyword_extract.keyword_extract"

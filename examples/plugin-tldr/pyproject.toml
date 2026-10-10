@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doc-pipeline-plugin-tldr"
+version = "0.1.0"
+description = "doc-pipeline 外部插件：tldr Agent（离线确定性摘要，entry_points 接入，本仓零改动）"
+requires-python = ">=3.11"
+
+# 接入契约：group 固定为 doc_pipeline.agents；值是模块路径。
+[project.entry-points."doc_pipeline.agents"]
+tldr = "doc_pipeline_plugin_tldr.tldr"
