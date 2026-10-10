@@ -47,7 +47,7 @@
 
 ### 1.4 诚实短板（定位成立前必须清）
 
-第三方插件仍为 0（`entry_points` 机制 2026-10-08 已落地，见 §2）· 无身份/租户（一把共享 `ADMIN_API_KEY`）· 状态全是单机文件且租约按本机 PID 判活 · `pip install .` 装不出可用产品 · **质量门会假绿**（见 §6）。
+第三方插件已 6 个（`entry_points` 机制 2026-10-08 落地，2026-10-10 补足生态面至 6 个真 pip 包，见 §2）· 无身份/租户（一把共享 `ADMIN_API_KEY`）· 状态全是单机文件且租约按本机 PID 判活 · **质量门会假绿**（见 §6）。
 
 ---
 
@@ -60,9 +60,9 @@
 | 任务类型（真实跑通的 pack） | **11**（docgen 系 / api-report / intel-brief / kb-brief / data-qc / alert-runbook / deck-brief / minutes-weekly / invoice-extract / k8s-patrol / spec-cases〔最后 9 条 2026-10-09 落地〕） | **≥10** | 〔实测〕每条 pack 一条真 E2E：9 条在 `tests/test_pack_suite.py`（真 Scheduler→DAG→Agent→落盘，只换外部 IO），存量两条在 `test_kb_pipeline_wiring` / `test_generic_agents`；`TestPackInventory` 清册护栏逐条钉住 YAML + lock + 锁校验 + 判据类存在 |
 | 触发方式 | **6**（CLI / HTTP `POST /api/tasks` / MCP stdio / **定时 `--triggers`** / **入站 webhook** / **队列多机 worker**〔均 2026-10-08 落地〕） | **≥6** | 〔实测〕`tests/test_triggers.py` 钉定时提交路径、`tests/test_webhooks.py` 钉 HMAC/Token 鉴权与审计留痕、`tests/test_multi_process_workers.py` 钉真跨进程互斥与租约回收（边界：跨主机接管需共享 pid 命名空间） |
 | 交付形态 | **5**（md / docx / pdf / **xlsx / pptx**〔2026-10-08 加入结构化子集〕） | **≥5** | 〔实测〕`tests/test_renderer.py` 读回判真；xlsx/pptx 为结构化子集而非全量转换 |
-| 扩展来源 | **2**（本仓 `agents/` glob + **entry_points**〔2026-10-08 落地，group `doc_pipeline.agents`〕）；第三方插件实测数仍为 0 | **≥2 且第三方插件 ≥5** | 〔实测〕`tests/test_agent_loader.py::TestEntryPointPlugins` 八条钉住 发现/加载/沙箱/同名优先 |
+| 扩展来源 | **2**（本仓 `agents/` glob + **entry_points**〔2026-10-08 落地，group `doc_pipeline.agents`〕）；第三方插件实测数 **6**（2026-10-10：`examples/plugin-*` 六个真 pip 包，判据 `tests/test_plugins_ecosystem.py` 真 venv 装机逐个验证） | **≥2 且第三方插件 ≥5** | 〔实测〕`tests/test_agent_loader.py::TestEntryPointPlugins` 八条钉住 发现/加载/沙箱/同名优先 |
 
-**组合数：120（2×6×5×2，2026-10-09 按实测轴值重算——旧值 100 用了过时的 triggers=5） → 660（11×6×5×2）**，相对最初立项基线 **18 为 36.7x，已越过 ≥20x（=360）承诺线**；但 §2.1 是四条同时成立的验收线，第 2 条（第三方插件 ≥5）仍为 0——插件轴补上后组合数还会再乘一档。
+**组合数：120（2×6×5×2，2026-10-09 按实测轴值重算——旧值 100 用了过时的 triggers=5） → 660（11×6×5×2）**，相对最初立项基线 **18 为 36.7x，已越过 ≥20x（=360）承诺线**；四条验收线**全部成立**（第 2 条第三方插件 ≥5 已于 2026-10-10 达标：6 个真 pip 包；组合数随插件轴再乘一档至 3960）。
 
 ### 2.1 验收线（四条同时成立才算达成）
 
@@ -145,7 +145,7 @@
 
 | 功能 | 现状 | v1 目标 | 验收判据 |
 |---|---|---|---|
-| 插件发现 | **已达标**（2026-10-08）：entry_points group `doc_pipeline.agents` 与本仓 glob 并存（`TestEntryPointPlugins` 八条）；参考实现 `examples/plugin-hello/` 随仓，**真 venv + 真 pip install** 的端到端判据在位（`tests/test_plugin_example.py`：空 agents 目录下仍被发现/注册/执行）。第三方插件实测数仍为 0（等真实生态） | `entry_points` group 与本仓 glob **并存** | 外部 venv 包装好即被 `list agents` 列出，并能作为节点执行 |
+| 插件发现 | **已达标**（2026-10-08）：entry_points group `doc_pipeline.agents` 与本仓 glob 并存（`TestEntryPointPlugins` 八条）；参考实现 `examples/plugin-hello/` 随仓，**真 venv + 真 pip install** 的端到端判据在位（`tests/test_plugin_example.py`：空 agents 目录下仍被发现/注册/执行）。第三方插件实测数 **6**（`examples/plugin-*` 六个真 pip 包，真 venv 装机判据 `tests/test_plugins_ecosystem.py`：逐个被发现/注册/执行，来源标记 `entry_point:*`） | `entry_points` group 与本仓 glob **并存** | 外部 venv 包装好即被 `list agents` 列出，并能作为节点执行 |
 | Agent 沙箱 | 已有（AST + 白名单，内置件跳过检查） | 增加来源/签名标记，并在 S4 显示 | 第三方危险 Agent 被拒且报出命中规则 |
 | pack 机制 | **已达标**（2026-10-09）：`pipelines/*.yaml` + `quality/` + `prompts/` + `scripts/checker_rules.yaml` 已进 wheel 数据；`--check` 按 `pipeline_core.pack_manifest` 清册报数（几条 pack / 几个 agent / 缺谁），不再点名个别 pack 的文件。**真 venv 判据在位**（`tests/test_installable_product.py`：打 wheel → 装 → 从中立 cwd 跑自检，零 ERROR + 清册 > 0）。`pack-docgen` 的独立发行形态仍是 v1 目标 | 拆出 `pack-docgen`：5 个文档件（writer/quality_gate/checker/layout/fact_checker）+ 6 条 docgen YAML + quality profile | 拆完 `--check` 不再要求 `agents/writer.py` 与 `pipelines/docgen.yaml`（原 `bootstrap.py:183-185,235` 硬绑〔实测：旧态 `--check` 输出逐条含这两项，装完即红〕） |
 | 领域件与引擎件的依赖方向 | 引擎层无 `import agents/docpipeline`〔静态+护栏 `tests/test_layering.py`〕 | 保持 | 分层测试继续通过 |

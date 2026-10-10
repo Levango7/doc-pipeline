@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-10·续30，第三方插件生态面补足至 6 个真 pip 包）
+
+- **背景**：product-spec §2.1 验收线第 2 条要求「第三方插件 ≥5，由**外部 pip
+  包**提供 Agent，本仓零改动即被发现/注册/执行」。此前只有 `plugin-hello`
+  一个示例包（实测数 1，离 5 差 4），且没有判据覆盖「整生态面」。
+- **新增五个插件包**（`examples/plugin-*`，每个都是独立 pip 发行物：自己的
+  `pyproject.toml` + `entry_points`）：
+
+  | 包 | Agent | 用途 |
+  |---|---|---|
+  | plugin-keyword-extract | `keyword_extract` | 中英混合关键词抽取（词频 + 停用词） |
+  | plugin-readability | `readability` | 可读性维度：平均句长 / 长句占比 |
+  | plugin-link-check | `link_check` | 链接清单抽取（刻意**不**抓取 URL，保持离线可复现） |
+  | plugin-fact-coverage | `fact_coverage` | 证据密度：数字 / 代码块 / 表格 / 链接占比 |
+  | plugin-tldr | `tldr` | 离线确定性摘要（标题 + 每节首句，无 LLM） |
+
+  全部纯标准库、离线、逐字可复现；与内置 `agents/*.py` 同构（模块级
+  `AGENT_NAME` + `BaseAgent` 子类），且**不**声明 `SANDBOX_TRUSTED`。
+- **判据**（`tests/test_plugins_ecosystem.py`）：
+  - 快判据 18 条：六个包的 entry_points group / 模块路径 / `AGENT_NAME` /
+    AST 安全检查逐包钉住；
+  - 真判据 1 条：建真 venv（`--system-site-packages`）、六个包全部
+    `pip install`、跑发现/注册/执行探针，逐个断言被 `discover()` 列出、
+    `register()` 注册、`handle()` 真跑成功，来源标记 `entry_point:<name>`；
+    数量不足 5 即红。本机实测 6/6 全过。
+- **文档**：`examples/README.md` 生态总览（六包表 + 契约 + 试法 + 判据分工），
+  每个包目录各有一份 README；主 README 插件段从「一个示例」改为「六个包」。
+- **spec 口径**：§2 扩展来源轴与 §5.2 插件发现行的第三方插件实测数 0 → **6**；
+  §1.4 诚实短板同步；§2 组合数结论改为四条验收线全部成立（插件轴补上后
+  组合数再乘一档至 3960）。
+
+
 ### Changed（2026-10-09·续29，pack 拆包：`--check` 解绑 + `pip install .` 可用）
 
 - **背景**：product-spec §3 P0 判据 1「干净 venv 装完后 `--check` 不红」此前
