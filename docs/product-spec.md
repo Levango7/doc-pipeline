@@ -156,7 +156,7 @@
 |---|---|---|---|
 | MCP Server | **已达标**（2026-10-08）：6 tools——新增通用 `run_workflow(name, inputs)`（inputs 按「## 键」渲染为输入文档）；banner/日志改 stderr 与 `serverInfo.version` 接 `__version__` 均已修（FP-3 关闭）；真 stdio 往返测试在位（`tests/test_mcp_server.py::TestMCPOverRealStdio`）。原现状留档：5 tools 全是文档动词 / banner 污染 stdout / version 恒 `unknown`〔实测〕 | 加通用 `run_workflow(name, inputs)`；banner/日志改 stderr；version 接 `__version__` | 一条**真实 stdio 往返**测试通过 |
 | HTTP 执行 API | 只有"提交文档生成任务"〔静态：`openapi_spec.py:126`〕 | `POST /api/workflows/{name}/runs` 接受任意 payload | 用非文档 pack 跑通该端点 |
-| CLI | 功能完整但命名满是文档味（banner、argparse 描述、`--enhance`） | 改名 + 动词收敛为 `run / plan / lock / pack / plugin` | `--help` 里不再出现"文档生成流水线"字样 |
+| CLI | **第一步已达标**（2026-10-10）：banner / argparse description / 模块 docstring 改为「Agent 工作流引擎」（判据 `tests/test_cli_wording.py` 2 条，静态+真 `--help`）；`--enhance` 仍在 | 改名 + 动词收敛为 `run / plan / lock / pack / plugin` | `--help` 里不再出现"文档生成流水线"字样〔已达标〕；动词收敛仍待做 |
 | 触发方式 | **6 种**（CLI / HTTP API / MCP / **定时** / **入站 webhook** / **队列多机 worker**〔均 2026-10-08 落地〕）；多机并发契约由真跨进程判据实证（互斥 / 崩溃接管 / 活 owner 不被抢），跨主机接管需共享 pid 命名空间 | 6 种（+ 定时 + inbound webhook） | 定时触发的 run 出现在同一队列与观测面（同 `run_plan` 路径，`tests/test_triggers.py` 钉住）；webhook 入站鉴权与审计均已兑现（`tests/test_webhooks.py`）；多机 worker 判据见 `tests/test_multi_process_workers.py` |
 
 ### 5.4 治理层
@@ -289,7 +289,7 @@
 6. **MAOP 侧不改仓**（已定）：迁移时设环境变量 `DOC_PIPELINE_ROOT=<新路径>` —— `doc_pipeline_adapter.py:38-55` 的第一候选就是它，于是 MAOP 立刻能找到新位置，无需它侧任何提交。
    - 残留：`MAOP/py/tests/test_doc_pipeline_adapter.py:62,68,79,86,93` 五处**硬编码绝对路径**，环境变量救不了它们（不经 `_resolve_doc_pipeline_root()`）→ 搬完 MAOP 那 5 条用例会红。这是 MAOP 仓的账，**改动权在维护者**，本项目只记账不代改。
    - 若日后想让旧脚本零改动继续跑，可在旧路径留 Windows junction 兜底；代价是机器上出现"看着像两个仓"的入口，容易误编辑，非必要时不采用。
-7. 才开始动代码内的名字（顺序：banner/CLI 文案 → env 前缀 → MCP/观测标识 → 包名（需与 MAOP lockstep）→ pack 拆分）。
+7. 才开始动代码内的名字（顺序：banner/CLI 文案 → env 前缀 → MCP/观测标识 → 包名（需与 MAOP lockstep）→ pack 拆分）。**〔2026-10-10：第一步「banner/CLI 文案」已做**——run.py 的 docstring/banner/argparse 三处改为「Agent 工作流引擎」，`--help` 用户可见面零"文档生成流水线"字样（判据 `tests/test_cli_wording.py` 2 条，含静态防回归）；动词收敛 / --enhance 摘除 / env 前缀 / MCP 标识 / 包名仍待后续〕。
 
 ---
 
