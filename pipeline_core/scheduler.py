@@ -172,8 +172,15 @@ def installed_pipelines(pipeline_dir: str | Path | None = None) -> list[str]:
       2. 测试普遍 patch `scheduler.Scheduler` 类，目录查询跟着变 mock 后
          `list(MagicMock())` 是空迭代，可用清单被无声吞成空。
     """
-    root = Path(pipeline_dir) if pipeline_dir else paths.pipelines_dir()
-    return sorted(p.stem for p in root.glob("*.yaml") if not p.name.startswith("_"))
+    if pipeline_dir:
+        root = Path(pipeline_dir)
+        return sorted(p.stem for p in root.glob("*.yaml") if not p.name.startswith("_"))
+    names: set[str] = set()
+    from .pack_manifest import pipeline_dirs  # 局部 import：pack_manifest 反向依赖本模块
+    for d in pipeline_dirs():  # 核心 pipelines/ + 物理 pack 的 pipelines/
+        if d.is_dir():
+            names.update(p.stem for p in d.glob("*.yaml") if not p.name.startswith("_"))
+    return sorted(names)
 
 
 def resolve_pipeline_name(requested: str, available: list[str],
@@ -249,12 +256,21 @@ class Scheduler:
 
         片段必须跟着调用它的流水线走：`--pipeline-file /tmp/x.yaml` 在别的路径下
         也能找到同目录的 `_quality-tail.yaml`，而不是回头看进程 cwd。
+        无 base_dir 时按序搜索：Scheduler.pipeline_dir → 物理 pack 的 pipelines/
+        （pack 流水线与核心流水线同名单一空间，pack-docgen 拆出后 docgen 系在此）。
         """
         if not self._PIPELINE_NAME_RE.match(pipeline_name or ""):
             raise ValueError(
                 f"pipeline 名称非法: {pipeline_name!r}（仅允许字母/数字/下划线/连字符）")
-        root = Path(base_dir) if base_dir else self.pipeline_dir
-        return root / f"{pipeline_name}.yaml"
+        if base_dir:
+            return Path(base_dir) / f"{pipeline_name}.yaml"
+        from .pack_manifest import pipeline_dirs
+        candidates = [self.pipeline_dir / f"{pipeline_name}.yaml"]
+        candidates.extend(d / f"{pipeline_name}.yaml" for d in pipeline_dirs())
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return candidates[0]
 
     def load(self, pipeline_name: str,
              base_dir: str | Path | None = None) -> dict:
@@ -284,13 +300,22 @@ class Scheduler:
         # 片段按引用方目录解析：filepath 在哪，它 call 的片段就在哪找
         plan = self._build_plan(raw, pipeline_name, base_dir=path.parent)
         if verify_lock:
-            self._verify_lock_after_parse(plan)
+            self._verify_lock_after_parse(plan, source_dir=path.parent)
         return plan
 
-    def _verify_lock_after_parse(self, plan: ExecutionPlan):
+    def _verify_lock_after_parse(self, plan: ExecutionPlan, source_dir: Path | None = None):
         import logging
         logger = logging.getLogger(__name__)
-        lock_path = self.pipeline_dir / f"{plan.pipeline_name}.lock"
+        # 锁与 YAML 同目录优先（pack 流水线的锁在 packs/<name>/pipelines/ 里），
+        # 旧布局（集中式 pipelines/ + Scheduler.pipeline_dir）退回查找；
+        # parse()（按名解析）没有源路径信息，仍走 pipeline_dir。
+        candidates = [source_dir] if source_dir else []
+        candidates.append(self.pipeline_dir)
+        lock_path = next(
+            (d / f"{plan.pipeline_name}.lock" for d in candidates
+             if (d / f"{plan.pipeline_name}.lock").is_file()),
+            candidates[-1] / f"{plan.pipeline_name}.lock",
+        )
         if not lock_path.exists():
             logger.debug(
                 "[%s] 无 lockfile（%s），跳过版本锁定校验；可用 --write-lock 生成",
@@ -754,11 +779,18 @@ class Scheduler:
                         f"实际 {type(value).__name__}={value!r}")
 
     def _schema_for_agent(self, agent_name: str) -> dict:
-        """在 agents_dir 里找该 Agent 的文件并读取其 CONFIG_SCHEMA。"""
-        for candidate in (self.agents_dir / f"{agent_name}.py",
-                          self.agents_dir / f"{agent_name}_agent.py"):
-            if candidate.exists():
-                return _config_schema.schema_for_file(candidate)
+        """在发现目录里找该 Agent 的文件并读取其 CONFIG_SCHEMA。
+
+        发现目录 = 核心 agents/ + 物理 pack 的 agents/（pack-docgen 拆出后
+        writer/quality_gate/checker/layout/fact_checker 的 schema 在 pack 里；
+        schema 默认值参与 config_hash，找不到 = 默认值不注入 = 锁全红）。
+        """
+        from .pack_manifest import agent_sources
+        for source_dir, _prefix in agent_sources(self.agents_dir):
+            for candidate in (source_dir / f"{agent_name}.py",
+                              source_dir / f"{agent_name}_agent.py"):
+                if candidate.exists():
+                    return _config_schema.schema_for_file(candidate)
         return {}
     # ── Lockfile ─────────────────────
 

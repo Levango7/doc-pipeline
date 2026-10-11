@@ -199,16 +199,41 @@ class AgentLoader:
         return {ep.name: ep for ep in eps}
 
     def discover(self) -> list[str]:
-        """本仓 agents/*.py + entry_points 插件；同名时本仓文件优先。"""
+        """核心 agents/*.py + 物理 pack 的 agents/ + entry_points 插件；同名时先发现者优先。"""
         names: list[str] = []
-        if self.agents_dir.exists():
-            for f in self.agents_dir.glob("*.py"):
-                if not f.stem.startswith("_"):
+        seen: set[str] = set()
+        for source_dir, _prefix in self._agent_sources():
+            if not source_dir.is_dir():
+                continue
+            for f in source_dir.glob("*.py"):
+                if not f.stem.startswith("_") and f.stem not in seen:
                     names.append(f.stem)
-        local = set(names)
+                    seen.add(f.stem)
         plugins = self._plugin_entry_points()
-        names.extend(n for n in sorted(plugins) if n not in local)
+        names.extend(n for n in sorted(plugins) if n not in seen)
         return names
+
+    def _agent_sources(self) -> list[tuple[Path, str]]:
+        """发现目录清单：(核心 agents/, 'agents') + 物理 pack 的 (agents/, 模块前缀)。
+
+        模块前缀与直接 import 路径一致（packs.docgen.agents.writer 这类），
+        保证测试的 import/patch 与 loader 加载命中同一个模块对象。
+        """
+        try:
+            from .pack_manifest import agent_sources
+            return agent_sources(self.agents_dir)
+        except Exception as e:  # noqa: BLE001  pack 发现失败不拖垮核心 agents
+            if self._logger:
+                self._logger.log("warning", "pack agent 目录发现失败", error=str(e))
+            return [(self.agents_dir, "agents")]
+
+    def _locate(self, name: str) -> tuple[Path, str] | None:
+        """按名解析 Agent 源文件与模块键：核心 agents/ 优先，其次物理 pack。"""
+        for source_dir, prefix in self._agent_sources():
+            candidate = source_dir / f"{name}.py"
+            if candidate.is_file():
+                return candidate, f"{prefix}.{name}"
+        return None
 
     def register(self, agent_names: list[str] | None = None, config: dict | None = None,
                  *, reload: bool = False) -> list[str]:
@@ -232,11 +257,17 @@ class AgentLoader:
 
         for name in names:
             try:
-                agent_file = self.agents_dir / f"{name}.py"
-                if not agent_file.exists() and name in plugins:
-                    self._register_entry_point(name, plugins[name], config, loaded)
+                # 名字 → (文件, 模块键)：核心 agents/ 之外还搜物理 pack 的 agents/
+                # （模块键 = 直接 import 路径，保证测试 import/patch 与此命中同一模块）
+                located = self._locate(name)
+                if located is None:
+                    if name in plugins:
+                        self._register_entry_point(name, plugins[name], config, loaded)
+                        continue
+                    if self._logger:
+                        self._logger.log("error", f"加载失败 {name}", error="未在任何发现目录找到源文件")
                     continue
-                module_key = f"agents.{name}"
+                agent_file, module_key = located
                 cached = sys.modules.get(module_key)
                 cached_file = getattr(cached, "__file__", None)
                 reuse = bool(cached is not None and not reload and cached_file

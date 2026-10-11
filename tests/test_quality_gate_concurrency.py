@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agents.quality_gate import QualityGateAgent  # noqa: E402
+from packs.docgen.agents.quality_gate import QualityGateAgent  # noqa: E402
 from pipeline_core.base_agent import AgentMeta  # noqa: E402
 from pipeline_core.message_bus_v3 import Message, MessageType  # noqa: E402
 

@@ -1,7 +1,7 @@
 """tests/test_checker.py — CheckerAgent markdown 规则检查。"""
 
 
-from agents.checker import CheckerAgent
+from packs.docgen.agents.checker import CheckerAgent
 from pipeline_core.base_agent import AgentMeta, Message
 
 

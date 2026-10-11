@@ -30,7 +30,13 @@ class TestPipelineCounting:
 
     def test_packs_match_scheduler_listing(self):
         """Ask two places about the same fact; the answers must agree."""
-        manifest = {p.name for p in pm.discover() if p.source == "builtin"}
+        # 可跑清单 = 散装流水线（builtin）+ 物理 pack 声明的流水线。
+        # 物理 pack 在 manifest 里记为一个 pack，其成员流水线名在
+        # declared_pipelines（docgen 系 6 条住 packs/docgen/pipelines/）。
+        packs = pm.discover()
+        manifest = {p.name for p in packs if p.source == "builtin"}
+        manifest |= {name for p in packs if p.source == "pack"
+                     for name in p.declared_pipelines}
         scheduled = set(installed_pipelines())
         assert manifest == scheduled, (
             f"manifest and scheduler diverged: "
@@ -46,7 +52,7 @@ class TestPipelineCounting:
     def test_every_pipeline_declares_agents(self):
         """Every pack declares at least one agent, else it cannot run."""
         for pack in pm.discover():
-            if pack.source != "builtin":
+            if pack.source not in ("builtin", "pack"):
                 continue
             assert pack.agent_names, f"{pack.name} declares no agent"
 

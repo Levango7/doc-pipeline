@@ -163,8 +163,8 @@ class WriterAgent(BaseAgent):
 
         # Prompt 模板配置
         self._prompt_profile = config.get("prompt_profile", "default")
-        from pipeline_core.paths import pipelines_dir as _pipelines_dir
-        self._prompts_dir = _pipelines_dir() / "prompts"
+        from pipeline_core.pack_manifest import prompts_dirs as _prompts_dirs
+        self._prompts_dirs = _prompts_dirs()
         self._prompt_template_cache = CacheManager(
             name="writer_prompt", max_size=50, ttl=0,
         )
@@ -950,9 +950,10 @@ class WriterAgent(BaseAgent):
         if cached is not None:
             return cached  # type: ignore[no-any-return]
 
-        yaml_path = self._prompts_dir / f"{profile_name}.yaml"
-        if not yaml_path.exists():
-            self.log_warning(f"Prompt 模板不存在: {yaml_path}，使用内置默认")
+        yaml_path = next((d / f"{profile_name}.yaml" for d in self._prompts_dirs
+                          if (d / f"{profile_name}.yaml").exists()), None)
+        if yaml_path is None:
+            self.log_warning(f"Prompt 模板不存在: {profile_name}.yaml（搜索 {self._prompts_dirs}），使用内置默认")
             return {}
 
         try:

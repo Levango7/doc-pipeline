@@ -69,10 +69,19 @@ class TestAgentLoaderTrusted:
         from pathlib import Path
 
         from pipeline_core.agent_loader import declares_sandbox_trust
-        agents_dir = Path(__file__).parent.parent / "agents"
-        for name in ("researcher", "writer", "fetcher", "quality_gate",
-                     "layout", "checker", "safe_writer_agent"):
-            assert declares_sandbox_trust(agents_dir / f"{name}.py"), name
+        root = Path(__file__).parent.parent
+        sources = {
+            "researcher": root / "agents" / "researcher.py",
+            "fetcher": root / "agents" / "fetcher.py",
+            "safe_writer_agent": root / "agents" / "safe_writer_agent.py",
+            # pack-docgen 拆出后这五支住 packs/docgen/agents/
+            "writer": root / "packs" / "docgen" / "agents" / "writer.py",
+            "quality_gate": root / "packs" / "docgen" / "agents" / "quality_gate.py",
+            "layout": root / "packs" / "docgen" / "agents" / "layout.py",
+            "checker": root / "packs" / "docgen" / "agents" / "checker.py",
+        }
+        for name, path in sources.items():
+            assert declares_sandbox_trust(path), name
 
     def test_core_keeps_no_roster(self):
         from pipeline_core.agent_loader import AgentLoader

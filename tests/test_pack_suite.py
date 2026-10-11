@@ -433,12 +433,15 @@ class TestPackInventory:
     @pytest.mark.parametrize("pack", sorted(PACK_E2E))
     def test_every_pack_has_yaml_lock_and_verifies(self, pack):
         """YAML 存在 + 配套 lock 存在 + 锁校验通过（改配置忘重锁会在这转红）。"""
+        # 物理 pack（packs/<name>/pipelines/）优先，散装核心流水线回退 pipelines/
         path = PIPELINES / f"{pack}.yaml"
+        if not path.exists():
+            path = PROJECT / "packs" / pack / "pipelines" / f"{pack}.yaml"
         assert path.exists(), f"pack {pack!r} 没有 YAML"
-        assert (PIPELINES / f"{pack}.lock").exists(), \
+        assert path.with_suffix(".lock").exists(), \
             f"pack {pack!r} 没有 lockfile（用 --write-lock 生成）"
         from pipeline_core.scheduler import Scheduler
-        sched = Scheduler(pipeline_dir=str(PIPELINES), agents_dir=PROJECT / "agents")
+        sched = Scheduler(pipeline_dir=str(path.parent), agents_dir=PROJECT / "agents")
         plan = sched.parse(pack, verify_lock=True)  # 漂移即抛 LockfileMismatchError
         assert plan.node_count >= 2, f"pack {pack!r} 只有 {plan.node_count} 个节点"
 

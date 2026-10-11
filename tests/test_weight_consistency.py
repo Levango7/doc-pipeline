@@ -22,7 +22,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agents.quality_gate import QUALITY_DIR, QualityGateAgent, load_profile
+from packs.docgen.agents.quality_gate import QUALITY_DIR, QualityGateAgent, load_profile
 
 PROJECT = Path(__file__).parent.parent
 PROFILE_NAMES = sorted(p.stem for p in QUALITY_DIR.glob("*.yaml"))
@@ -85,7 +85,10 @@ class TestNoInlineWeights:
 
     @pytest.mark.parametrize("pipeline", ["docgen", "docgen-verified", "docreq"])
     def test_pipeline_yaml_has_no_inline_weights(self, pipeline):
-        path = PROJECT / "pipelines" / f"{pipeline}.yaml"
+        _pack_pipelines = PROJECT / "packs" / "docgen" / "pipelines"
+        path = (_pack_pipelines / f"{pipeline}.yaml"
+                if (_pack_pipelines / f"{pipeline}.yaml").exists()
+                else PROJECT / "pipelines" / f"{pipeline}.yaml")
         if not path.exists():
             pytest.skip(f"{pipeline}.yaml 不存在")
         with open(path, encoding="utf-8") as f:
@@ -103,7 +106,7 @@ class TestLockfileInSync:
 
     def test_docgen_parse_verifies_lockfile(self):
         from pipeline_core.scheduler import Scheduler
-        lock = PROJECT / "pipelines" / "docgen.lock"
+        lock = PROJECT / "packs" / "docgen" / "pipelines" / "docgen.lock"
         if not lock.exists():
             pytest.skip("docgen.lock 不存在")
         sched = Scheduler(pipeline_dir=str(PROJECT / "pipelines"))

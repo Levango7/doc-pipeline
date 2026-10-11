@@ -49,12 +49,12 @@ jobs:
 
       - name: Syntax check (all modules)
         run: |
-          python -m py_compile pipeline_core/*.py docpipeline/*.py agents/*.py run.py
+          python -m py_compile pipeline_core/*.py docpipeline/*.py agents/*.py packs/docgen/agents/*.py run.py
           echo "SYNTAX OK"
 
       - name: Type check (mypy)
         run: |
-          mypy pipeline_core/ docpipeline/ agents/ --ignore-missing-imports
+          mypy pipeline_core/ docpipeline/ agents/ packs/ --ignore-missing-imports
 
       - name: Run tests with coverage
         run: |
@@ -64,7 +64,7 @@ jobs:
 
       - name: Security scan (bandit)
         run: |
-          bandit -c pyproject.toml -ll -r pipeline_core docpipeline agents -f json -o bandit-report.json
+          bandit -c pyproject.toml -ll -r pipeline_core docpipeline agents packs -f json -o bandit-report.json
 
       - name: Dependency audit (pip-audit)
         run: |

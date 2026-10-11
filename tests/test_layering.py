@@ -113,6 +113,21 @@ class TestDependencyDirection:
             "docpipeline 不得 import agents：插件层可以调用领域层，反过来会成环。"
         )
 
+    def test_engine_does_not_import_packs(self):
+        """引擎不得 import packs：pack 经 pack_manifest 按目录发现，硬编码引用会让拆包失效。"""
+        assert _flagged(ENGINE, {"packs"}) == [], (
+            "pipeline_core 不得 import packs：pack 由 manifest 按目录发现"
+            "（pack_manifest/paths），硬编码引用等于把 pack 焊回引擎。"
+        )
+
+    def test_pack_agents_do_not_import_core_agents(self):
+        """pack 的领域 Agent 不得 import 核心 agents/：两层层级，同层禁止互相引用。"""
+        PACK_AGENTS = PROJECT / "packs" / "docgen" / "agents"
+        assert _flagged(PACK_AGENTS, {"agents"}) == [], (
+            "packs/docgen/agents 不得 import agents/：核心内置件与 pack 领域件是"
+            "两层层级，同层互引会成环。"
+        )
+
     def test_foundation_does_not_import_the_product(self):
         """artesian（底座）并入主仓后，方向仍要单向：它不得 import 主仓任何包。
 
@@ -211,7 +226,7 @@ class TestScannerActuallyWorks:
             ("from docpipeline import renderer\n", {"docpipeline"}),
             ("import docpipeline.ingest\n", {"docpipeline"}),
             ('importlib.import_module("docpipeline.renderer")\n', {"docpipeline"}),
-            ('__import__("agents.writer")\n', {"agents"}),
+            ('__import__("packs.docgen.agents.writer")\n', {"packs"}),
             ("from . import artifacts\n", set()),
             ("from pathlib import Path\n", {"pathlib"}),
         ],
@@ -232,9 +247,13 @@ class TestSplitIsReal:
 
     def test_package_is_declared(self):
         """没写进 [tool.setuptools] packages 的顶层包，装完就 ImportError。"""
-        text = (PROJECT / "pyproject.toml").read_text(encoding="utf-8")
-        line = next((ln for ln in text.splitlines() if ln.startswith("packages =")), "")
-        assert "docpipeline" in line, f"pyproject 未打包 docpipeline: {line!r}"
+        import tomllib
+        data = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
+        pkgs = data["tool"]["setuptools"]["packages"]
+        assert "docpipeline" in pkgs, f"pyproject 未打包 docpipeline: {pkgs!r}"
+        # pack-docgen 拆出后 packs 树也必须真的被打包
+        assert "packs" in pkgs and "packs.docgen" in pkgs, (
+            f"pyproject 未打包 packs 树: {pkgs!r}")
 
     def test_engine_no_longer_reexports_document_api(self):
         import pipeline_core

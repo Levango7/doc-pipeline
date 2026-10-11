@@ -158,6 +158,27 @@ def _pipelines_dir() -> Path:
     return Path(_dir())
 
 
+def _pack_pipeline_dirs() -> list[Path]:
+    """物理 pack 的流水线目录（可 patch 缝隙；默认 pack 清单发现）。"""
+    from pipeline_core.pack_manifest import physical_packs
+
+    return [p.pipelines_dir for p in physical_packs()
+            if p.pipelines_dir and p.pipelines_dir.is_dir()]
+
+
+def _pipeline_names_from_dirs() -> list[str]:
+    """核心 pipelines/ + 物理 pack 的 pipelines/ 全量候选（去重排序）。"""
+    names: set[str] = set()
+    core = _pipelines_dir()
+    if core.is_dir():
+        names.update(p.stem for p in core.glob("*.yaml")
+                     if not p.name.startswith("_"))
+    for d in _pack_pipeline_dirs():
+        names.update(p.stem for p in d.glob("*.yaml")
+                     if not p.name.startswith("_"))
+    return sorted(names)
+
+
 def _available_pipeline_names() -> list[str]:
     """列出 pipelines/ 目录下可用的流水线名（yaml 文件 stem）。
 
@@ -166,15 +187,11 @@ def _available_pipeline_names() -> list[str]:
     global _PIPELINE_NAMES_CACHE
     if _PIPELINE_NAMES_CACHE is not None:
         return list(_PIPELINE_NAMES_CACHE)
-    pipelines_dir = _pipelines_dir()
-    if not pipelines_dir.exists():
-        _PIPELINE_NAMES_CACHE = []
-        return []
     # `_` 前缀是内部片段（子流水线 tail），只能被 call 引用：它们的输入是上游
     # 节点的产物，单独跑没有意义，所以不进候选清单。口径与
-    # scheduler.installed_pipelines / Scheduler.list_pipelines 保持一致。
-    _PIPELINE_NAMES_CACHE = sorted(p.stem for p in pipelines_dir.glob("*.yaml")
-                                   if not p.name.startswith("_"))
+    # scheduler.installed_pipelines / Scheduler.list_pipelines 保持一致
+    # （核心 pipelines/ + 物理 pack 的 pipelines/ 全量 union）。
+    _PIPELINE_NAMES_CACHE = _pipeline_names_from_dirs()
     return list(_PIPELINE_NAMES_CACHE)
 
 
@@ -189,10 +206,18 @@ def _resolve_pipeline_files(pipeline: str, pipeline_file: str | None,
     """
     if pipeline_file:
         return [Path(pipeline_file)]
-    exact = pipelines_dir / f"{pipeline}.yaml"
-    if exact.exists():
-        return [exact]
-    return sorted(pipelines_dir.glob(f"{pipeline}*.yaml"))
+    for d in [pipelines_dir, *_pack_pipeline_dirs()]:
+        exact = d / f"{pipeline}.yaml"
+        if exact.exists():
+            return [exact]
+    matches: list[Path] = []
+    seen: set[str] = set()
+    for d in [pipelines_dir, *_pack_pipeline_dirs()]:
+        for hit in sorted(d.glob(f"{pipeline}*.yaml")):
+            if str(hit) not in seen:
+                matches.append(hit)
+                seen.add(str(hit))
+    return matches
 
 
 def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestrator,
@@ -230,7 +255,8 @@ def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestr
                 continue
             print(f"[run] 加载流水线配置: {pf.name}")
             if write_lock:
-                lock_path = sched.generate_lockfile(plan)
+                # 锁写到解析出的 YAML 同目录（pack 流水线的锁进 packs/<name>/pipelines/）
+                lock_path = sched.generate_lockfile(plan, output_dir=str(pf.parent))
                 agent_count = len({n.agent_name.split("_pool_")[0]
                                    for level in plan.levels for n in level})
                 print(f"[run] 已写入版本锁定: {lock_path}"

@@ -253,14 +253,21 @@ def _check_pipeline_config(report: StartupReport, project_root: Path):
         report.add(CheckResult("pack 清册", "error", f"清点失败: {e}"))
         return
 
-    if manifest["packs"] == 0:
+    physical = [p for p in manifest["pack_infos"] if p.source == "pack"]
+    loose = [p for p in manifest["pack_infos"] if p.source == "builtin"]
+    parts = []
+    for p in physical:
+        parts.append(f"pack {p.name}（{len(p.agent_names)} agents / {len(p.declared_pipelines)} 流水线）")
+    if loose:
+        parts.append(f"{len(loose)} 条内置流水线")
+    if not parts:
         report.add(CheckResult("pack 清册", "warn",
                                "没有可执行的 pack（pipelines/ 下无流水线）；"
                                "引擎可启动，但没有可跑的活"))
     else:
         report.add(CheckResult("pack 清册", "ok",
-                               f"{manifest['packs']} 条流水线可跑，"
-                               f"{manifest['agents']} 个 agent 可用"))
+                               "，".join(parts)
+                               + f"；{manifest['agents']} 个 agent 可用"))
     if manifest["agents_missing"]:
         report.add(CheckResult("agent 齐备性", "error",
                                f"流水线引用了装不上的 agent: "

@@ -136,11 +136,12 @@ class TaskWorker:
     def _execute(self, item: dict) -> None:
         task_id = item["task_id"]
         name = item["pipeline_name"]
-        plan_path = self.pipeline_dir / f"{name}.yaml"
+        # pack 感知解析：核心 pipelines/ 优先，其次物理 pack 的 pipelines/
+        plan_path = self.scheduler._pipeline_path(name)
         if not plan_path.exists():
             available = ", ".join(installed_pipelines(self.pipeline_dir)) or "无"
             raise FileNotFoundError(
-                f"流水线 '{name}' 不存在（pipelines/ 下可用: {available}）")
+                f"流水线 '{name}' 不存在（可用: {available}）")
 
         config = item.get("config") or {}
         output = config.get("output") or f"output/{task_id}_result.md"

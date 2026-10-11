@@ -152,7 +152,7 @@ class TestModuleIdentity:
 
     原来 register() 每次都 module_from_spec + exec_module 并覆写
     sys.modules["agents.<name>"]，于是同一个 Agent 存在两份类对象：
-    测试里 `patch("agents.writer.WriterAgent.handle")` 打的是先导入的那一份，
+    测试里 `patch("packs.docgen.agents.writer.WriterAgent.handle")` 打的是先导入的那一份，
     注册器造的实例用的是另一份——补丁空转，E2E 照样绿。这条判据不是假想的，
     本项目已经因此收回过两次"绿了"的结论。
     """
@@ -269,8 +269,10 @@ class TestModuleIdentity:
         """出厂 Agent 自带 SANDBOX_TRUSTED，走的是"跳过黑名单"而不是"没检查"。"""
         from pipeline_core.agent_loader import declares_sandbox_trust
 
-        agents = Path(__file__).resolve().parent.parent / "agents"
-        assert declares_sandbox_trust(agents / "writer.py") is True
+        root = Path(__file__).resolve().parent.parent
+        # writer 随 pack-docgen 拆出，住 packs/docgen/agents/；researcher 是核心件
+        assert declares_sandbox_trust(root / "packs" / "docgen" / "agents" / "writer.py") is True
+        assert declares_sandbox_trust(root / "agents" / "researcher.py") is True
         assert declares_sandbox_trust(tmp_path / "nope.py") is False
 
 

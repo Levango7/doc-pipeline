@@ -500,8 +500,8 @@ class TestInlinedNodesKeepAgentCapabilities:
             task = self._run(tmp_path, [
                 {"name": "layout", "dependencies": []},
                 {"name": "safe_writer", "dependencies": ["layout"]},
-            ], [("agents.writer", "WriterAgent", self._writer_handle),
-                ("agents.layout", "LayoutAgent", fake_layout),
+            ], [("packs.docgen.agents.writer", "WriterAgent", self._writer_handle),
+                ("packs.docgen.agents.layout", "LayoutAgent", fake_layout),
                 ("agents.safe_writer_agent", "SafeWriterAgent", fake_safe_writer)])
 
         assert seen.get("meta") is not None, (
@@ -528,8 +528,8 @@ class TestInlinedNodesKeepAgentCapabilities:
 
         with patch.object(DAGExecutor, "_handle_regeneration", spy):
             task = self._run(tmp_path, [{"name": "quality_gate", "dependencies": []}],
-                             [("agents.writer", "WriterAgent", self._writer_handle),
-                              ("agents.quality_gate", "QualityGateAgent", fake_gate)])
+                             [("packs.docgen.agents.writer", "WriterAgent", self._writer_handle),
+                              ("packs.docgen.agents.quality_gate", "QualityGateAgent", fake_gate)])
 
         assert calls == [("quality_gate__tail", "writer", "quality_gate")], (
             f"内联 gate 没进入重做循环（supports_regeneration 查不到就等于质量门失效）:"
@@ -572,8 +572,8 @@ class TestInputsDriveRuntimeBranch:
         orch = PipelineOrchestrator(agents_dir=str(PROJECT / "agents"),
                                     checkpoint_dir=str(tmp_path / "ck"))
         orch.register_agents()
-        checker_cls = sys.modules["agents.checker"].CheckerAgent
-        writer_cls = sys.modules["agents.writer"].WriterAgent
+        checker_cls = sys.modules["packs.docgen.agents.checker"].CheckerAgent
+        writer_cls = sys.modules["packs.docgen.agents.writer"].WriterAgent
         with patch.object(checker_cls, "handle", fake_checker), \
              patch.object(writer_cls, "handle",
                           lambda self, msg: {"status": "ok", "content": "正文"}):
@@ -637,8 +637,8 @@ class TestRuntimeIdentity:
         # 都重新 exec_module 并覆写这些键，注册前拿到的类与实例化用的类是两份对象，
         # patch 全程空转。现在 loader 在"同一个文件"前提下复用模块
         # （tests/test_agent_loader.py::TestModuleIdentity 守住），空转的根因已堵住。
-        layout_cls = sys.modules["agents.layout"].LayoutAgent
-        writer_cls = sys.modules["agents.writer"].WriterAgent
+        layout_cls = sys.modules["packs.docgen.agents.layout"].LayoutAgent
+        writer_cls = sys.modules["packs.docgen.agents.writer"].WriterAgent
         safe_writer_cls = sys.modules["agents.safe_writer_agent"].SafeWriterAgent
         with patch.object(layout_cls, "handle", fake_layout), \
              patch.object(writer_cls, "handle",
@@ -775,7 +775,9 @@ class TestExpandedPlanShape:
         assert isinstance(plan, ExecutionPlan)
         assert plan.node_count == 3
         # 展开后每个节点都能被 agent_of 还原成真实 Agent 名
-        agents = {f.stem for f in (PROJECT / "agents").glob("*.py")}
+        # （清册含物理 pack：writer 在 pack-docgen 拆出后不在核心 agents/）
+        from pipeline_core.pack_manifest import agent_inventory
+        agents, _missing = agent_inventory()
         for lvl in plan.levels:
             for n in lvl:
                 assert agent_of(n.agent_name) in agents

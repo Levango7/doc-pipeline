@@ -66,7 +66,10 @@ loom = "run:main"
 doc-pipeline = "run:main"      # 旧入口别名，过渡期保留
 
 [tool.setuptools]
-packages = ["pipeline_core", "docpipeline", "agents", "scripts", "artesian"]
+packages = [
+    "pipeline_core", "docpipeline", "agents", "scripts", "artesian",
+    "packs", "packs.docgen", "packs.docgen.agents",
+]
 py-modules = ["run"]
 
 # 流水线 YAML / lock / quality profile / prompt 模板必须随 wheel 走。
@@ -78,23 +81,27 @@ py-modules = ["run"]
 [tool.setuptools.package-data]
 scripts = ["checker_rules.yaml"]
 artesian = ["py.typed"]
+"packs.docgen" = [
+    "pipelines/*.yaml",
+    "pipelines/*.lock",
+    "pipelines/_quality-tail.yaml",
+    "pipelines/_quality-tail.lock",
+    "quality/*.yaml",
+    "prompts/*.yaml",
+    "pack.yaml",
+]
 
 [tool.setuptools.data-files]
 # 装到 <prefix>/pipelines。解析顺序见 pipeline_core.paths：
 # 源码树（仓库根/pipelines）优先，其次安装态这一份，env 可覆盖。
-# 注意：data-files 的目标键就是安装目录，**子目录必须单列**——
-# 把 `pipelines/quality/*.yaml` 写进 `pipelines` 键的 glob 里时
-# setuptools 只匹配顶层、子目录文件静默丢失（2026-10-11 实测：
-# 装出来的引擎没有 quality profile 与 prompt 模板，verify_dist 当场红）。
+# 只承载核心散装流水线；docgen pack 的 YAML/quality/prompts 随
+# `packs.docgen` package-data 走（见上）。2026-10-11 pack-docgen 拆出后
+# quality/、prompts/ 已不在 pipelines/ 下，原有两个子目录键删除——
+# 死键的 glob 零命中是静默的（setuptools 对空 glob 不报错），
+# 靠 test_release_readiness 的零命中判据兜底。
 pipelines = [
     "pipelines/*.yaml",
     "pipelines/*.lock",
-]
-"pipelines/quality" = [
-    "pipelines/quality/*.yaml",
-]
-"pipelines/prompts" = [
-    "pipelines/prompts/*.yaml",
 ]
 
 [tool.pytest.ini_options]
@@ -109,7 +116,7 @@ markers = [
 # 覆盖率只计产品源码：tests/scripts/benchmark 不入门禁
 # （--cov=. 会把 tests/ 自身的近 100% 计入，虚高到 ~79%，无门禁价值）
 relative_files = true
-include = ["pipeline_core/*", "docpipeline/*", "agents/*", "run.py"]
+include = ["pipeline_core/*", "docpipeline/*", "agents/*", "packs/*", "run.py"]
 omit = ["tests/*", "scripts/*", "benchmark.py"]
 
 [tool.coverage.report]

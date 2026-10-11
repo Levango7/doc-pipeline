@@ -6,10 +6,11 @@ spec §3 P0 判据 2「外部 pip 包提供 Agent」的前置：本仓的发行�
 1. **依赖闭合**：产品源码 import 的第三方顶层包，要么在 pyproject 的
    Requires-Dist，要么在 scripts/verify_dist.py 的 EXTERNAL 登记表明文认领
    （artesian 未上 PyPI，写版本约束 = pip install 直接失败）；
-2. **数据文件进包**：pipelines 的 YAML/lock 与 quality/prompts 必须在
-   data-files 声明里——且**子目录必须单列**（setuptools 的 data-files glob
-   不下钻，`pipelines/quality/*.yaml` 写进 `pipelines` 键时静默丢失，
-   2026-10-11 实测：装出来的引擎没有 quality profile）；
+2. **数据文件进包**：核心流水线的 YAML/lock 走 data-files 的 `pipelines`
+   键；docgen pack 的 pipelines/quality/prompts/pack.yaml 走 `packs.docgen`
+   package-data（pack-docgen 拆出后不在顶层 pipelines/ 下）。两处都断言
+   glob 零命中即红——setuptools 对空 glob 是静默放行的，声明漂移只能靠
+   这里的判据抓（2026-10-11 实测：装出来的引擎没有 quality profile）；
 3. **插件包元数据**：六个 examples/plugin-* 的 pyproject 必须有
    license/readme/依赖声明（宿主 doc-pipeline）与合法 trove classifiers
    ——PyPI 对这些是上传期硬校验，错一个整个包发不出去。
@@ -42,16 +43,26 @@ class TestDependencyClosure:
 
 
 class TestPipelineDataInDist:
-    """pipelines 数据必须进 data-files，且子目录单列（glob 不下钻）。"""
+    """流水线数据必须进发行物：核心散装走 data-files，docgen pack 走 package-data。"""
 
-    def test_data_files_cover_subdirs(self):
+    def test_data_files_have_no_stale_subdir_keys(self):
         data = _pyproject()["tool"]["setuptools"]["data-files"]
-        keys = list(data.keys())
-        assert "pipelines" in keys
-        assert "pipelines/quality" in keys, (
-            "data-files 缺 pipelines/quality 键：子目录 glob 写进 pipelines 键时"
-            "setuptools 只匹配顶层、quality profile 静默丢失（2026-10-11 实测）")
-        assert "pipelines/prompts" in keys, "data-files 缺 pipelines/prompts 键"
+        assert "pipelines" in data
+        # quality/prompts 已随 pack-docgen 移入 packs/docgen/：留死键的
+        # glob 零命中是静默的，这里显式拦截回归。
+        for stale in ("pipelines/quality", "pipelines/prompts"):
+            assert stale not in data, (
+                f"data-files 残留死键 {stale}：该目录已不在 pipelines/ 下，"
+                "数据由 packs.docgen 的 package-data 承载")
+
+    def test_pack_data_declared_and_glob_hits(self):
+        pkg = _pyproject()["tool"]["setuptools"]["package-data"]["packs.docgen"]
+        for pat in ("pipelines/*.yaml", "pipelines/*.lock",
+                    "quality/*.yaml", "prompts/*.yaml", "pack.yaml"):
+            assert pat in pkg, f"packs.docgen package-data 缺 {pat}"
+        for pat in pkg:
+            hits = list((PROJECT / "packs" / "docgen").glob(pat))
+            assert hits, f"packs.docgen 的 glob 零命中：{pat}（源文件被删了？）"
 
     def test_wheel_marker_files_exist_in_repo(self):
         """data-files 引用的源文件必须真的存在（防声明漂移成空匹配）。"""

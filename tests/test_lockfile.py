@@ -147,11 +147,18 @@ class TestWriteLockWiring:
 
     def test_write_lock_generates_and_continues(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        args = self._args(pipeline_file=str(PROJECT / "pipelines" / "docgen.yaml"),
+        # pack 流水线的锁与 YAML 同目录：复制进沙盒再跑，避免写脏仓库真锁
+        sandbox = tmp_path / "pack pipelines"
+        sandbox.mkdir()
+        shutil.copy(PROJECT / "packs" / "docgen" / "pipelines" / "docgen.yaml",
+                    sandbox / "docgen.yaml")
+        shutil.copy(PROJECT / "packs" / "docgen" / "pipelines" / "_quality-tail.yaml",
+                    sandbox / "_quality-tail.yaml")
+        args = self._args(pipeline_file=str(sandbox / "docgen.yaml"),
                           pipeline="docgen", write_lock=True)
         plan, loaded = run_mod._resolve_pipeline_plan(args, None, {})
         assert loaded and plan is not None
-        lock_file = tmp_path / "pipelines" / "docgen.lock"
+        lock_file = sandbox / "docgen.lock"
         assert lock_file.exists()
         content = lock_file.read_text(encoding="utf-8")
         assert "config_hash" in content
@@ -160,13 +167,13 @@ class TestWriteLockWiring:
 
     def test_drift_blocks_execution_with_clear_error(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
-        src = (PROJECT / "pipelines" / "docgen.yaml").read_text(encoding="utf-8")
+        src = (PROJECT / "packs" / "docgen" / "pipelines" / "docgen.yaml").read_text(encoding="utf-8")
         drifted = src.replace("prompt_profile: generic-tech", "prompt_profile: drifted-tech")
         target = tmp_path / "drift.yaml"
         target.write_text(drifted, encoding="utf-8")
         # docgen 现在 call 了 _quality-tail：片段必须和引用它的 yaml 同目录，
         # 只复制主文件会让解析停在"片段不存在"上，测不到漂移这条路径。
-        shutil.copy(PROJECT / "pipelines" / "_quality-tail.yaml",
+        shutil.copy(PROJECT / "packs" / "docgen" / "pipelines" / "_quality-tail.yaml",
                     tmp_path / "_quality-tail.yaml")
 
         from pipeline_core.scheduler import Scheduler
@@ -228,13 +235,13 @@ class TestShippedPipelinesAreLocked:
         monkeypatch.chdir(tmp_path)
         sandbox = tmp_path / "pipelines"
         sandbox.mkdir()
-        src = (PROJECT / "pipelines" / "docreq.yaml").read_text(encoding="utf-8")
+        src = (PROJECT / "packs" / "docgen" / "pipelines" / "docreq.yaml").read_text(encoding="utf-8")
         drifted = src.replace("max_results: 10", "max_results: 11", 1)
         if drifted == src:
             drifted = src.replace("threshold: 70", "threshold: 71", 1)
         target = sandbox / "docreq.yaml"
         target.write_text(drifted, encoding="utf-8")
-        shutil.copy(PROJECT / "pipelines" / "_quality-tail.yaml",
+        shutil.copy(PROJECT / "packs" / "docgen" / "pipelines" / "_quality-tail.yaml",
                     sandbox / "_quality-tail.yaml")
 
         sched = Scheduler(pipeline_dir=str(sandbox))
@@ -247,7 +254,7 @@ class TestShippedPipelinesAreLocked:
         with pytest.raises(LockfileMismatchError):
             sched.parse_file(str(target))
         # 仓库里的真实 lock 不许被动过
-        repo_lock = (PROJECT / "pipelines" / "docreq.lock").read_bytes()
+        repo_lock = (PROJECT / "packs" / "docgen" / "pipelines" / "docreq.lock").read_bytes()
         assert b"max_results: 12" not in repo_lock
 
 
