@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.2]
+
+Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-10-11 更名）。
+单发行物：引擎 + artesian 底座 + 全部 Agent（含五支实用插件）随包自带，
+`pip install nexusloom` 一次装齐。
+
+### Added（2026-10-10/11 累计）
+
+- **单发行物整合**：artesian 并回主仓顶层包（307 条底座判据随库走）；五支实用
+  插件（keyword_extract / readability / link_check / fact_coverage / tldr）
+  内置化进 agents/；examples/plugin-hello 留作第三方作者模板。
+- **交付形态补缺**：结构化 JSON 落库（deliveries.db 账本）+ HTML 站点 +
+  renderer html 后端——交付形态 5 → 7。
+- **发布门禁** `scripts/verify_dist.py`：wheel/sdist 数据文件、依赖闭合、
+  版本一致、干净 venv 安装态真跑。
+
+### Fixed
+
+- SQLite 并发首建竞态（WAL 切换重试 + 幂等加列，task_queue/cost/quality/
+  message 四处 store）——main 侧 CI 偶发 `database is locked` 的根因。
+- quality_gate/writer 资源目录相对包路径（安装态指向空壳）——改走统一解析。
+- data-files 子目录 glob 不下钻（quality/prompts 静默丢失）——子目录单列。
+
+### Changed
+
+- 命名清理第一步：banner/CLI 文案去领域味；发行更名 nexusloom。
+- spec 诚实口径：扩展来源轴回归 2（自家内置件不再充数第三方）。
+
 ## [Unreleased]
 
 ### Changed（2026-10-11·续34，单发行物整合：artesian 并入 + 插件内置化）
