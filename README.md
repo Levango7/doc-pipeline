@@ -740,11 +740,17 @@ pip install，空 agents 目录下仍被发现/注册/执行——"本仓零改�
 
 ### 发布（PyPI）
 
-发布链是一列火车，顺序不可颠倒（后者依赖前者的 PyPI 包）：
+发布链已收敛为**单发行物**（2026-10-11 整合后 artesian 与全部 Agent 都在包内，
+无外部依赖、无第二发布物）：
 
-1. ~~artesian~~（已并入，见上）——原独立仓封存于 Levango7/artesian，不再发布。
-2. **本仓（单发行物）**——2026-10-11 整合后 artesian 已在包内（无外部依赖），
-   打 tag + Release 即走本仓 `release.yml` 的 `pypi-verify` + `pypi-publish`。
+1. **一次性登记（PyPI 控制台）**：https://pypi.org/manage/account/publishing/
+   添加 pending publisher —— project `nexus-loom` / owner `Levango7` /
+   repository `nexus-loom` / workflow `release.yml` / environment `pypi`
+   （2026-10-11 仓库名已由 doc-pipeline 改为 nexus-loom，登记以新仓名为准；
+   若之前按旧仓名登记过，删掉重加）。
+2. **发版动作**：打 tag `v<版本>`（tag 与 `pyproject` 的 version 一致，
+   门禁会核对）+ 建 GitHub Release，`release.yml` 的 `pypi-verify` +
+   `pypi-publish` 自动执行。
    发布门禁 `scripts/verify_dist.py` 卡四件事：wheel/sdist 数据文件齐全
    （pipelines/quality/prompts 子目录必须单列——glob 不下钻，2026-10-11 实测）、
    依赖闭合、版本三处一致、干净 venv 安装态真跑。
