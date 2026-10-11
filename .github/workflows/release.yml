@@ -96,8 +96,9 @@ jobs:
         run: |
           python -m venv .venv-dist
           .venv-dist/bin/python -m pip install --upgrade pip
-          .venv-dist/bin/python -m pip install "artesian @ git+https://github.com/Levango7/artesian.git@1a83b7733534389b9d70c8e3ddfea6d8e6abe82f"
-          .venv-dist/bin/python -m pip install --no-deps dist/*.whl
+          # artesian 已并入本发行物（2026-10-11 整合），wheel 自带——
+          # 不再先装旧 artesian git wheel（同名包文件互相覆盖会污染安装态验证）
+          .venv-dist/bin/python -m pip install dist/*.whl
           .venv-dist/bin/python scripts/verify_dist.py dist "${WANT}" --installed
           .venv-dist/bin/python -m pip install pytest
           cd "$RUNNER_TEMP"
