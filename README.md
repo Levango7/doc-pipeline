@@ -1,4 +1,4 @@
-# Doc-Pipeline
+# Loom（发行名 nexus-loom）
 
 > **主打：多 Agent 协作的文档生成流水线** — 输入主题，自动检索/抓取/写作/质检/排版/落盘
 
@@ -742,20 +742,15 @@ pip install，空 agents 目录下仍被发现/注册/执行——"本仓零改�
 
 发布链是一列火车，顺序不可颠倒（后者依赖前者的 PyPI 包）：
 
-1. **artesian**（独立仓 `Levango7/artesian`）——它的 release.yml 已就绪：
-   打 tag `v0.1.x` → 创建 GitHub Release，流水线自动 verify + publish（Trusted
-   Publishing/OIDC）。首次发布前需要在 PyPI 控制台做一次性登记（路 A 账号级
-   token 或 路 B pending publisher），步骤见该仓 README「发布（PyPI）」。
-2. **doc-pipeline**（本仓）——artesian 上架后，把 `pyproject.toml` 的
-   EXTERNAL 登记项 `artesian` 换成 `artesian>=0.1.0`（requirements.txt 同步），
+1. ~~artesian~~（已并入，见上）——原独立仓封存于 Levango7/artesian，不再发布。
+2. **本仓（单发行物）**——2026-10-11 整合后 artesian 已在包内（无外部依赖），
    打 tag + Release 即走本仓 `release.yml` 的 `pypi-verify` + `pypi-publish`。
    发布门禁 `scripts/verify_dist.py` 卡四件事：wheel/sdist 数据文件齐全
    （pipelines/quality/prompts 子目录必须单列——glob 不下钻，2026-10-11 实测）、
    依赖闭合、版本三处一致、干净 venv 安装态真跑。
-3. **六个插件**（`examples/plugin-*`）——宿主 doc-pipeline 上架后，在
-   GitHub Actions 手动触发 `Release Plugins`（dry_run=false）一次发齐：
-   `release-plugins.yml` 一次构建六个、twine check、元数据校验后经 OIDC
-   统一上传（每个插件都是独立发行物，元数据已按上传期硬校验备齐）。
+3. ~~六插件单独发行~~ **已随单发行物整合取消**（2026-10-11）：五支实用
+   插件并入产品为内置件，随 `pip install nexus-loom` 直接可用；
+   examples/plugin-hello 留作外部作者模板，不再单独发行。
 
 `pypi-verify` / `pypi-publish` 只在 GitHub Release published 时触发；
 `workflow_dispatch`（dry_run=true 默认）只构建与校验、不上传。
