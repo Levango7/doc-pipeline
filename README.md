@@ -1,4 +1,4 @@
-# Loom（发行名 nexus-loom）
+# Loom（发行名 nexusloom）
 
 > **主打：多 Agent 协作的文档生成流水线** — 输入主题，自动检索/抓取/写作/质检/排版/落盘
 
@@ -744,9 +744,9 @@ pip install，空 agents 目录下仍被发现/注册/执行——"本仓零改�
 无外部依赖、无第二发布物）：
 
 1. **一次性登记（PyPI 控制台）**：https://pypi.org/manage/account/publishing/
-   添加 pending publisher —— project `nexus-loom` / owner `Levango7` /
-   repository `nexus-loom` / workflow `release.yml` / environment `pypi`
-   （2026-10-11 仓库名已由 doc-pipeline 改为 nexus-loom，登记以新仓名为准；
+   添加 pending publisher —— project `nexusloom` / owner `Levango7` /
+   repository `nexusloom` / workflow `release.yml` / environment `pypi`
+   （2026-10-11 仓库名已由 doc-pipeline 改为 nexusloom，登记以新仓名为准；
    若之前按旧仓名登记过，删掉重加）。
 2. **发版动作**：打 tag `v<版本>`（tag 与 `pyproject` 的 version 一致，
    门禁会核对）+ 建 GitHub Release，`release.yml` 的 `pypi-verify` +
@@ -755,7 +755,7 @@ pip install，空 agents 目录下仍被发现/注册/执行——"本仓零改�
    （pipelines/quality/prompts 子目录必须单列——glob 不下钻，2026-10-11 实测）、
    依赖闭合、版本三处一致、干净 venv 安装态真跑。
 3. ~~六插件单独发行~~ **已随单发行物整合取消**（2026-10-11）：五支实用
-   插件并入产品为内置件，随 `pip install nexus-loom` 直接可用；
+   插件并入产品为内置件，随 `pip install nexusloom` 直接可用；
    examples/plugin-hello 留作外部作者模板，不再单独发行。
 
 `pypi-verify` / `pypi-publish` 只在 GitHub Release published 时触发；

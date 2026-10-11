@@ -197,7 +197,7 @@ def check_installed(ver: str) -> None:
     if getattr(pipeline_core, "__version__", None) != ver:
         fail(f"装出来的 pipeline_core.__version__="
              f"{getattr(pipeline_core, '__version__', None)} 与 pyproject 的 {ver} 不符")
-    meta = importlib.metadata.version("nexus-loom")
+    meta = importlib.metadata.version("nexusloom")
     if meta != ver:
         fail(f"包元数据版本 {meta} 与 pyproject 的 {ver} 不符")
     # 安装态冒烟：流水线清册非空（wheel 数据文件的最终判据）
