@@ -752,9 +752,10 @@ pip install，空 agents 目录下仍被发现/注册/执行——"本仓零改�
    发布门禁 `scripts/verify_dist.py` 卡四件事：wheel/sdist 数据文件齐全
    （pipelines/quality/prompts 子目录必须单列——glob 不下钻，2026-10-11 实测）、
    依赖闭合、版本三处一致、干净 venv 安装态真跑。
-3. **六个插件**（`examples/plugin-*`）——宿主 doc-pipeline 上架后依次发
-   （每个都是独立发行物，元数据已按 PyPI 上传期硬校验备齐：license/readme/
-   classifiers/对宿主的依赖声明）。
+3. **六个插件**（`examples/plugin-*`）——宿主 doc-pipeline 上架后，在
+   GitHub Actions 手动触发 `Release Plugins`（dry_run=false）一次发齐：
+   `release-plugins.yml` 一次构建六个、twine check、元数据校验后经 OIDC
+   统一上传（每个插件都是独立发行物，元数据已按上传期硬校验备齐）。
 
 `pypi-verify` / `pypi-publish` 只在 GitHub Release published 时触发；
 `workflow_dispatch`（dry_run=true 默认）只构建与校验、不上传。
