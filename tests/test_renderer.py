@@ -381,7 +381,7 @@ class TestPipelineDeclaration:
         from pipeline_core.scheduler import Scheduler
         sched = Scheduler()
         plan = sched.parse_file(
-            str(ROOT / "pipelines" / "docgen-render.yaml"), verify_lock=False)
+            str(ROOT / "packs" / "docgen" / "pipelines" / "docgen-render.yaml"), verify_lock=False)
         assert plan.pipeline_name == "docgen-render"
         names = {n.agent_name for lv in plan.levels for n in lv}
         assert any(n.startswith("renderer") for n in names)
@@ -398,7 +398,7 @@ class TestPipelineDeclaration:
         from pipeline_core.scheduler import Scheduler
         sched = Scheduler()
         sched.parse_file(
-            str(ROOT / "pipelines" / "docgen-render.yaml"), verify_lock=True)
+            str(ROOT / "packs" / "docgen" / "pipelines" / "docgen-render.yaml"), verify_lock=True)
 
 
 class TestControlCharsAreStripped:

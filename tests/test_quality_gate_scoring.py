@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agents.quality_gate import QualityGateAgent, load_profile
+from packs.docgen.agents.quality_gate import QualityGateAgent, load_profile
 
 # ─── 创建测试用 QualityGateAgent 实例 ────────────────────────
 

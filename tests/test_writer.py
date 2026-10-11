@@ -19,7 +19,7 @@ import time
 import types
 from unittest.mock import MagicMock, patch
 
-from agents.writer import ContentChunk, TemplateManager, WriterAgent, _md_escape
+from packs.docgen.agents.writer import ContentChunk, TemplateManager, WriterAgent, _md_escape
 from pipeline_core.base_agent import AgentMeta, Message
 from pipeline_core.streaming import StreamCallback
 
@@ -865,12 +865,12 @@ class TestRestructureDocument:
 class TestLoadPromptTemplate:
     def test_missing_yaml_returns_empty(self, tmp_path):
         w = _make_writer(tmp_path)
-        w._prompts_dir = tmp_path
+        w._prompts_dirs = [tmp_path]
         assert w._load_prompt_template("ghost") == {}
 
     def test_valid_yaml_loaded_and_cached(self, tmp_path):
         w = _make_writer(tmp_path)
-        w._prompts_dir = tmp_path
+        w._prompts_dirs = [tmp_path]
         (tmp_path / "myprofile.yaml").write_text(
             "system_prompt: you are x\nsections:\n  - name: S1\n    prompt: p1\n",
             encoding="utf-8")
@@ -884,7 +884,7 @@ class TestLoadPromptTemplate:
 
     def test_broken_yaml_returns_empty(self, tmp_path):
         w = _make_writer(tmp_path)
-        w._prompts_dir = tmp_path
+        w._prompts_dirs = [tmp_path]
         (tmp_path / "bad.yaml").write_text("a:\n\t- broken\n  -: [", encoding="utf-8")
         assert w._load_prompt_template("bad") == {}
 

@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agents.quality_gate import QualityGateAgent
+from packs.docgen.agents.quality_gate import QualityGateAgent
 from pipeline_core.base_agent import AgentMeta
 
 

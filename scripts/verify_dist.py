@@ -30,14 +30,18 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 #: 打进 wheel 的 Python 包（与 [tool.setuptools] packages 同源）
-PACKAGES = ["pipeline_core", "docpipeline", "agents", "scripts", "artesian"]
+PACKAGES = ["pipeline_core", "docpipeline", "agents", "scripts", "artesian",
+            "packs", "packs.docgen", "packs.docgen.agents"]
 
 #: wheel 与 sdist 里都必须有的数据文件（相对仓库根）
 REQUIRED_DATA = (
     "pipelines/api-report.yaml",
     "pipelines/api-report.lock",
-    "pipelines/quality/technical-doc.yaml",
-    "pipelines/prompts/default.yaml",
+    "packs/docgen/pipelines/docgen.yaml",
+    "packs/docgen/pipelines/docgen.lock",
+    "packs/docgen/quality/technical-doc.yaml",
+    "packs/docgen/prompts/default.yaml",
+    "packs/docgen/pack.yaml",
     "scripts/checker_rules.yaml",
 )
 
@@ -202,9 +206,12 @@ def check_installed(ver: str) -> None:
         fail(f"包元数据版本 {meta} 与 pyproject 的 {ver} 不符")
     # 安装态冒烟：流水线清册非空（wheel 数据文件的最终判据）
     from pipeline_core.pack_manifest import discover
-    packs = [p for p in discover() if p.source == "builtin"]
+    packs = [p for p in discover() if p.source in ("builtin", "pack")]
     if not packs:
         fail("装出来的包里流水线清册为空——pipelines/ 数据没有随 wheel 走（PR #13 真踩过）")
+    docgen = next((p for p in packs if p.name == "docgen" and p.is_physical), None)
+    if docgen is None:
+        fail("装出来的包里没有物理 pack docgen——packs/ 数据没有随 wheel 走")
 
 
 def main(argv: list[str]) -> int:

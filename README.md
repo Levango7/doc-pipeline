@@ -154,7 +154,7 @@ python run.py test_input.md --dashboard
 | `--config, -c` | 自定义配置文件 |
 | `--json-output` | 输出 JSON 结果（供 wrapper 解析） |
 | `--legacy` | （已冻结，仅兜底）按 Agent 注册元数据执行，不经 Scheduler/YAML；生产请用默认 DAG 模式 |
-| `--write-lock` | 为当前流水线生成/刷新 `pipelines/*.lock`（配置变更需显式重写锁，运行时比对 config_hash + 拓扑指纹） |
+| `--write-lock` | 为当前流水线生成/刷新锁文件（写在与 YAML 同目录：核心流水线落 `pipelines/*.lock`，pack 流水线落 `packs/<pack>/pipelines/*.lock`；配置变更需显式重写锁，运行时比对 config_hash + 拓扑指纹） |
 | `--check` | 启动自检后退出：如实报告 HTML 解析内核、LLM 供应商、依赖与目录结构。退出码只反映**结构性故障**——缺 LLM 凭据记 WARN 不记 ERROR，因此 `rc` 可被 CI 直接采信（历史上 CI 从不读这个 rc，只 grep 一行文案） |
 
 > **执行路径说明**：默认走声明式 DAG（`pipelines/*.yaml` + Scheduler，含 lockfile 校验与 per-node 配置）。
@@ -224,13 +224,14 @@ python run.py test_input.md --dashboard
 | `pipeline_core/state_paths.py` | 运行态路径解析（`DOC_PIPELINE_STATE_DIR` / `DOC_PIPELINE_VERSIONS_DIR`），测试与真实运行不再共用一份幂等键历史 |
 | `docpipeline/ingest.py` | 摄入层：PDF/图片/文本 → 结构化 Markdown（PDF 按字号推断标题层级） |
 | `docpipeline/document_enhancer.py` | 文档增强：对已有 Markdown 逐章节 LLM 深化 + ASCII 图修复 + 导出 |
-| `agents/` | 14 个 Agent 实现（researcher/fetcher/writer/quality_gate/checker/fact_checker/layout/safe_writer/requirements_analyzer/renderer/ingest/knowledge_base/http_request/transform） |
+| `agents/` | 14 个核心 Agent 实现（researcher/fetcher/safe_writer/requirements_analyzer/renderer/ingest/knowledge_base/http_request/transform + keyword_extract/readability/link_check/fact_coverage/tldr） |
+| `packs/docgen/` | 物理 pack（spec §5.2）：5 个文档件（writer/quality_gate/checker/layout/fact_checker）+ docgen 系 6 条流水线 + 2 个质量档案 + 2 个 prompt 模板，`pack.yaml` 为清册；引擎经 `pipeline_core.pack_manifest` 多目录发现，删掉本目录引擎照常工作 |
 
 ---
 
 ## 配置
 
-### Pipeline 定义（`pipelines/docgen.yaml`）
+### Pipeline 定义（`packs/docgen/pipelines/docgen.yaml`）
 
 ```yaml
 defaults:
@@ -332,7 +333,7 @@ agents:
   - name: writer
     dependencies: []
   - name: review                 # 节点身份，不是 Agent 名
-    call: docgen-verified        # 被引用的流水线（pipelines/docgen-verified.yaml）
+    call: docgen-verified        # 被引用的流水线（packs/docgen/pipelines/docgen-verified.yaml）
     dependencies: [writer]
     inputs:                      # 传给子流水线的参数，片段用 when 的 inputs.* 读
       fact_check: true
@@ -361,7 +362,7 @@ agents:
 引用了没人传 → 报错（`all:` 会短路，缺参到运行期可能被静默绕过）；传了没人读 → 报错
 （`min_scor: 70` 这类拼写错误原本会静默走默认值）。
 
-出厂片段 `pipelines/_quality-tail.yaml`（质量尾：quality_gate → checker → 可选
+出厂片段 `packs/docgen/pipelines/_quality-tail.yaml`（质量尾：quality_gate → checker → 可选
 fact_checker → layout → safe_writer）被 docgen / docgen-render / docgen-verified /
 docgen-lean / docreq / kb-docgen 六条流水线引用；抽取前逐字节比对过这六份尾巴，
 `quality_gate/checker/layout/safe_writer` 的 version/timeout/config 完全一致，
@@ -463,7 +464,7 @@ agents:
 渲染成空字符串——空产物比报错难查得多。产物键：`data`（结构化，逐项处理时是列表）、
 `text` / `content`（渲染结果，同一份，方便直接接 `safe_writer`/质检那批按 `content` 取正文的节点）。
 
-### Quality Profile（`pipelines/quality/`）
+### Quality Profile（`packs/docgen/quality/`）
 
 ```yaml
 # technical-doc.yaml
@@ -752,7 +753,9 @@ pip install，空 agents 目录下仍被发现/注册/执行——"本仓零改�
    门禁会核对）+ 建 GitHub Release，`release.yml` 的 `pypi-verify` +
    `pypi-publish` 自动执行。
    发布门禁 `scripts/verify_dist.py` 卡四件事：wheel/sdist 数据文件齐全
-   （pipelines/quality/prompts 子目录必须单列——glob 不下钻，2026-10-11 实测）、
+   （核心流水线在 data-files 的 `pipelines` 键；docgen pack 的
+   pipelines/quality/prompts/pack.yaml 在 `packs.docgen` package-data——
+   任一声明 glob 零命中即红，2026-10-12 拆分后口径）、
    依赖闭合、版本三处一致、干净 venv 安装态真跑。
 3. ~~六插件单独发行~~ **已随单发行物整合取消**（2026-10-11）：五支实用
    插件并入产品为内置件，随 `pip install nexusloom` 直接可用；
@@ -910,8 +913,15 @@ docx/pdf，把失败伪装成成功（`tests/test_fidelity_gate.py` 锁住该回
 ## 目录结构
 
 ```
-doc-pipeline/
-├── agents/              # 14 个 Agent 实现
+nexusloom/
+├── agents/              # 14 个核心 Agent 实现（含内置化的五支实用插件）
+├── packs/               # 物理 pack：领域件集合（引擎经 pack_manifest 多目录发现）
+│   └── docgen/          # pack-docgen（spec §5.2 最后一步）
+│       ├── pack.yaml    #   manifest：agents / pipelines / quality_profiles 清册
+│       ├── agents/      #   5 个文档件：writer/quality_gate/checker/layout/fact_checker
+│       ├── pipelines/   #   docgen 系 6 条 + _quality-tail（均带 .lock 同目录）
+│       ├── quality/     #   质量档案：technical-doc / tutorial
+│       └── prompts/     #   prompt 模板：default / generic-tech
 ├── pipeline_core/       # 引擎层：领域无关的编排框架（不 import 文档层）
 │   ├── pipeline.py      # Orchestrator（统一节点模型）
 │   ├── dag_executor.py  # DAG 构建 + 节点调度
@@ -940,14 +950,7 @@ doc-pipeline/
 │   ├── renderer.py      # Markdown → docx / pdf
 │   ├── ingest.py        # PDF / 图片 / 文本 → 结构化 Markdown
 │   └── document_enhancer.py # 已有文档逐章节 LLM 增强
-├── pipelines/           # Pipeline 定义 + Quality Profile
-│   ├── _quality-tail.yaml # 内部片段：质量尾（六条流水线共用，不进 --pipeline 候选）
-│   ├── docgen.yaml      # 默认文档生成流水线（尾巴 call _quality-tail，不核查）
-│   ├── docgen-render.yaml # 追加 renderer 节点，产出 docx/pdf
-│   ├── docgen-verified.yaml
-│   ├── docgen-lean.yaml # 条件升级核查：质量达标才跑 fact_checker
-│   ├── docreq.yaml      # 需求分析增强（requirements_analyzer 开头）
-│   ├── kb-docgen.yaml   # 本地资料 → 知识库接地（ingest/kb/writer 已接线）
+├── pipelines/           # 核心散装流水线（单文件任务型，13 条；docgen 系已随 pack 迁出）
 │   ├── api-report.yaml  # 通用件示例：JSON API → transform 挑字段 → 落盘（无文档领域节点）
 │   ├── api-digest.yaml  # foreach 消费者：列表接口 → 同一个 Agent 逐项渲染 → 聚合落盘
 │   ├── intel-brief.yaml # 情报简报：检索 → 逐条要点（foreach）→ 落盘
@@ -962,9 +965,6 @@ doc-pipeline/
 │   ├── three_pass.yaml  # 三阶段流水线（尾巴阈值/重试与片段不同，故不引用片段）
 │   ├── test_pipeline.yaml
 │   └── *.lock           # 版本锁定：config_hash + 拓扑指纹，漂移即拒绝执行
-│   └── quality/
-│       ├── technical-doc.yaml
-│       └── tutorial.yaml
 ├── dashboard/           # 前端仪表盘
 ├── spike/               # 渲染层可行性验证脚本与结论（见 spike/README.md）
 ├── tests/               # 测试套件（数量见上文「测试」一节；另有 e2e 标记用例）

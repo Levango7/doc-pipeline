@@ -147,7 +147,7 @@
 |---|---|---|---|
 | 插件发现 | **机制已达标**（2026-10-08，单发行物整合后口径）：entry_points group `doc_pipeline.agents` 与本仓 glob 并存（`TestEntryPointPlugins` 八条）；`examples/plugin-hello/` 留作外部作者模板，真 venv + 真 pip install 的端到端判据在位；原五支示例插件已并入 agents/ 为内置件（`tests/test_plugins_ecosystem.py` 钉住发现/注册/执行/诚实计数） | `entry_points` group 与本仓 glob **并存** | 外部 venv 包装好即被 `list agents` 列出，并能作为节点执行 |
 | Agent 沙箱 | 已有（AST + 白名单，内置件跳过检查） | 增加来源/签名标记，并在 S4 显示 | 第三方危险 Agent 被拒且报出命中规则 |
-| pack 机制 | **已达标**（2026-10-09）：`pipelines/*.yaml` + `quality/` + `prompts/` + `scripts/checker_rules.yaml` 已进 wheel 数据；`--check` 按 `pipeline_core.pack_manifest` 清册报数（几条 pack / 几个 agent / 缺谁），不再点名个别 pack 的文件。**真 venv 判据在位**（`tests/test_installable_product.py`：打 wheel → 装 → 从中立 cwd 跑自检，零 ERROR + 清册 > 0）。`pack-docgen` 的独立发行形态仍是 v1 目标 | 拆出 `pack-docgen`：5 个文档件（writer/quality_gate/checker/layout/fact_checker）+ 6 条 docgen YAML + quality profile | 拆完 `--check` 不再要求 `agents/writer.py` 与 `pipelines/docgen.yaml`（原 `bootstrap.py:183-185,235` 硬绑〔实测：旧态 `--check` 输出逐条含这两项，装完即红〕） |
+| pack 机制 | **已达标**（2026-10-12 物理拆分落地）：`packs/docgen/` 独立目录 + `pack.yaml` manifest（5 agents / 6 流水线 / 2 质量档案），引擎经 `pipeline_core.pack_manifest` 多目录发现（AgentLoader/scheduler/quality/prompts 全部 pack 感知）；`--check` 按清册报「pack docgen（5 agents / 6 流水线）+ 13 条内置流水线、19 个 agent 可用」；引擎层与 pack 层双向 import 由 `tests/test_layering.py` 两条守卫钉住。数据文件随 `packs.docgen` package-data 进 wheel，`tests/test_installable_product.py` 真 venv 判据维持。「拆出判据」达成：删掉 `packs/` 目录引擎与其余 13 条流水线照常工作（文档件 import 面已清零） | 拆出 `pack-docgen`：5 个文档件（writer/quality_gate/checker/layout/fact_checker）+ 6 条 docgen YAML + quality profile | 已兑现：`--check` 不要求 `agents/writer.py` 与 `pipelines/docgen.yaml`（原 `bootstrap.py:183-185,235` 硬绑已随 manifest 化消除〔旧态实测：`--check` 输出逐条含这两项，装完即红〕） |
 | 领域件与引擎件的依赖方向 | 引擎层无 `import agents/docpipeline`〔静态+护栏 `tests/test_layering.py`〕 | 保持 | 分层测试继续通过 |
 
 ### 5.3 表面层
@@ -289,7 +289,7 @@
 6. **MAOP 侧不改仓**（已定）：迁移时设环境变量 `DOC_PIPELINE_ROOT=<新路径>` —— `doc_pipeline_adapter.py:38-55` 的第一候选就是它，于是 MAOP 立刻能找到新位置，无需它侧任何提交。
    - 残留：`MAOP/py/tests/test_doc_pipeline_adapter.py:62,68,79,86,93` 五处**硬编码绝对路径**，环境变量救不了它们（不经 `_resolve_doc_pipeline_root()`）→ 搬完 MAOP 那 5 条用例会红。这是 MAOP 仓的账，**改动权在维护者**，本项目只记账不代改。
    - 若日后想让旧脚本零改动继续跑，可在旧路径留 Windows junction 兜底；代价是机器上出现"看着像两个仓"的入口，容易误编辑，非必要时不采用。
-7. 才开始动代码内的名字（顺序：banner/CLI 文案 → env 前缀 → MCP/观测标识 → 包名（需与 MAOP lockstep）→ pack 拆分）。**〔2026-10-10：第一步「banner/CLI 文案」已做**——run.py 的 docstring/banner/argparse 三处改为「Agent 工作流引擎」，`--help` 用户可见面零"文档生成流水线"字样（判据 `tests/test_cli_wording.py` 2 条，含静态防回归）；动词收敛 / --enhance 摘除 / env 前缀 / MCP 标识 / 包名仍待后续〕。
+7. 才开始动代码内的名字（顺序：banner/CLI 文案 → env 前缀 → MCP/观测标识 → 包名（需与 MAOP lockstep）→ pack 拆分）。**〔2026-10-10：第一步「banner/CLI 文案」已做**——run.py 的 docstring/banner/argparse 三处改为「Agent 工作流引擎」，`--help` 用户可见面零"文档生成流水线"字样（判据 `tests/test_cli_wording.py` 2 条，含静态防回归）；动词收敛 / --enhance 摘除 / env 前缀 / MCP 标识仍待后续〕。**〔2026-10-11：包名已落**——发行名 `nexusloom` 已上 PyPI（3.9.2），GitHub 仓 `Levango7/nexusloom`，本地路径 `F:\Nexus\Workflow\nexusloom`〕。**〔2026-10-12：最后一步 pack 拆分已做**——`agents/{writer,quality_gate,checker,layout,fact_checker}.py` 与 6 条 docgen YAML + `_quality-tail` + quality/prompts 移入 `packs/docgen/`（git mv 保历史），`pack.yaml` manifest 落档；引擎全部改为多目录发现，`--check` 与全量判据绿〕。
 
 ---
 

@@ -35,6 +35,39 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Changed（2026-10-12·续35，pack-docgen 物理拆分：spec §5.2/§7.3 最后一步）
+
+- **文件移动**（git mv 保历史）：5 个文档件（writer/quality_gate/checker/
+  layout/fact_checker）→ `packs/docgen/agents/`；docgen 系 6 条 YAML + 锁 +
+  `_quality-tail` → `packs/docgen/pipelines/`；2 个质量档案 →
+  `packs/docgen/quality/`；2 个 prompt 模板 → `packs/docgen/prompts/`；
+  新增 `packs/docgen/pack.yaml` manifest（agents / pipelines /
+  quality_profiles 清册）。拆出判据达成：删掉 `packs/` 目录引擎与其余
+  13 条流水线照常工作（文档件 import 面已清零）。
+- **引擎改为多目录发现**（引擎不 import pack，只经清册）：
+  `pack_manifest` 新增物理 pack 层（`physical_packs`/`agent_sources`/
+  `pipeline_dirs`/`quality_dirs`/`prompts_dirs`）；`agent_loader` 按
+  `(目录, 模块前缀)` 发现，模块键 = 直接 import 路径
+  (`packs.docgen.agents.writer`)，保证测试 import/patch 与 loader 命中同一
+  模块对象；`scheduler._pipeline_path`/`installed_pipelines` 走多目录 union
+  （锁与 YAML 同目录优先，`--write-lock` 把 pack 锁写回 pack 目录）；
+  admin_api/mcp_server/worker/triggers 同步 union；`quality_gate`/
+  `writer` 资源目录改走多目录解析；`bootstrap --check` 报物理 pack 清册
+  （「pack docgen（5 agents / 6 流水线），13 条内置流水线；19 个 agent 可用」）。
+- **本批最大坑**：`_schema_for_agent` 只扫核心 `agents/`——pack 里
+  writer/quality_gate/checker 的 `CONFIG_SCHEMA` 找不到，schema 默认值不参与
+  config → config_hash 全漂移 → 52 条锁判据齐红。修复 = 同一条多目录链。
+- **打包面**：pyproject `packages` += packs 树；数据文件随 `packs.docgen`
+  package-data 进 wheel（data-files 的 `pipelines/quality`/`prompts` 死键
+  删除——glob 零命中是静默的）；`verify_dist` REQUIRED_DATA/PACKAGES 更新；
+  CI `py_compile`/`mypy`/`bandit`/coverage 范围含 packs。
+- **分层守卫**（`test_layering` 新增 2 条）：引擎不 import packs；pack
+  agents 不 import 核心 agents。`--check` 实测 0 ERROR。
+- **判据**：全量回归清零（含 test_lockfile/test_pack_manifest/
+  test_pack_suite/test_installable_product/test_release_readiness 等新口径
+  更新）；另修正一处真 bug——`installed_pipelines` 误引
+  `paths.pipeline_dirs`（全量跑红才暴露）。
+
 ### Changed（2026-10-11·续34，单发行物整合：artesian 并入 + 插件内置化）
 
 - **决策**：用户拍板"整合成一个项目，要有新的命名（以前决策过：发行名

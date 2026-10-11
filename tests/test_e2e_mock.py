@@ -67,8 +67,8 @@ class TestMockE2E:
         orch.register_agents()
 
         # 取加载器真正使用的类对象（sys.modules 已被 loader 覆写）
-        writer_cls = sys.modules["agents.writer"].WriterAgent
-        gate_cls = sys.modules["agents.quality_gate"].QualityGateAgent
+        writer_cls = sys.modules["packs.docgen.agents.writer"].WriterAgent
+        gate_cls = sys.modules["packs.docgen.agents.quality_gate"].QualityGateAgent
 
         with patch("artesian.search_engines.SearchEngineManager.from_env") as mock_mgr, \
              patch.object(writer_cls, "handle", _mock_writer_handle()), \

@@ -11,7 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from agents.quality_gate import QualityGateAgent
+from packs.docgen.agents.quality_gate import QualityGateAgent
 from pipeline_core import PipelineOrchestrator
 from pipeline_core.base_agent import AgentMeta, BaseAgent
 from pipeline_core.message_bus_v3 import Message, MessageBus, MessageType

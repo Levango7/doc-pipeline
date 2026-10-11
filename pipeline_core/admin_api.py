@@ -1066,10 +1066,12 @@ class AdminHandler(BaseHTTPRequestHandler):
             "active_tasks": len(orch.list_tasks()),
             "version": _v,
         }
-        from . import paths
-        pipelines_dir = paths.pipelines_dir()
-        if pipelines_dir.exists():
-            pipeline_info["pipeline_files"] = [p.name for p in sorted(pipelines_dir.glob("*.yaml"))]
+        from .pack_manifest import pipeline_dirs
+        files: set[str] = set()
+        for d in pipeline_dirs():
+            if d.is_dir():
+                files.update(p.name for p in d.glob("*.yaml"))
+        pipeline_info["pipeline_files"] = sorted(files)
         self._json(pipeline_info)
 
     def _handle_agent_detail(self, agent_name: str):

@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agents.quality_gate import QualityGateAgent
-from agents.writer import WriterAgent
+from packs.docgen.agents.quality_gate import QualityGateAgent
+from packs.docgen.agents.writer import WriterAgent
 from pipeline_core.base_agent import AgentMeta
 from pipeline_core.circuit_breaker import CircuitBreaker, CircuitState
 from pipeline_core.llm_router import LLMProvider, LLMRouter

@@ -866,7 +866,7 @@ class TestSubmitTask:
 
 class TestStreamCallbackHelpers:
     def test_attach_and_detach_with_writer(self, handler, tmp_path):
-        from agents.writer import WriterAgent
+        from packs.docgen.agents.writer import WriterAgent
         from pipeline_core.base_agent import AgentMeta
         writer = WriterAgent(
             name="writer", meta=AgentMeta(name="writer", version="2.0"),

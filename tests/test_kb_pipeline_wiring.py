@@ -81,7 +81,7 @@ class TestPipelineDefinition:
     def test_kb_docgen_parses_with_expected_levels(self):
         from pipeline_core.naming import agent_of
         from pipeline_core.scheduler import Scheduler
-        plan = Scheduler().parse_file(str(PROJECT / "pipelines" / "kb-docgen.yaml"))
+        plan = Scheduler().parse_file(str(PROJECT / "packs" / "docgen" / "pipelines" / "kb-docgen.yaml"))
         assert plan.pipeline_name == "kb-docgen"
         # 8 = ingest + knowledge_base + writer + 质量尾内联的五个节点
         # （尾里多出 fact_checker__quality_tail，被 when 条件跳过而非删除）
@@ -104,7 +104,7 @@ class TestPipelineDefinition:
 
     def test_bad_type_in_config_rejected(self, tmp_path, corpus):
         from pipeline_core.scheduler import Scheduler
-        src = (PROJECT / "pipelines" / "kb-docgen.yaml").read_text(encoding="utf-8")
+        src = (PROJECT / "packs" / "docgen" / "pipelines" / "kb-docgen.yaml").read_text(encoding="utf-8")
         drifted = src.replace("top_k: 6", 'top_k: "很多"')
         target = tmp_path / "kb-drift.yaml"
         target.write_text(drifted, encoding="utf-8")
@@ -247,19 +247,19 @@ class TestWriterGrounding:
     ]
 
     def _writer(self, tmp_path):
-        from agents.writer import WriterAgent
+        from packs.docgen.agents.writer import WriterAgent
         return _make_agent(WriterAgent, {"prompt_profile": "generic-tech",
                                          "polish_cache_ttl": 0}, "writer")
 
     def test_kb_hits_extracted_from_dependency_results(self):
-        from agents.writer import WriterAgent
+        from packs.docgen.agents.writer import WriterAgent
         payload = _payload(dependencies_results={"knowledge_base":
                                                  {"results": self.HITS}})
         hits = WriterAgent._kb_hits(payload)
         assert [h["chunk_id"] for h in hits] == ["c1", "c2"]
 
     def test_empty_content_chunks_are_dropped(self):
-        from agents.writer import WriterAgent
+        from packs.docgen.agents.writer import WriterAgent
         payload = _payload(dependencies_results={"knowledge_base": {"results": [
             {"chunk_id": "c9", "content": "   ", "source": "x.md"},
             self.HITS[0],
@@ -335,13 +335,13 @@ class TestKbPipelineOfflineE2E:
     def test_full_kb_docgen_run_offline(self, corpus, monkeypatch):
         monkeypatch.chdir(corpus["tmp"])
         # 用 hash 嵌入器改写一份临时 YAML：CI/本机都不许下载语义模型
-        src = (PROJECT / "pipelines" / "kb-docgen.yaml").read_text(encoding="utf-8")
+        src = (PROJECT / "packs" / "docgen" / "pipelines" / "kb-docgen.yaml").read_text(encoding="utf-8")
         offline = src.replace("embedder: auto", "embedder: hash")
         yaml_path = corpus["tmp"] / "kb-docgen-offline.yaml"
         yaml_path.write_text(offline, encoding="utf-8")
         # 片段与引用它的 YAML 必须同目录：chdir 到 tmp 之后 Scheduler 的相对
         # pipeline_dir 也指向 tmp，漏拷就是"片段不存在"而不是漂移。
-        shutil.copy(PROJECT / "pipelines" / "_quality-tail.yaml",
+        shutil.copy(PROJECT / "packs" / "docgen" / "pipelines" / "_quality-tail.yaml",
                     corpus["tmp"] / "_quality-tail.yaml")
 
         from pipeline_core import PipelineOrchestrator

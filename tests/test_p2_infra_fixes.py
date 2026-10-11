@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from agents.writer import WriterAgent
+from packs.docgen.agents.writer import WriterAgent
 from pipeline_core.base_agent import AgentStatus, Message
 from pipeline_core.message_bus_v3 import MessageBus
 from pipeline_core.registry import AgentMeta, Registry

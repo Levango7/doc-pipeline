@@ -24,7 +24,7 @@ import yaml
 
 from docpipeline import degradation
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
-from pipeline_core.paths import pipelines_dir as _pd
+from pipeline_core.pack_manifest import quality_dirs as _quality_dirs
 
 AGENT_NAME = "quality_gate"
 # 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
@@ -69,8 +69,9 @@ PLACEHOLDER_MARKERS = degradation.PLACEHOLDER_MARKERS
 #: 空 4 节（实测样本 80%）不再有机会被当成成品出厂。
 DEFAULT_MAX_PLACEHOLDER_RATIO = 0.34
 
-# 默认配置文件路径
-QUALITY_DIR = _pd() / "quality"
+# 默认配置文件路径：pack 感知解析——核心 pipelines/quality 优先，其次本 pack 的 quality/
+QUALITY_DIRS = _quality_dirs()
+QUALITY_DIR = next((d for d in QUALITY_DIRS if d.is_dir()), QUALITY_DIRS[0])
 DEFAULT_PROFILE = "technical-doc.yaml"
 
 # 英文功能词/泛文档词表：这些词即使首字母大写也不是专名，不计入 mandatory
@@ -99,11 +100,18 @@ def load_profile(profile_name: str) -> dict:
     try:
         path = Path(profile_name)
         if not path.exists():
-            path = QUALITY_DIR / profile_name
-            if not path.suffix:
-                path = path.with_suffix(".yaml")
+            for qdir in QUALITY_DIRS:
+                cand = qdir / profile_name
+                if not cand.suffix:
+                    cand = cand.with_suffix(".yaml")
+                if cand.exists():
+                    path = cand
+                    break
         if not path.exists():
-            path = QUALITY_DIR / DEFAULT_PROFILE
+            for qdir in QUALITY_DIRS:
+                if (qdir / DEFAULT_PROFILE).exists():
+                    path = qdir / DEFAULT_PROFILE
+                    break
         if not path.exists():
             _log.warning("QualityGate: 未找到 profile 文件")
             return {}

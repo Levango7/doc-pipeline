@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agents.fact_checker import FactCheckerAgent, _normalize
+from packs.docgen.agents.fact_checker import FactCheckerAgent, _normalize
 
 
 @pytest.fixture

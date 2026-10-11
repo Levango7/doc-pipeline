@@ -38,16 +38,21 @@ class TestPackagingDeclaration:
             "wheel 装出来将不含任何流水线（安装态曾如此，实测 0 条可跑）")
 
     def test_declared_patterns_cover_lock_quality_and_prompts(self):
-        """子目录必须单列成独立键：data-files 的 glob 不下钻，
-        `pipelines/quality/*.yaml` 写进 pipelines 键时静默丢失（2026-10-11 实测）。"""
+        """docgen pack 的数据必须全量声明进 `packs.docgen` package-data。
+
+        拆出后它们不在顶层 pipelines/ 下，data-files 的 `pipelines` 键只剩
+        散装核心流水线；quality/prompts 若漏声明 = 安装态静默缺件
+        （glob 零命中不报错，2026-10-12 拆分后口径）。
+        """
         data = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
         entries = data["tool"]["setuptools"]["data-files"]
         assert "pipelines" in entries
-        assert "pipelines/quality" in entries, (
-            "data-files 缺 pipelines/quality 键：装出来的引擎没有 quality profile")
-        assert "pipelines/prompts" in entries, "data-files 缺 pipelines/prompts 键"
         assert any(p.endswith("*.lock") for p in entries["pipelines"]), (
             "pipelines 键缺 *.lock：装出来的流水线过不了锁校验")
+        pkg = data["tool"]["setuptools"]["package-data"]["packs.docgen"]
+        for pat in ("pipelines/*.yaml", "pipelines/*.lock",
+                    "quality/*.yaml", "prompts/*.yaml", "pack.yaml"):
+            assert pat in pkg, f"packs.docgen package-data 缺 {pat}"
 
     def test_bootstrap_does_not_name_pack_specific_files(self):
         """最核心的解绑判据：自检不许再点名某个 pack 的文件。"""

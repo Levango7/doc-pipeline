@@ -42,7 +42,7 @@ PLACEHOLDER = "# 自动生成文档\n\n> 生成时间: 2026-10-04\n\n未采集�
 @pytest.fixture
 def gate():
     """不跑 LLM 的 QualityGateAgent：门禁判据本身是纯规则。"""
-    from agents.quality_gate import QualityGateAgent
+    from packs.docgen.agents.quality_gate import QualityGateAgent
     from pipeline_core.base_agent import AgentMeta, Message
     agent = QualityGateAgent("quality_gate",
                              AgentMeta(name="quality_gate", version="2.0"),
@@ -354,10 +354,11 @@ class TestPlaceholderSectionFloor:
 
     def test_markers_have_a_single_definition_site(self):
         """writer 与门禁共用一处定义 —— 两处各写一份时漂移过一次（假绿的根因）。"""
-        import agents.quality_gate as qg
+        import packs.docgen.agents.quality_gate as qg
         from docpipeline import degradation
         assert qg.PLACEHOLDER_MARKERS is degradation.PLACEHOLDER_MARKERS
-        src = (Path(__file__).parent.parent / "agents" / "writer.py").read_text(encoding="utf-8")
+        src = (Path(__file__).parent.parent / "packs" / "docgen" / "agents"
+               / "writer.py").read_text(encoding="utf-8")
         assert "degradation.SECTION_PLACEHOLDER" in src, "writer 又自带字面量占位串了"
         assert degradation.SECTION_PLACEHOLDER not in src, "writer 里不该再留第二份字面量"
 

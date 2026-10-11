@@ -278,11 +278,16 @@ class TestSchedulerPlanning:
         """退出门：现有流水线的指纹不能因为这次改动而变。
 
         逐条 `verify_lock=True` 就是证明——lockfile 里存的是改动前生成的指纹，
-        哈希一变就报拓扑漂移。用 glob 取清单，避免新增流水线时这条测试静默漏掉它。
+        哈希一变就报拓扑漂移。用 glob 取清单（核心 pipelines/ + 物理 pack），
+        避免新增流水线时这条测试静默漏掉它。
         """
         sched = Scheduler(agents_dir=str(PROJECT / "agents"),
                           pipeline_dir=str(PROJECT / "pipelines"))
         names = sorted(p.stem for p in (PROJECT / "pipelines").glob("*.yaml"))
+        # pack-docgen 拆出后 docgen 系 6 条住 packs/docgen/pipelines/（_ 开头是内部片段）
+        names += sorted(p.stem for p in
+                        (PROJECT / "packs" / "docgen" / "pipelines").glob("*.yaml")
+                        if not p.stem.startswith("_"))
         assert "docgen-lean" in names          # 带 when 的那条也在这批里
         for name in names:
             assert sched.parse(name, verify_lock=True).node_count > 0
