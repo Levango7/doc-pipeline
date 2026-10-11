@@ -1,7 +1,7 @@
-"""link_check -- external plugin agent (entry_points, see ../README.md).
+"""link_check -- built-in agent (2026-10-11 folded in from examples/plugin-*).
 
-Same shape as built-in agents/*.py: module-level AGENT_NAME plus one
-BaseAgent subclass. No blacklisted calls, so no SANDBOX_TRUSTED.
+Built-in: declares SANDBOX_TRUSTED like the other shipped agents
+(pure stdlib, nothing on the loader AST blacklist).
 
 Purpose: extract the link inventory (markdown + bare URLs) from upstream
 text so downstream fact checking can key off it. This agent never
@@ -12,9 +12,10 @@ import re
 
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
+SANDBOX_TRUSTED = True
 AGENT_NAME = "link_check"
 AGENT_VERSION = "0.1.0"
-AGENT_DESC = "external plugin: link inventory extraction (no fetch) for downstream fact checking"
+AGENT_DESC = "built-in agent: link inventory extraction (no fetch) for downstream fact checking"
 AGENT_AUTHOR = "doc-pipeline-example"
 AGENT_PRIORITY = 50
 INPUT_TOPICS = ["link_check.input", "writer.done"]

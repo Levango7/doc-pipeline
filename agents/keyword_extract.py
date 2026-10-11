@@ -1,9 +1,8 @@
-"""keyword_extract -- external plugin agent (entry_points, see ../README.md).
+"""keyword_extract -- built-in agent (2026-10-11 folded in from examples/plugin-*).
 
 Same shape as built-in agents/*.py: module-level AGENT_NAME plus one
-BaseAgent subclass. This file touches nothing on the loader AST blacklist,
-so it needs no SANDBOX_TRUSTED declaration -- that flag is only for the
-built-ins shipped and maintained by this repo.
+BaseAgent subclass. Declares SANDBOX_TRUSTED like the other shipped built-ins
+(pure stdlib, nothing on the loader AST blacklist).
 
 Purpose: rank Chinese/English keywords from upstream text (frequency plus
 stopword filtering) for downstream topic-coverage/quality gates. Pure
@@ -14,9 +13,10 @@ from collections import Counter
 
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
+SANDBOX_TRUSTED = True
 AGENT_NAME = "keyword_extract"
 AGENT_VERSION = "0.1.0"
-AGENT_DESC = "external plugin: Chinese/English keyword extraction for topic coverage"
+AGENT_DESC = "built-in agent: Chinese/English keyword extraction for topic coverage"
 AGENT_AUTHOR = "doc-pipeline-example"
 AGENT_PRIORITY = 50
 INPUT_TOPICS = ["keyword_extract.input", "writer.done"]

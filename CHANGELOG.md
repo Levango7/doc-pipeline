@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed（2026-10-11·续34，单发行物整合：artesian 并入 + 插件内置化）
+
+- **决策**：用户拍板"整合成一个项目，要有新的命名（以前决策过：发行名
+  `nexus-loom`，spec §7.1）"。此前 PyPI 发布准备提出了 8 个发行物
+  （artesian + doc-pipeline + 六插件），被否——那是把一个产品拆成了八个包。
+- **artesian 并回主仓**：它只有 doc-pipeline 一个消费方，独立发行只带来
+  "每次库改动手改 sha"的成本（PR #17 为此建过 EXTERNAL 登记表 + 发布火车，
+  随并入一并撤销）。`src/artesian` → 顶层包 `artesian/`（import 名不变，
+  零代码改动），其 8 个测试文件并入 `tests/artesian/`（307 条底座判据随库走，
+  并入即绿）；它自己的 test_doc_consistency / test_verify_dist 管的是 artesian
+  仓的 README 计数与发布门禁，不随迁。requirements.txt 删 git sha pin 行。
+  分层守卫新增：**artesian 底座不得 import 主仓包**（并入 != 允许成环）。
+- **五支插件内置化**：keyword_extract / readability / link_check /
+  fact_coverage / tldr 从 examples/plugin-* 移入 `agents/`，与其它内置件同
+  路径发现/注册/执行（glob），补 SANDBOX_TRUSTED 声明对齐内置件口径。
+  examples/ 只留 plugin-hello 作**外部作者模板**（第三方插件机制的参照实现
+  与真 venv E2E 证明）。
+- **诚实口径回改**：spec §2 扩展来源轴、§2.1 验收线第 2 条、§5.2 插件发现行
+  ——原"第三方插件实测数 6"是自家内置件充数，回归 **0**（机制达标、
+  真实生态为 0，由真实外部包出现时点亮）；组合数 5544 → **924**
+  （11×6×7×2，相对基线 18 为 51x，仍越过 20x 线）。
+- **判据** `tests/test_plugins_ecosystem.py` 重做（9 条）：五支内置件的
+  发现/注册/执行、SANDBOX_TRUSTED 口径、AGENT_NAME 无冲突、plugin-hello
+  模板形状、examples/ 无回魂目录、诚实计数=0。
+- test_layering：docpipeline 的 FIRST_PARTY 加 artesian；
+  `test_local_library_has_reproducible_install_source` 删除（无外部库可管）。
+
+
 ### Added（2026-10-11·续33，PyPI 发布准备：门禁脚本 + 发布链 + 三个真缺陷）
 
 - **背景**：PyPI 方向获批（本机直连 PyPI 实测通畅，相关名称均空闲）。
