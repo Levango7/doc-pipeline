@@ -170,7 +170,7 @@
 
 ### 5.5 CI 与门禁（跨层，先于一切功能）
 
-按 FP-2 修三处静默判绿；**性能门禁 `perf-regression` 当前不在 required 清单内**〔实测：required = `test (3.11/3.12/3.13/3.14)` + `docker`，且 `enforce_admins = false`〕，升级期需纳入或明确接受其非阻塞语义。
+按 FP-2 修三处静默判绿；**性能门禁 `perf-regression` 当前不在 required 清单内**〔实测 2026-10-12：required = `test (3.11/3.12/3.13/3.14)` + `docker`，`strict=true`，`enforce_admins=true`（2026-10-08 已翻 true；本文旧句写 false，属过期口径）；`perf-regression` 在 PR 与 main 两个事件上都跑且近期 42 次连续绿（PR 18 + main 24），是否纳入 required 是 §9.2 待决项〕。
 
 ---
 
@@ -317,8 +317,28 @@
 ## 9. 未决项
 
 1. ~~是否授权改 MAOP 仓~~ **已定：不改**（§7.3 第 6 步）。迁移用 `DOC_PIPELINE_ROOT` 环境变量指向新路径；MAOP 那 5 处硬编码测试会红，属它自己的账，本项目只记账不代改。
-2. **`perf-regression` 是否纳入 required**，以及是否接受 `enforce_admins = false` 的现状。
-3. **人审/approval 节点**进 P0 还是 P1（本文暂放 P1）。
+2. **`perf-regression` 是否纳入 required**（待拍板；候选方案见下「决策备选·2」）。`enforce_admins` 子项已闭：2026-10-08 已翻 true，2026-10-12 实测确认为 true（§5.5 口径已更新）；`perf-regression` 近期 42 次连续绿（PR 18 + main 24）。
+3. **人审/approval 节点**进 P0 还是 P1（本文暂放 P1；2026-10-12 勘察：`TaskStatus.PAUSED` + checkpoint + `POST /tasks/<id>/pause|resume` 已存在，缺的是声明式 YAML 审批节点与 approve/reject 决策面——候选方案见下「决策备选·3」）。
 4. ~~Chassis / Tessera 的 PyPI 占用复查~~ **已查**：两者裸名均已被占（§7.1 注）。当前定名 Loom / 发行名 `nexusloom`（实测空闲）。
-5. **FP-2 的真实验证只能在 CI 上做**：本轮把 `--check` 的退出码与 pip-audit 的进程健康变成硬依赖，ubuntu runner 上若有本机没暴露的结构性问题，CI 会如实变红 —— 届时"CI 全绿"需要重取，`docs/product-spec.md` §3 P0 判据第 4 条以此为准。
-6. README 文档表与 CHANGELOG 对本 spec 的引用：CHANGELOG 已在本轮同步记录三项修复；README 的文档索引表尚未加 `product-spec.md` 一行（下一批命名清理时一并改，避免与 pack 拆分改动叠在同一次提交）。
+5. ~~FP-2 的真实验证只能在 CI 上做~~ **已关**（2026-10-12）：CI 全绿已在 ubuntu runner 上多轮重取（test 3.11–3.14 + docker + perf-regression；`--check` 退出码与 pip-audit 进程健康均为硬依赖），§3 P0 判据第 4 条以此为准。
+6. ~~README 文档表与 CHANGELOG 对本 spec 的引用~~ **已关**（2026-10-12）：README 文档索引表已加 `product-spec.md` 一行；CHANGELOG 对 spec 的引用随各批同步记录。
+
+### 决策备选·2 —— `perf-regression` 进不进 required（待拍板）
+
+**事实**（2026-10-12 实测）：该 job 在 PR 与 main 上都会跑（`needs: test`），耗时约 22 秒–1 分钟；含跨 run 波动带（`benchmark.py` 的 `_historical_spreads`，区分"runner 整体慢"与"代码真慢"）与 success-only 基线滚动（失败 run 不污染基线）；近期 42 次连续绿（PR 18 + main 24），历史抖动（早期"同代码两次跑 12 项 vs 2 项回归"）在波动带机制落地后未再复现。
+
+- **A. 纳入 required（+1 项，共 6 项）**：门禁真正生效——性能回归与功能回归同级阻断合并。优：与"CI 全绿才可合并"的既有纪律一致；代价记入文档，不再靠人肉判读。劣：runner 环境抖动时 PR 会被阻塞，处置=重跑该 job（基线在缓存里，22 秒级，成本低）。
+- **B. 维持非 required（现状）**：保留观察期。优：零阻塞风险。劣：门禁只是"参考"——红不挡合并，需要每次人肉判读"这次红是真回归还是噪音"，而人肉判读是最不可靠的一环（非必需红被继承、被无视是业界常态）。
+- **C. 折中：先加 required 但设 60 天回顾**：等同 A，另约定一次回顾（若出现环境性阻塞红则回退/调阈值 0.30）。优：兼顾门禁刚性与纠错。劣：回顾是口头承诺，不如 A 干脆。
+
+**推荐：A**（42 次连续绿 + 波动带机制实证 + 22 秒成本），C 为次选；不推荐 B。
+
+### 决策备选·3 —— 人审/approval 节点进 P0 还是留 P1（待拍板）
+
+**事实**（2026-10-12 勘察）：全仓 `approval/human/manual_review` 0 命中；但**半个机制已在**——`TaskStatus.PAUSED` + 边界 checkpoint 保存 + 执行循环阻塞等待（`pipeline.py:566-596,768-776`）+ Admin API `POST /tasks/<id>/pause|resume`（人工对 running 任务暂停/恢复）。缺的是：① 声明式 YAML 的"审批节点"（跑到此处挂起等批，而不是人对跑着的任务按暂停）；② approve/reject 的决策语义（reject=终止还是走分支）；③ 审计（人/时间/决定；`pipeline_core/audit.py` 可复用，含客户端指纹可充当"审批人"标识）；④ 通知（审批发生时告知人）。
+
+- **A. 留 P1（现状）**：不新增。优：与 P1 的"自托管运行时"（身份/控制台/状态后端）天然协同——审批的"谁批"要身份系统，界面要控制台，届时一起做不返工；现在没有真实使用场景，做了没有消费方。劣：作为"多功能工作台"，流水线缺人工干预点，"取数→核查→待批→交付"类场景用不起来（spec FP-4 原文点名的诉求）。
+- **B. 现在完整做（P0）**：机制+API+审计+通知+（简易）界面。优：机制闭环一次到位。劣：在没有身份系统的前提下"审批人"只能是凭证指纹，语义勉强；通知渠道（企业微信/钉钉/飞书等国内渠道可达）均需用户注册配置凭据，属于产品化投入而非引擎机制；控制台类界面属 P1 范围，P0 明确"不做任何新 UI"。返工风险最大。
+- **C. 机制先行，最小闭环现在做（推荐候选）**：只做引擎层——YAML 声明式 `approval` 节点（挂起→释放等待）、`POST /tasks/<id>/approve|reject`（决策面，reject 语义=终止并可注释原因，不做分支）、审计落库（复用 audit.py）。通知/控制台/多级审批/超时策略留 P1。规模约 1–2 天，复用已有 PAUSED/checkpoint/审计三个半成品，不碰 UI。优：以最低成本补齐"工作台"关键机制，P1 只需接界面与通知。劣：仍无"真名实姓"的审批人（记凭证指纹），需要向使用者说明这一边界。
+
+**推荐：C**；若倾向"不见真实场景不动工"则 A；不推荐 B。
