@@ -98,9 +98,12 @@ jobs:
           .venv-dist/bin/python -m pip install --upgrade pip
           # artesian 已并入本发行物（2026-10-11 整合），wheel 自带——
           # 不再先装旧 artesian git wheel（同名包文件互相覆盖会污染安装态验证）
-          .venv-dist/bin/python -m pip install dist/*.whl
+          # 依赖面与主 CI 的 test job 对齐（否则全量判据在缺可选依赖时假红）：
+          # wheel 本体 + render/ingest extras + pytest-asyncio（异步/MCP 判据）
+          # + pymupdf（ingest PDF 路径判据）。
+          .venv-dist/bin/python -m pip install "dist/*.whl[render,ingest]"
+          .venv-dist/bin/python -m pip install "pytest==8.3.4" "pytest-asyncio==0.25.2" "pymupdf>=1.24.0"
           .venv-dist/bin/python scripts/verify_dist.py dist "${WANT}" --installed
-          .venv-dist/bin/python -m pip install pytest
           cd "$RUNNER_TEMP"
           "$GITHUB_WORKSPACE/.venv-dist/bin/python" -m pytest \
             "$GITHUB_WORKSPACE/tests" -q -p no:cacheprovider --no-header \
