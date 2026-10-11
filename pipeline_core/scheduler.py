@@ -160,7 +160,6 @@ class ExecutionPlan:
 # 领域 Agent 的名字与默认值写死在 core 里。
 
 from . import config_schema as _config_schema  # noqa: E402
-from . import paths  # noqa: E402
 
 
 def installed_pipelines(pipeline_dir: str | Path | None = None) -> list[str]:
