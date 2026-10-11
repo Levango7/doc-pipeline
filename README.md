@@ -1009,6 +1009,7 @@ nexusloom/
 
 | 文档 | 内容 |
 |------|------|
+| [产品规格](docs/product-spec.md) | 定位、四轴验收线、pack 机制、分层目标（P0/P1）与未决项台账 |
 | [部署指南](docs/deployment.md) | 生产环境配置、API Key、监控、备份策略 |
 | [API 参考](docs/api.md) | Admin REST API 全端点说明与鉴权 |
 | [架构说明](docs/architecture.md) | 分层结构、线程模型、数据流 |

@@ -35,6 +35,30 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Changed（2026-10-12·续36，§9 未决项收口：五闭二备选 + 遗留提交复位）
+
+- **§9 收口**：闭 #5（FP-2 的 CI 真实验证——ubuntu runner 上多轮全绿重取：
+  test 3.11–3.14 + docker + perf-regression；`--check` 退出码与 pip-audit
+  进程健康均为硬依赖）；闭 #6（README 文档索引表已加 `product-spec.md` 一行）。
+  #2 收窄：`enforce_admins` 子项已闭——2026-10-08 已翻 true，2026-10-12 实测
+  确认（§5.5 旧文写 `false` 属过期口径）；剩余待拍板项 =
+  `perf-regression` 是否纳入 required，候选 A/B/C 与推荐见 spec §9「决策备选·2」。
+- **§9 #3 勘察 + 备选**：人审/approval 全仓 0 命中，但半个机制已在
+  （`TaskStatus.PAUSED` + 边界 checkpoint + 执行循环阻塞等待 +
+  `POST /tasks/<id>/pause|resume`）；候选 A（留 P1）/ B（现在完整做）/
+  C（机制先行、最小闭环）与推荐见 spec §9「决策备选·3」。
+- **遗留提交复位（10-08 f47a1b9）**：共享检出上停了 3 天的未推 docs 提交
+  （续17 台账改编）按此处置，它要留痕的两件事以最新事实落回本文：
+  **① 共享树整文件 `git add` 会搭车**——那段台账文字落盘后 1 分钟内被并行线
+  的 `git add CHANGELOG.md` 整体带走、随 PR #1 进 main；共享检出上
+  `git add <整份文件>` 会捎走另一条线的在途文字，反向亦然（分工区 worktree
+  即该教训的正解，此后八连发全部照此执行）。
+  **② "直推被拦"的实测已拿到**——该提交当时只能记"配置已生效、拦阻形态待
+  实测（GH006）"；后续批次直推确实被拒（`5 of 5 required status checks are
+  expected`），悬着的这句话收口。主检出已复位至 origin/main，原提交 patch
+  已在仓外留档（需要时可从 reflog 或存档恢复）。
+- **本批为文档口径批**：不动引擎代码，CI 以仓库门禁为准。
+
 ### Changed（2026-10-12·续35，pack-docgen 物理拆分：spec §5.2/§7.3 最后一步）
 
 - **文件移动**（git mv 保历史）：5 个文档件（writer/quality_gate/checker/
