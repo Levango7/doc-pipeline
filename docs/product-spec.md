@@ -246,8 +246,8 @@
 |---|---|---|---|
 | 产品名 / banner | Doc-Pipeline · 文档生成流水线 | **Loom · Agent 工作流运行时** | `run.py:60`；"文档生成流水线" 11 处 / 8 文件 |
 | 本地路径 | `F:\Nexus\Workflow\doc-pipeline` | `F:\Nexus\Loom` | 见 §7.2 |
-| GitHub 仓 | `Levango7/doc-pipeline` | `Levango7/nexus-loom` | 旧 SSH remote 需更新 |
-| 发行名 | `doc-pipeline` | `nexus-loom` | `pyproject.toml:6` |
+| GitHub 仓 | `Levango7/doc-pipeline` | `Levango7/nexusloom` | 旧 SSH remote 需更新 |
+| 发行名 | `doc-pipeline` | `nexusloom` | `pyproject.toml:6` |
 | **import 根包** | `pipeline_core` | **第一阶段保持不动** | 647 处 / 131 文件，且被 MAOP 硬绑 |
 | 领域包 | `docpipeline` | `loom_pack_docgen`（pack 化） | 83 处 / 23 文件 |
 | console script / CLI | `doc-pipeline` | `loom`（动词：`loom run / plan / lock / pack / plugin`） | `pyproject.toml:41` |
@@ -261,7 +261,7 @@
 > ——运行时交给调用方的本来就是一个句柄，而现在 HTTP/MCP 传的是裸 `task_id` 字符串。
 > 占用实测（HTTP 200=已占、404=空闲）：PyPI 裸名 `loom`/`chassis`/`tessera`/`weft`/`flowkit`/
 > `runloom`/`agentloom`/`loomkit`/`handle` **均已被占**（其中 `handle` 是 0.0.0、summary 写
-> "placeholder" 的空壳抢注），`nexus-loom`/`loom-runtime`/`handle-runtime`/`nexloom` **空闲**；
+> "placeholder" 的空壳抢注），`nexusloom`/`loom-runtime`/`handle-runtime`/`nexloom` **空闲**；
 > npm 的 `handle` 与 `official` 都已占。故发行名必须带前缀，不能裸 `loom`。
 > `official` 已否决：形容词无专指、搜索不可达、CLI 读作无主语、`import official` 与
 > Vue 生态"官方模板目录"的既有心智撞车。`track` 已否决：PyPI 被真实包占（基因组数据读写），
@@ -319,6 +319,6 @@
 1. ~~是否授权改 MAOP 仓~~ **已定：不改**（§7.3 第 6 步）。迁移用 `DOC_PIPELINE_ROOT` 环境变量指向新路径；MAOP 那 5 处硬编码测试会红，属它自己的账，本项目只记账不代改。
 2. **`perf-regression` 是否纳入 required**，以及是否接受 `enforce_admins = false` 的现状。
 3. **人审/approval 节点**进 P0 还是 P1（本文暂放 P1）。
-4. ~~Chassis / Tessera 的 PyPI 占用复查~~ **已查**：两者裸名均已被占（§7.1 注）。当前定名 Loom / 发行名 `nexus-loom`（实测空闲）。
+4. ~~Chassis / Tessera 的 PyPI 占用复查~~ **已查**：两者裸名均已被占（§7.1 注）。当前定名 Loom / 发行名 `nexusloom`（实测空闲）。
 5. **FP-2 的真实验证只能在 CI 上做**：本轮把 `--check` 的退出码与 pip-audit 的进程健康变成硬依赖，ubuntu runner 上若有本机没暴露的结构性问题，CI 会如实变红 —— 届时"CI 全绿"需要重取，`docs/product-spec.md` §3 P0 判据第 4 条以此为准。
 6. README 文档表与 CHANGELOG 对本 spec 的引用：CHANGELOG 已在本轮同步记录三项修复；README 的文档索引表尚未加 `product-spec.md` 一行（下一批命名清理时一并改，避免与 pack 拆分改动叠在同一次提交）。
