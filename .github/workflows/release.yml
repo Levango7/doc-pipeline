@@ -113,10 +113,11 @@ jobs:
     needs: pypi-verify
     runs-on: ubuntu-latest
     # Trusted Publishing（OIDC）：需要在 PyPI 项目设置里一次性把本仓登记为
-    # publisher（provider=GitHub / 仓库 Levango7/doc-pipeline /
-    # workflow release.yml / environment pypi），首次上传前用路 A（账号级 token）
-    # 也可以——见 README「发布（PyPI）」。
-    if: github.event_name == 'release'
+    # publisher（project/owner/repo 均 nexusloom/Levango7，workflow=release.yml，
+    # environment=pypi），见 README「发布（PyPI）」。
+    # 本工作流的 push 触发只有 v* tag，所以 tag push 等价于"打版本 tag 即发布"；
+    # release published 事件同样覆盖（手动建 Release 的路径）。
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
     environment: pypi
     permissions:
       contents: read
