@@ -22,7 +22,6 @@ import urllib.error
 import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from artesian.fast_json import dumps as _fast_dumps
 from artesian.fast_json import loads as _fast_loads
@@ -165,7 +164,8 @@ class WriterAgent(BaseAgent):
 
         # Prompt 模板配置
         self._prompt_profile = config.get("prompt_profile", "default")
-        self._prompts_dir = Path(__file__).parent.parent / "pipelines" / "prompts"
+        from pipeline_core.paths import pipelines_dir as _pipelines_dir
+        self._prompts_dir = _pipelines_dir() / "prompts"
         self._prompt_template_cache = CacheManager(
             name="writer_prompt", max_size=50, ttl=0,
         )

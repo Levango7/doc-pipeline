@@ -738,7 +738,28 @@ pip install，空 agents 目录下仍被发现/注册/执行——"本仓零改�
 `tests/test_plugins_ecosystem.py` 盯**生态面**：一次真装六个包，逐个断言被发现、
 被注册、被真实执行、来源标记 `entry_point:<name>`，数量不足 5 即红。
 
-### Agent 安全沙箱
+### 发布（PyPI）
+
+发布链是一列火车，顺序不可颠倒（后者依赖前者的 PyPI 包）：
+
+1. **artesian**（独立仓 `Levango7/artesian`）——它的 release.yml 已就绪：
+   打 tag `v0.1.x` → 创建 GitHub Release，流水线自动 verify + publish（Trusted
+   Publishing/OIDC）。首次发布前需要在 PyPI 控制台做一次性登记（路 A 账号级
+   token 或 路 B pending publisher），步骤见该仓 README「发布（PyPI）」。
+2. **doc-pipeline**（本仓）——artesian 上架后，把 `pyproject.toml` 的
+   EXTERNAL 登记项 `artesian` 换成 `artesian>=0.1.0`（requirements.txt 同步），
+   打 tag + Release 即走本仓 `release.yml` 的 `pypi-verify` + `pypi-publish`。
+   发布门禁 `scripts/verify_dist.py` 卡四件事：wheel/sdist 数据文件齐全
+   （pipelines/quality/prompts 子目录必须单列——glob 不下钻，2026-10-11 实测）、
+   依赖闭合、版本三处一致、干净 venv 安装态真跑。
+3. **六个插件**（`examples/plugin-*`）——宿主 doc-pipeline 上架后依次发
+   （每个都是独立发行物，元数据已按 PyPI 上传期硬校验备齐：license/readme/
+   classifiers/对宿主的依赖声明）。
+
+`pypi-verify` / `pypi-publish` 只在 GitHub Release published 时触发；
+`workflow_dispatch`（dry_run=true 默认）只构建与校验、不上传。
+
+## Agent 安全沙箱
 
 第三方 Agent 加载时自动执行 AST 安全检查（禁止 `os.system`/`subprocess`/`eval`/`exec`/`open` 等），
 内置 Agent 通过在模块顶层声明 `SANDBOX_TRUSTED = True` 跳过检查（信任来自声明本身，
@@ -779,7 +800,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2301 个测试本机全绿**（`2301 passed, 1 skipped, 6 deselected`，2026-10-09 本机全量实测；
+**2317 个测试本机全绿**（`2317 passed, 1 skipped, 6 deselected`，2026-10-09 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -806,6 +827,8 @@ agent 名按 AGENT_NAME 派生、call 节点不算缺失）；
 交付形态补缺那批加了 9 条判据（账本读回一致 / 幂等覆盖 / 缺 run_id 拒绝 /
 html 单页与站点导航 / renderer html 后端 / 真 E2E 三交付物互相一致 + 失败也落账）；
 命名清理第一步那批加了 2 条判据（run.py 源码静态零文档味 / 真 --help 可见面零文档味）；
+PyPI 发布准备那批加了 16 条判据（依赖闭合 / data-files 子目录覆盖 /
+插件元数据与合法 trove classifier / release.yml 的 OIDC 发布链）；
 agent 名按 AGENT_NAME 派生、call 节点不算缺失）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。

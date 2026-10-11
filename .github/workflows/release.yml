@@ -45,3 +45,97 @@ jobs:
           tag_name: ${{ steps.notes.outputs.tag }}
           body_path: release_notes.md
           generate_release_notes: true
+
+  # ── PyPI 发布链（与 artesian/release.yml 同一套标准）────────────────
+  # verify 四件事：构建 / scripts/verify_dist.py（数据文件+依赖闭合+版本）/
+  # twine check --strict / 干净 venv 安装态真跑。全过才 publish。
+  # artesian 尚未上 PyPI：安装态验证先用它的 git sha pin，上架后切版本约束。
+  pypi-verify:
+    runs-on: ubuntu-latest
+    needs: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Compute expected version
+        id: ver
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG_NAME" =~ ^v ]]; then
+            TAG_NAME="$(git describe --tags --abbrev=0)"
+          fi
+          echo "want=${TAG_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Verify artifacts
+        env:
+          WANT: ${{ steps.ver.outputs.want }}
+        run: |
+          if [ -n "$WANT" ]; then
+            python scripts/verify_dist.py dist "$WANT"
+          else
+            python scripts/verify_dist.py dist
+          fi
+          python -m twine check --strict dist/*
+
+      - name: Install the built wheel in a clean venv and test against it
+        env:
+          WANT: ${{ steps.ver.outputs.want }}
+        run: |
+          python -m venv .venv-dist
+          .venv-dist/bin/python -m pip install --upgrade pip
+          .venv-dist/bin/python -m pip install "artesian @ git+https://github.com/Levango7/artesian.git@1a83b7733534389b9d70c8e3ddfea6d8e6abe82f"
+          .venv-dist/bin/python -m pip install --no-deps dist/*.whl
+          .venv-dist/bin/python scripts/verify_dist.py dist "${WANT}" --installed
+          .venv-dist/bin/python -m pip install pytest
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/.venv-dist/bin/python" -m pytest \
+            "$GITHUB_WORKSPACE/tests" -q -p no:cacheprovider --no-header \
+            -k "not installable"
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  pypi-publish:
+    needs: pypi-verify
+    runs-on: ubuntu-latest
+    # Trusted Publishing（OIDC）：需要在 PyPI 项目设置里一次性把本仓登记为
+    # publisher（provider=GitHub / 仓库 Levango7/doc-pipeline /
+    # workflow release.yml / environment pypi），首次上传前用路 A（账号级 token）
+    # 也可以——见 README「发布（PyPI）」。
+    if: github.event_name == 'release'
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download dist from pypi-verify
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Show what will be published
+        run: ls -l dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          verbose: true
