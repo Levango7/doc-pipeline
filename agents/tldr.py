@@ -1,7 +1,7 @@
-"""tldr -- external plugin agent (entry_points, see ../README.md).
+"""tldr -- built-in agent (2026-10-11 folded in from examples/plugin-*).
 
-Same shape as built-in agents/*.py: module-level AGENT_NAME plus one
-BaseAgent subclass. No blacklisted calls, so no SANDBOX_TRUSTED.
+Built-in: declares SANDBOX_TRUSTED like the other shipped agents
+(pure stdlib, nothing on the loader AST blacklist).
 
 Purpose: an offline, deterministic TL;DR -- the section headings plus the
 first sentence of each section. This is not an LLM summary and does not
@@ -12,9 +12,10 @@ import re
 
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
+SANDBOX_TRUSTED = True
 AGENT_NAME = "tldr"
 AGENT_VERSION = "0.1.0"
-AGENT_DESC = "external plugin: offline deterministic TL;DR (headings + first sentence)"
+AGENT_DESC = "built-in agent: offline deterministic TL;DR (headings + first sentence)"
 AGENT_AUTHOR = "doc-pipeline-example"
 AGENT_PRIORITY = 50
 INPUT_TOPICS = ["tldr.input", "writer.done"]

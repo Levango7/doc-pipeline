@@ -30,7 +30,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 #: 打进 wheel 的 Python 包（与 [tool.setuptools] packages 同源）
-PACKAGES = ["pipeline_core", "docpipeline", "agents", "scripts"]
+PACKAGES = ["pipeline_core", "docpipeline", "agents", "scripts", "artesian"]
 
 #: wheel 与 sdist 里都必须有的数据文件（相对仓库根）
 REQUIRED_DATA = (
@@ -43,13 +43,12 @@ REQUIRED_DATA = (
 
 #: 非 PyPI 分发的第三方依赖登记表：源码真的 import，但不以版本约束出现。
 EXTERNAL: dict[str, str] = {
-    "artesian": (
-        "取数/知识底座；未上 PyPI 前按 git sha pin 走 requirements.txt，"
-        "因此不能写 Requires-Dist 版本约束（写了 pip install 直接失败）；"
-        "上架后改成 artesian>=0.1.0 并从此表删名。"),
     "opentelemetry": (
         "可观测性（telemetry.py try-import，未装时降级 no-op）；"
         "可选依赖不进 Requires-Dist——要追踪时显式 pip install opentelemetry-sdk。"),
+    "huggingface_hub": (
+        "artesian.embeddings 的可选路径（try_to_load_from_cache 探测本地权重，"
+        "未装时按无缓存处理）；sentence-transformers 传递依赖，不单列。"),
     "mineru": (
         "重型 OCR 解析（ingest.py 按需探测，未装时 PDF 走 pymupdf 路线）；"
         "GB 级依赖，与 paddleocr 同属 RUNTIME_PROBED，刻意不进 requirements。"),
@@ -61,7 +60,7 @@ EXTERNAL: dict[str, str] = {
 #: 标准库补充名单（verify_dist 自己的口径；与 test_layering 的 _stdlib_names 不同源）：
 #: py3.11+ 的 tomllib / 常见网络与运行时件
 STDLIB_EXTRA = frozenset({
-    "atexit", "ipaddress", "socketserver", "tomllib", "zlib",
+    "atexit", "ipaddress", "socketserver", "struct", "tomllib", "zlib",
 })
 
 
@@ -71,7 +70,8 @@ def fail(msg: str) -> None:
 
 def pyproject_version() -> str:
     data = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
-    return data["project"]["version"]
+    ver: str = data["project"]["version"]
+    return ver
 
 
 def check(dist: Path, want: str | None) -> str:
@@ -214,7 +214,7 @@ def main(argv: list[str]) -> int:
     # 空串要当"没给"：CI 里 dispatch 没有 tag，`${WANT}` 展开成空参数——
     # 当成给了就会报"tag 要发 ，但 pyproject 是 0.1.0"（本机测时传了显式版本，
     # 正好绕过这条，第一次在 runner 上跑才现形）。
-    want = re.sub(r"^v", "", pos[1]) if len(pos) > 1 else ""
+    want: str | None = re.sub(r"^v", "", pos[1]) if len(pos) > 1 else ""
     want = want or None
     if not dist.is_dir():
         fail(f"dist 目录不存在：{dist}（先跑 python -m build）")

@@ -19,7 +19,6 @@ from pathlib import Path
 
 from artesian import embeddings as emb_core
 from artesian.knowledge_base import KnowledgeBase
-
 from docpipeline import ingest as ingest_core
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 

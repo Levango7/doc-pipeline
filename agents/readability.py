@@ -1,4 +1,4 @@
-"""readability -- external plugin agent (entry_points, see ../README.md).
+"""readability -- built-in agent (2026-10-11 folded in from examples/plugin-*).
 
 Same shape as built-in agents/*.py: module-level AGENT_NAME plus one
 BaseAgent subclass. Nothing from the loader AST blacklist is touched, so
@@ -11,9 +11,10 @@ reproducible.
 """
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
+SANDBOX_TRUSTED = True
 AGENT_NAME = "readability"
 AGENT_VERSION = "0.1.0"
-AGENT_DESC = "external plugin: readability dimension (avg sentence length etc.) for quality gates"
+AGENT_DESC = "built-in agent: readability dimension (avg sentence length etc.) for quality gates"
 AGENT_AUTHOR = "doc-pipeline-example"
 AGENT_PRIORITY = 50
 INPUT_TOPICS = ["readability.input", "writer.done"]

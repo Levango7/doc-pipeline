@@ -23,8 +23,8 @@ import json
 from urllib.parse import urlparse
 
 import requests
-from artesian.url_guard import validate_public_http_url
 
+from artesian.url_guard import validate_public_http_url
 from pipeline_core.base_agent import BaseAgent, Message
 
 AGENT_NAME = "http_request"

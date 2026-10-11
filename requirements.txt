@@ -3,20 +3,13 @@
 PyYAML>=6.0
 requests>=2.28.0
 
-# 取数/知识底座：工具层（fast_json + HTML 解析兼容）、嵌入层/知识库
-# （embeddings + knowledge_base）、搜索引擎统一接口（search_engines，含其自带的
-# LRU+TTL 缓存与 .env 读取）已分三波迁至独立库 artesian（相关实现与判据都在那边，
-# 本仓不再留副本）。
-# 依赖方向：本仓 -> artesian；artesian 不得反向 import 本仓。
-# 尚未发布 PyPI ⇒ 按公开仓的固定提交直接引用。CI 与 Dockerfile 都只跑
-# `pip install -r requirements.txt`，所以必须由这一行喂到；库侧每次改动都要
-# 换 sha（改成版本约束是发布 PyPI 之后的事）。开发期想跟着本地库跑，可以
-# 再额外 `pip install -e ../artesian` 覆盖这份直接引用。
-artesian @ git+https://github.com/Levango7/artesian.git@1a83b7733534389b9d70c8e3ddfea6d8e6abe82f
+# 取数/知识底座（fast_json + HTML 解析兼容、嵌入层/知识库、搜索引擎统一接口）
+# 原为独立仓 artesian（git sha pin），2026-10-11 并回本仓顶层包 artesian/——
+# 它只有一个消费方，独立发行只带来"每次改动都要换 sha"的成本（PR #17 曾为此
+# 建过整套 EXTERNAL 登记与发布火车，随并入一并撤销）。import 名不变。
 
 # JSON 序列化（artesian.fast_json 全局 3-10x 加速；无 orjson 时回退标准 json，
-# 但 admin/消息总线热路径性能下降明显——硬依赖；artesian 亦声明此依赖，
-# 本行保留以显式锁定本仓环境下限）
+# 但 admin/消息总线热路径性能下降明显——硬依赖）
 orjson>=3.0
 
 # 搜索引擎（可选，未安装时 researcher 自动降级为 bing/sogou/360）

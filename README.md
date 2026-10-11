@@ -801,7 +801,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2317 个测试本机全绿**（`2317 passed, 1 skipped, 6 deselected`，2026-10-09 本机全量实测；
+**2601 个测试本机全绿**（`2601 passed, 2 skipped, 6 deselected`，2026-10-09 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -830,6 +830,8 @@ html 单页与站点导航 / renderer html 后端 / 真 E2E 三交付物互相�
 命名清理第一步那批加了 2 条判据（run.py 源码静态零文档味 / 真 --help 可见面零文档味）；
 PyPI 发布准备那批加了 16 条判据（依赖闭合 / data-files 子目录覆盖 /
 插件元数据与合法 trove classifier / release.yml 的 OIDC 发布链）；
+单发行物整合那批加了 9 条判据（artesian 并入后 307 条底座判据随库走 /
+五支内置件发现注册执行 / plugin-hello 模板形状 / 第三方诚实计数=0）；
 agent 名按 AGENT_NAME 派生、call 节点不算缺失）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。

@@ -29,12 +29,9 @@ DOC = PROJECT / "docpipeline"
 
 # docpipeline 的非标准库依赖登记（逐条认领，新增必须显式加到这里）
 # 同包自引用由 _scan 过滤，不会出现在结果里，因此登记集不含 "docpipeline"。
-FIRST_PARTY = {"pipeline_core", "scripts"}
+FIRST_PARTY = {"pipeline_core", "scripts", "artesian"}
 DECLARED_OPTIONAL = {"docx", "reportlab", "pymupdf", "openpyxl", "pptx"}   # requirements.txt 里声明
 RUNTIME_PROBED = {"paddleocr", "mineru"}                 # 重型 OCR，有意不进 requirements
-# 取数/知识底座：与本仓同盘的另一座仓，靠 `pip install -e ../artesian` 装，
-# 还没进 PyPI 所以不能写进 requirements 的包名行——由下面那条判据盯住"过渡装法有留痕"。
-LOCAL_LIBRARY = {"artesian"}
 IMPORT_TO_DIST = {"docx": "python-docx", "reportlab": "reportlab",
                   "pymupdf": "pymupdf", "openpyxl": "openpyxl",
                   "pptx": "python-pptx"}
@@ -116,6 +113,19 @@ class TestDependencyDirection:
             "docpipeline 不得 import agents：插件层可以调用领域层，反过来会成环。"
         )
 
+    def test_foundation_does_not_import_the_product(self):
+        """artesian（底座）并入主仓后，方向仍要单向：它不得 import 主仓任何包。
+
+        并入 != 允许成环。底座保持纯（stdlib + orjson + 可选件），
+        引擎/插件层才可能有意义地依赖它。
+        """
+        foundation = PROJECT / "artesian"
+        forbidden = {"pipeline_core", "docpipeline", "agents", "scripts"}
+        assert _flagged(foundation, forbidden) == [], (
+            "artesian 底座不得 import 主仓包（pipeline_core/docpipeline/agents/scripts）——"
+            "并入后依赖方向仍须单向：底座在最底层"
+        )
+
     def test_document_layer_external_deps_are_registered(self):
         """docpipeline 用到的非标准库 import 必须逐条登记在册。
 
@@ -127,36 +137,10 @@ class TestDependencyDirection:
             for _rel, imported in _scan(DOC)
             if imported not in _stdlib_names() and imported != "__future__"
         }
-        assert found == FIRST_PARTY | DECLARED_OPTIONAL | RUNTIME_PROBED | LOCAL_LIBRARY, (
+        assert found == FIRST_PARTY | DECLARED_OPTIONAL | RUNTIME_PROBED, (
             f"docpipeline 依赖集变了：实际 {sorted(found)}；"
-            f"登记的是 {sorted(FIRST_PARTY | DECLARED_OPTIONAL | RUNTIME_PROBED | LOCAL_LIBRARY)}"
+            f"登记的是 {sorted(FIRST_PARTY | DECLARED_OPTIONAL | RUNTIME_PROBED)}"
         )
-
-    def test_local_library_has_reproducible_install_source(self):
-        """登记成本地库的依赖，requirements.txt 里必须有**真能装上**的那一行。
-
-        CI 与 Dockerfile 都只跑 `pip install -r requirements.txt`——一句
-        "开发期请 pip install -e ../artesian" 的注释对它们是无效的：装完就
-        ImportError。所以只接受两种形态：
-        ① 可复现的直接引用 `name @ git+https://…@<40 位 sha>`（未发布 PyPI 时）；
-        ② PyPI 版本约束 `name>=x` / `name==x`（发布之后）。
-        pin 必须是完整提交号：分支名会让同一份清单在不同时间装出不同的库。
-        """
-        text = (PROJECT / "requirements.txt").read_text(encoding="utf-8")
-        declared = _requirements_names()
-        for name in LOCAL_LIBRARY:
-            pin = re.search(
-                rf"^\s*{re.escape(name)}\s*@\s*git\+https?://[^\s@]+@([0-9a-fA-F]+)\s*$",
-                text, re.M)
-            on_pypi = name.lower().replace("-", "_") in declared
-            if pin:
-                assert len(pin.group(1)) == 40, (
-                    f"{name} 的 git pin 必须是完整 40 位提交号，"
-                    f"收到 {pin.group(1)!r}（分支/标签名会让同一份清单装出不同的库）")
-            else:
-                assert on_pypi, (
-                    f"{name} 在 requirements.txt 里没有可安装的来源：既不是 sha pin 的"
-                    f" git 直接引用，也没有 PyPI 版本约束行——CI/镜像照这份清单装不出它")
 
     def test_vcs_requirements_are_installable_in_the_image(self):
         """requirements 里出现 `git+` 直接引用，镜像构建就必须**先**有 git。
