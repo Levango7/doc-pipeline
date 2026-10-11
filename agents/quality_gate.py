@@ -24,6 +24,7 @@ import yaml
 
 from docpipeline import degradation
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+from pipeline_core.paths import pipelines_dir as _pd
 
 AGENT_NAME = "quality_gate"
 # 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
@@ -69,7 +70,7 @@ PLACEHOLDER_MARKERS = degradation.PLACEHOLDER_MARKERS
 DEFAULT_MAX_PLACEHOLDER_RATIO = 0.34
 
 # 默认配置文件路径
-QUALITY_DIR = Path(__file__).parent.parent / "pipelines" / "quality"
+QUALITY_DIR = _pd() / "quality"
 DEFAULT_PROFILE = "technical-doc.yaml"
 
 # 英文功能词/泛文档词表：这些词即使首字母大写也不是专名，不计入 mandatory

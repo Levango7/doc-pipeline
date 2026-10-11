@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added（2026-10-11·续33，PyPI 发布准备：门禁脚本 + 发布链 + 三个真缺陷）
+
+- **背景**：PyPI 方向获批（本机直连 PyPI 实测通畅，相关名称均空闲）。
+  发布链是一列火车：artesian（独立仓，release.yml 已就绪）→ doc-pipeline
+  → 六个插件。本批把 doc-pipeline 侧的发布准备做完并建门禁，三个真缺陷
+  是门禁逼出来的：
+  1. **wheel 元数据缺 `artesian` 依赖**（Requires-Dist 里没有它——它只在
+     requirements.txt 里按 git sha pin）。未上 PyPI 前不能写版本约束
+     （写了 pip install 直接失败），做成 EXTERNAL 登记表显式认领，
+     上架后一行切换；
+  2. **data-files 子目录静默丢失**：`pipelines/quality/*.yaml` 写在
+     `pipelines` 键的 glob 里时 setuptools 只匹配顶层——装出来的引擎没有
+     quality profile 与 prompt 模板（`--check` 抓不到，quality_gate 现形）。
+     修复：子目录单列成独立的 data-files 键；
+  3. **quality_gate/writer 的资源目录是相对包路径**（`Path(__file__).parent.parent
+     / "pipelines"`），安装态指向 site-packages 的空壳。修复：改走
+     `pipeline_core.paths.pipelines_dir()`（源码树/安装态两形态都能命中）。
+- **发布门禁 `scripts/verify_dist.py`**（自 artesian 同名脚本适配）：卡四件事
+  ——wheel/sdist 数据文件齐全、依赖闭合（源码 import 的第三方包要么在
+  Requires-Dist 要么在 EXTERNAL 登记表）、版本三处一致、干净 venv 安装态
+  真跑（流水线清册非空 + quality profile 可加载）。本机实测：修复前抓红
+  三处，修复后全绿（含 --installed 安装态）。
+- **发布工作流**：`.github/workflows/release.yml` 追加 `pypi-verify` +
+  `pypi-publish` 两个 job（与 artesian 同标准：构建→verify_dist→twine
+  check --strict→干净 venv 真跑→Trusted Publishing/OIDC 上传；只在
+  GitHub Release published 时真上传，dispatch 只干跑）。
+- **插件元数据**：六个 `examples/plugin-*` 补齐 license/readme/classifiers
+  与对宿主 `doc-pipeline>=3.9.1` 的依赖声明；12 个发行物（wheel+sdist ×6）
+  `twine check --strict` 全过。
+- **判据** `tests/test_release_readiness.py` 16 条：依赖闭合（与门禁同实现）、
+  data-files 子目录覆盖与 glob 零命中防护、插件元数据完整性与合法 trove
+  classifier、release.yml 的 PyPI 链存在且 publish 走 OIDC。
+- **README**：新增「发布（PyPI）」节，写明三级发布顺序与各自的一次性配置。
+
+
 ### Changed（2026-10-10·续32，命名清理第一步：banner/CLI 文案去领域味）
 
 - **背景**：product-spec §7.3 迁移动作序列第 7 步的第一小步「banner/CLI

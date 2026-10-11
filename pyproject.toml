@@ -78,12 +78,20 @@ py-modules = ["run"]
 scripts = ["checker_rules.yaml"]
 
 [tool.setuptools.data-files]
-# 装到 <site-packages>/pipelines。解析顺序见 pipeline_core.paths：
+# 装到 <prefix>/pipelines。解析顺序见 pipeline_core.paths：
 # 源码树（仓库根/pipelines）优先，其次安装态这一份，env 可覆盖。
+# 注意：data-files 的目标键就是安装目录，**子目录必须单列**——
+# 把 `pipelines/quality/*.yaml` 写进 `pipelines` 键的 glob 里时
+# setuptools 只匹配顶层、子目录文件静默丢失（2026-10-11 实测：
+# 装出来的引擎没有 quality profile 与 prompt 模板，verify_dist 当场红）。
 pipelines = [
     "pipelines/*.yaml",
     "pipelines/*.lock",
+]
+"pipelines/quality" = [
     "pipelines/quality/*.yaml",
+]
+"pipelines/prompts" = [
     "pipelines/prompts/*.yaml",
 ]
 
