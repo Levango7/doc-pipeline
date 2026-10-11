@@ -95,5 +95,5 @@ class TestCLIOutputChannels:
         assert "流水线执行完成" in proc.stdout or "执行步骤" in proc.stdout, \
             f"默认模式的 stdout 报告不见了：rc={proc.returncode} stderr={proc.stderr[-300:]}"
         # banner 属于"给人看的开场白"，FP-3 之后一律 stderr（stdout 留给交付物通道）
-        assert "Doc-Pipeline" in proc.stderr, "banner 应从 stderr 可见，不许被静默丢弃"
-        assert "Doc-Pipeline" not in proc.stdout
+        assert "Loom v" in proc.stderr, "banner 应从 stderr 可见，不许被静默丢弃"
+        assert "Loom v" not in proc.stdout
