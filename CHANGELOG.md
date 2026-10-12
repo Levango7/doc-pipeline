@@ -35,6 +35,30 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Changed（2026-10-12·续38，§9 两项拍板落地：A=perf-regression 进 required + C=审批闸门机制批）
+
+- **决策 A 执行**（perf-regression 进 required）：分支保护 required 由 5 项扩为
+  **6 项**（`test 3.11–3.14` + `docker` + `perf-regression`，`strict=true`；
+  2026-10-12 API 写入并读回验证）。依据=近 42 次连续绿（PR 18 + main 24）
+  + 波动带机制 + 22 秒级耗时；抖动处置=重跑该 job 或 `workflow_dispatch` 刷
+  基线。spec §5.5/§9.2 落档。
+- **决策 C 执行**（审批闸门机制先行最小闭环）：声明式 `approval` 节点——
+  跑到闸门层前置 PAUSED（复用暂停边界的等待/checkpoint/取消同一路径），
+  `POST /tasks/<id>/approve|reject`（reject=终止含原因，不做分支），
+  审批等待期 `resume` 被拒（直通等于绕过审批），决策落 `audit/approvals.jsonl`
+  （任务/节点/决定/note/时间/审批人标识），`task.approved/rejected` 事件；
+  闸门声明进节点配置指纹（改 message 必须 `loom lock` 重写）；
+  `when` 不成立的闸门按条件跳过。真跑判据见 `tests/test_approval_gate.py`
+  （解析/清册/执行/条件闸门/HTTP+审计五层）。边界（P1 余量）：无分支驳回、
+  无通知、无控制台、无多级审批/超时；审批人=客户端地址+凭证指纹。
+- **附带修复（勘察时挖出的真 bug）**：`checkpoint_manager.save` 落点
+  与 `load/remove` 不同源——save 写 `task.checkpoint_file`（orchestrator 侧
+  字段，受 `config.checkpoint.dir` 覆盖、可为相对路径），load 用 manager
+  自己的目录；表现为"断点保存成功但 resume 读不到"且随 cwd 漂移。
+  修复：save 统一用 manager 目录并在成功后回写 `task.checkpoint_file` 真实
+  路径；判据 `TestCheckpointSaveLoadSameSource`（落点/回写/往返/删除同源）。
+- 另修 ruff UP037（本批新增静态方法的冗余引号，CI lint 早挂根因）。
+
 ### Changed（2026-10-12·续37，CLI 动词收敛 + env 前缀 LOOM_* + MCP/观测标识：§7.3 尾款三件落地）
 
 - **CLI 动词收敛**（spec §5.3 v1 目标）：动词层 `run / plan / lock / pack /
