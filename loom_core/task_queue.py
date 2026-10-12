@@ -140,18 +140,20 @@ class TaskQueue:
             # 幂等加列：并发首建时 check-then-act 会撞 "duplicate column name"，
             # 目标状态已达成，不算故障（同 sqlite_util.add_column_if_missing）。
             add_column_if_missing(conn, "task_queue", "owner_pid", "INTEGER DEFAULT 0")
+            # token 身份（spec §5.4）：任务归属的 Principal.id（""=无身份世界）
+            add_column_if_missing(conn, "task_queue", "principal", "TEXT DEFAULT ''")
 
     def submit(self, task_id: str, pipeline_name: str, input_file: str,
-               config: dict = None) -> bool:
-        """入队新任务。已存在则忽略（幂等）。"""
+               config: dict = None, principal: str = "") -> bool:
+        """入队新任务。已存在则忽略（幂等）。principal = 提交者身份（可空）。"""
         with self._lock, self._get_conn() as conn:
             try:
                 cursor = conn.execute(
                     "INSERT OR IGNORE INTO task_queue "
-                    "(task_id, pipeline_name, input_file, status, config_json, created_at) "
-                    "VALUES (?, ?, ?, 'pending', ?, ?)",
+                    "(task_id, pipeline_name, input_file, status, config_json, created_at, principal) "
+                    "VALUES (?, ?, ?, 'pending', ?, ?, ?)",
                     (task_id, pipeline_name, input_file,
-                     _fast_dumps(config or {}), time.time()),
+                     _fast_dumps(config or {}), time.time(), principal or ""),
                 )
                 # 修复 P0 回归：原用 conn.total_changes > 0 判断是否插入，
                 # 但连接复用（threading.local 缓存）后 total_changes 累积历史变更，
@@ -177,13 +179,13 @@ class TaskQueue:
         with self._lock, self._get_conn() as conn:
             while True:
                 row = conn.execute(
-                    "SELECT task_id, pipeline_name, input_file, config_json "
+                    "SELECT task_id, pipeline_name, input_file, config_json, principal "
                     "FROM task_queue WHERE status = 'pending' "
                     "ORDER BY created_at ASC LIMIT 1"
                 ).fetchone()
                 if not row:
                     return None
-                task_id, pipeline_name, input_file, config_json = row
+                task_id, pipeline_name, input_file, config_json, principal = row
                 now = time.time()
                 cursor = conn.execute(
                     "UPDATE task_queue SET status = 'running', started_at = ?, worker_id = ?, "
@@ -202,6 +204,7 @@ class TaskQueue:
                     "pipeline_name": pipeline_name,
                     "input_file": input_file,
                     "config": _fast_loads(config_json) if config_json else {},
+                    "principal": principal or "",
                 }
 
     def complete(self, task_id: str, result: dict = None, error: str = ""):

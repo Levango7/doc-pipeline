@@ -50,9 +50,9 @@ class FakeOrch:
         self.calls: list[dict] = []
         self._task_id = task_id
 
-    def run_plan(self, plan, input_file=None, task_id=None, wait=True):
+    def run_plan(self, plan, input_file=None, task_id=None, wait=True, owner=""):
         self.calls.append({"plan": plan, "input_file": input_file,
-                           "task_id": task_id, "wait": wait})
+                           "task_id": task_id, "wait": wait, "owner": owner})
         return SimpleNamespace(id=self._task_id)
 
 
@@ -229,6 +229,7 @@ class TestSubmitTriggerRun:
         got = submit_trigger_run(orch, t, datetime(2026, 10, 9, 0, 0))
         assert got == "deadbeefdeadbeef"
         call = orch.calls[0]
+        assert call["owner"] == "trigger:wf", "触发任务的归属必须记 trigger:<名>（多租户可见性）"
         assert call["wait"] is False                       # 定时触发不阻塞调度器
         assert re.fullmatch(r"[0-9a-f]{16}", call["task_id"])
         assert Path(call["input_file"]).read_text(encoding="utf-8") == "# wf\n\n主题\n"

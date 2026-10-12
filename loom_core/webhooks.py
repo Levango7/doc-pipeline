@@ -216,7 +216,8 @@ def handle_inbound(name: str, registry: Mapping[str, Webhook], body: bytes, *,
         if webhook.output:
             plan.raw.setdefault("pipeline", {})["output"] = webhook.output
         task = orch.run_plan(plan, input_file=str(input_file),
-                             task_id=task_id, wait=False)
+                             task_id=task_id, wait=False,
+                             owner=f"webhook:{webhook.name}")
     except Exception as e:
         return _finish(500, {"error": f"pipeline submit failed: {e}"},
                        {"outcome": "error", "reason": "submit_failed", "scheme": scheme})

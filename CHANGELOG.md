@@ -35,6 +35,28 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Changed（2026-10-12·续42，P1-A：token 身份与多租户作用域隔离）
+
+- **`tokens.yaml` 多凭证 → Principal**（新模块 `loom_core/tokens.py`）：密钥只经
+  `token_env`（环境变量）或 `token_sha256` 注入，文件不落明文；`admin: true` 为
+  跨租户运维位。**`ADMIN_API_KEY` 继续有效并解析为 admin**（旧部署零改动）；
+  未放置 tokens.yaml 时行为与既往完全一致（本机信任/单 key，139 条既有鉴权
+  回归全绿）。**启用身份后回环访问同样要求凭证**；结构性配置错误拒绝启动；
+  缺环境变量的条目不可用且启动告警（空密钥静默放行是致命洞，不做）。
+- **任务作用域**：`PipelineTask.owner` 贯穿执行链（CLI 空串 / API=Principal.id /
+  cron=`trigger:<名>` / webhook=`webhook:<名>` / MCP=`mcp`）；task_queue 加
+  `principal` 列（幂等迁移），worker 回执带回；断点往返不丢归属。非 admin 的
+  list/get/cancel/pause/resume/approve/reject/rerun 全部受作用域约束，
+  **越权与"不存在"同形（404）**——不泄露存在性。
+- **成本作用域**：`GET /api/cost` 非 admin 只统计自己名下任务（`summary(task_ids=...)`，
+  `scope: principal` 标记）；admin 全量语义不变。
+- **判据** `tests/test_identity_tokens.py` 28 条：TokenStore 单元（双源/坏 hex/重复
+  id/缺密钥不可用）、鉴权矩阵（真 HTTP：回环要凭证/老 key 兼容/非法配置拒启/旧世界
+  回归）、**spec §5.4 验收原文——两个 token 互不可见对方任务（真 HTTP，非 mock）**
+  + 六类越权操作 404 且不触达后端、owner 透传链（run_plan/断点/队列/worker）、
+  成本作用域。附带修一处配置静默：`token_sha256: 0…0` 被 YAML 解析为 int 0，
+  `or ""` 会吞成"未提供"——取值改为 None 判定，配置错误必须报出来。
+
 ### Changed（2026-10-12·续41，生态轴 0→1：首个真第三方插件例证）
 
 - **`Levango7/loom-plugin-sqlite`**（外部仓、外部发行）：只读 SQLite 取数 Agent

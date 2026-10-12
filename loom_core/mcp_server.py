@@ -360,7 +360,7 @@ class MCPServer:
 
         try:
             task = self.orch.run_plan(plan, input_file=str(input_file),
-                                      task_id=task_id, wait=wait)
+                                      task_id=task_id, wait=wait, owner="mcp")
         except Exception as e:
             self._cleanup_temp_input(input_file)
             return self._tool_error(req_id, f"Pipeline failed: {e}")

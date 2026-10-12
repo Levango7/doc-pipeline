@@ -629,6 +629,33 @@ python run.py input.md --admin
 常规请用 Authorization 头，避免凭证落入访问日志）。
 未配置时禁用鉴权（仅本机访问）。`/health` 与静态资源始终免鉴权。
 
+#### Token 身份与多租户（`tokens.yaml`，spec §5.4）
+
+在单密钥（等价 admin）之上，用 `tokens.yaml`（模板 `tokens.example.yaml`；路径可被
+`LOOM_TOKENS_FILE` 覆盖）把凭证升级为**身份**——每个 token 解析出一个 Principal，
+**任务与成本按 Principal 隔离**：
+
+```yaml
+tokens:
+  - id: alice
+    tenant: acme
+    token_env: LOOM_TOKEN_ALICE     # 密钥经环境变量注入，文件只放 id/租户
+  - id: ops
+    admin: true                     # 跨租户全可见的运维位
+    token_env: LOOM_TOKEN_OPS
+```
+
+行为要点：
+
+- **启用后回环访问同样要求凭证**（启用身份却对回环免检等于没启用）；未放置
+  `tokens.yaml` 时行为与既往完全一致（`ADMIN_API_KEY` 单 key 或本机信任模式）；
+- `ADMIN_API_KEY` 继续有效（解析为 admin）——旧部署零改动；
+- 非 admin 只见自己名下的任务；**越权访问与"不存在"同形（404）**，不泄露存在性；
+  cancel / pause / resume / approve / reject / rerun 一律受作用域约束；
+- `GET /api/cost` 非 admin 只统计自己任务的成本（`scope: principal`）；
+- 缺环境变量的 token 条目**不可用且启动告警**（该凭证一律 401，不会静默放行）；
+- 触发类任务（cron / webhook / MCP）分别记 `trigger:<名>` / `webhook:<名>` / `mcp` 归属。
+
 ### MCP Server
 
 通过 `--mcp` 启动 JSON-RPC 2.0 over stdio，供外部 Agent（如 Claude Desktop）调度：
@@ -850,7 +877,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2677 个测试本机全绿**（`2677 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
+**2708 个测试本机全绿**（`2708 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -891,6 +918,7 @@ checkpoint save/load 同源 3 条）；
 命名收官那批净加 8 条判据（loom_doc shim identity/warn-once/反向守卫 +
 entry_points group 双读）；
 命名收官·第二段净加 2 条判据（loom_core shim：MAOP 探径契约 + identity/version/枚举同一）；
+P1-A token 身份批净加 28 条判据（真 HTTP 双 token 互不可见 + 六类越权 404 + 鉴权矩阵 + owner 透传链 + 成本作用域）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有
