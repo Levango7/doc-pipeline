@@ -84,7 +84,7 @@ class TestCLIArgumentParsing:
         """--check 模式不需要 input"""
         from run import main
         with patch("sys.argv", ["run.py", "--check"]), \
-                patch("pipeline_core.bootstrap.run_startup_check") as mock_check:
+                patch("loom_core.bootstrap.run_startup_check") as mock_check:
             mock_report = MagicMock()
             mock_report.has_errors = False
             mock_report.summary.return_value = "OK"
@@ -234,7 +234,7 @@ class TestOutputJsonResult:
 
     def test_done_status_exit_code_0(self):
         """DONE 状态 exit_code=0"""
-        from pipeline_core import TaskStatus
+        from loom_core import TaskStatus
         from run import output_json_result
         task = MagicMock()
         task.status = TaskStatus.DONE
@@ -249,7 +249,7 @@ class TestOutputJsonResult:
 
     def test_failed_status_exit_code_1(self):
         """FAILED 状态 exit_code=1"""
-        from pipeline_core import TaskStatus
+        from loom_core import TaskStatus
         from run import output_json_result
         task = MagicMock()
         task.status = TaskStatus.FAILED

@@ -47,7 +47,7 @@
 
 ## ✅ 验证结果
 
-- **语法编译**：`python -m py_compile pipeline_core/admin_api.py pipeline_core/dag_executor.py` → `COMPILE_OK`。
+- **语法编译**：`python -m py_compile loom_core/admin_api.py loom_core/dag_executor.py` → `COMPILE_OK`。
 - **单元/集成测试**：`pytest -q` → **169 passed, 1 failed**。
   - 失败用例：`tests/test_pipeline_async.py::TestRunPlanAsync::test_run_plan_async_with_empty_plan` —— 报错 `async def functions are not natively supported`，缺 `pytest-asyncio` 插件。环境与评审基线一致，**非本次修改导致**。
   - SSE 流式用例 `tests/test_streaming_sse.py`（22 例）全部通过，证明 `/stream` 鉴权豁免有效。
@@ -75,7 +75,7 @@
 
 ## 📚 数据来源 & 成员产出索引
 
-- Cody（代码审查师）原始产出：4 处补丁已写入 `pipeline_core/admin_api.py`、`pipeline_core/dag_executor.py`、`.dockerignore`（worker 末期框架异常，未返回汇总文本，由主理人核验文件确认）。
+- Cody（代码审查师）原始产出：4 处补丁已写入 `loom_core/admin_api.py`、`loom_core/dag_executor.py`、`.dockerignore`（worker 末期框架异常，未返回汇总文本，由主理人核验文件确认）。
 - 主理人甄宇航复核产出：`py_compile` + `pytest` 验证结果、本报告汇编。
 - 基线参考：`deliverables/engineering-assurance/comprehensive-review-doc-pipeline-2026-07-22.md`（4 项 🔴 来源）。
 

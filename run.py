@@ -58,8 +58,8 @@ def _load_dotenv():
 
 _load_dotenv()
 
-from pipeline_core import PipelineOrchestrator, TaskStatus, __version__  # noqa: E402
-from pipeline_core.ids import new_task_id  # noqa: E402
+from loom_core import PipelineOrchestrator, TaskStatus, __version__  # noqa: E402
+from loom_core.ids import new_task_id  # noqa: E402
 
 #: `--json-output` 期间的真实机器读通道。默认 None 表示"用当下的 sys.stdout"——
 #: 不能直接在导入期绑死 `sys.stdout`，否则测试里 capsys 之类替换后就读不到输出。
@@ -157,18 +157,18 @@ _PIPELINE_NAMES_CACHE: list[str] | None = None
 
 
 def _pipelines_dir() -> Path:
-    """流水线 YAML 根目录（经 pipeline_core.paths 收口）。
+    """流水线 YAML 根目录（经 loom_core.paths 收口）。
 
     模块级函数而非 import 期常量：安装态（wheel data-files）与开发态
     解析结果不同，且测试可通过 patch 它替换目录。"""
-    from pipeline_core.paths import pipelines_dir as _dir
+    from loom_core.paths import pipelines_dir as _dir
 
     return Path(_dir())
 
 
 def _pack_pipeline_dirs() -> list[Path]:
     """物理 pack 的流水线目录（可 patch 缝隙；默认 pack 清单发现）。"""
-    from pipeline_core.pack_manifest import physical_packs
+    from loom_core.pack_manifest import physical_packs
 
     return [p.pipelines_dir for p in physical_packs()
             if p.pipelines_dir and p.pipelines_dir.is_dir()]
@@ -231,7 +231,7 @@ def _resolve_pipeline_files(pipeline: str, pipeline_file: str | None,
 def _resolve_pipeline_plan(args_args: argparse.Namespace, orch: PipelineOrchestrator,
                            config: dict) -> tuple[Any, bool]:
     """尝试从 YAML 文件解析 pipeline plan；失败时返回 (None, False) 表示应走 legacy 路径"""
-    from pipeline_core.scheduler import LockfileMismatchError, Scheduler
+    from loom_core.scheduler import LockfileMismatchError, Scheduler
     sched = Scheduler()
     pipeline_files = _resolve_pipeline_files(
         args_args.pipeline, args_args.pipeline_file, _pipelines_dir())
@@ -309,7 +309,7 @@ def _poll_task_progress(orch: PipelineOrchestrator, args_args: argparse.Namespac
     """
     import time as time_module
     try:
-        from pipeline_core import TaskStatus
+        from loom_core import TaskStatus
         while task.status in (TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.PAUSED):
             time_module.sleep(1)
             print(f"[run] 进度: {task.progress}%  状态: {task.status.value}")
@@ -333,7 +333,7 @@ def _result_for(task, agent: str) -> dict:
     ——质量分不达标的警告就此消失，用户只看到"执行完成"。
     同名出现多次时不猜：返回空，宁可缺警告也不报另一个实例的分数。
     """
-    from pipeline_core.naming import agent_of
+    from loom_core.naming import agent_of
 
     results = getattr(task, "result", None) or {}
     if isinstance(results.get(agent), dict):
@@ -447,7 +447,7 @@ def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
     # 预览模式
     if args_args.plan:
         if plan:
-            from pipeline_core.scheduler import Scheduler
+            from loom_core.scheduler import Scheduler
             sched = Scheduler()
             print(sched.visualize(plan))
         else:
@@ -656,9 +656,9 @@ def main():
         globals()["_RESULT_OUT"] = sys.stdout
         sys.stdout = sys.stderr
 
-    # worker 模式自带参数解析，直接交给 pipeline_core.worker，不与流水线参数纠缠
+    # worker 模式自带参数解析，直接交给 loom_core.worker，不与流水线参数纠缠
     if args.worker:
-        from pipeline_core.worker import main as worker_main
+        from loom_core.worker import main as worker_main
 
         raise SystemExit(worker_main([
             *([f"--worker-id={args.worker_id}"] if args.worker_id else []),
@@ -680,14 +680,14 @@ def main():
 
     # ─── 启动自检 ──────────────────────────────
     if args.check:
-        from pipeline_core.bootstrap import run_startup_check
+        from loom_core.bootstrap import run_startup_check
         report = run_startup_check(run_health_check=args.health_check)
         print(report.summary())
         sys.exit(1 if report.has_errors else 0)
 
     # ─── pack list（loom pack list）──────────────
     if verb_action == "pack_list":
-        from pipeline_core import pack_manifest as pack_mf
+        from loom_core import pack_manifest as pack_mf
         infos = pack_mf.discover()
         print(f"[pack] {len(infos)} packs")
         for info in infos:
@@ -700,7 +700,7 @@ def main():
 
     # ─── MCP server 模式 ──────────────────────
     if args.mcp:
-        from pipeline_core.mcp_server import run_mcp_server
+        from loom_core.mcp_server import run_mcp_server
         run_mcp_server()
         return
 
@@ -708,7 +708,7 @@ def main():
     if args.triggers or args.triggers_dry_run:
         from datetime import datetime as _dt
 
-        from pipeline_core.triggers import TriggerConfigError, describe_triggers, load_triggers, run_trigger_loop
+        from loom_core.triggers import TriggerConfigError, describe_triggers, load_triggers, run_trigger_loop
         cfg_path = Path(args.triggers_file) if args.triggers_file \
             else Path(__file__).parent / "triggers.yaml"
         try:
@@ -739,7 +739,7 @@ def main():
             print("[recover] 没有需要恢复的中断任务")
             sys.exit(0)
         print(f"[recover] 发现 {len(recovered)} 个中断任务，开始恢复...")
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
         sched = Scheduler()
         for t in recovered:
             print(f"  → 恢复任务 {t['task_id']} (pipeline={t['pipeline_name']}, input={t['input_file']})")
@@ -763,7 +763,7 @@ def main():
 
     # 快速自检（非阻塞，仅警告）
     try:
-        from pipeline_core.bootstrap import quick_check
+        from loom_core.bootstrap import quick_check
         if not quick_check():
             print("[run] 启动自检发现错误，使用 --check 查看详情")
     except Exception:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core.pipeline import PipelineOrchestrator, _redact_config
+from loom_core.pipeline import PipelineOrchestrator, _redact_config
 
 
 class TestRedactConfig:

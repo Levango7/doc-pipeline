@@ -134,7 +134,7 @@ class TestHandle:
     def test_llm_failure_falls_back_to_matching(self, agent):
         """LLM 判定抛异常时必须回退到字符串匹配而非崩溃"""
         content = "该方案将成本降低了57%。"
-        with patch("pipeline_core.llm_router.get_router") as mock_gr:
+        with patch("loom_core.llm_router.get_router") as mock_gr:
             mock_router = MagicMock()
             mock_router.get_active_providers.return_value = [MagicMock()]
             mock_router.chat.side_effect = RuntimeError("LLM down")

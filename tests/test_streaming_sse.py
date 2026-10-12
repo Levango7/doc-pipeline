@@ -2,7 +2,7 @@
 import threading
 import time
 
-from pipeline_core.streaming import (
+from loom_core.streaming import (
     StreamCallback,
     StreamEvent,
     StreamMetrics,

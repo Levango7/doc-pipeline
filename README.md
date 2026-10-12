@@ -210,33 +210,33 @@ python run.py test_input.md --dashboard
 
 | 模块 | 职责 |
 |------|------|
-| `pipeline_core/scheduler.py` | 读取 pipeline YAML → ExecutionPlan（含 Schema 校验、Lockfile） |
-| `pipeline_core/pipeline.py` | Orchestrator：DAG 执行、断点续传、rerun、统一节点模型 |
-| `pipeline_core/dag_executor.py` | DAG 构建、节点调度、熔断/限流/重做循环 |
-| `pipeline_core/message_bus_v3.py` | SQLite 持久化消息总线（WAL + 批量投递 + 背压） |
-| `pipeline_core/circuit_breaker.py` | 熔断器（CLOSED/OPEN/HALF_OPEN） |
-| `pipeline_core/rate_limiter.py` | 令牌桶限流器 |
-| `pipeline_core/registry.py` | Agent 注册表（健康检查 + 热插拔） |
-| `pipeline_core/observability.py` | 结构化日志（异步批量写入）+ Prometheus Metrics |
-| `pipeline_core/admin_api.py` | REST API（多线程，健康/指标/任务/成本/告警/日志/配置管理） |
-| `pipeline_core/version_manager.py` | 文档版本管理（自动版本号/diff/回滚） |
-| `pipeline_core/cache_manager.py` | 统一缓存（memory/file/multi 三级） |
-| `pipeline_core/llm_router.py` | 多供应商 LLM 路由器（16 供应商定义，按 .env 启用） |
-| `pipeline_core/cost_tracker.py` | LLM 成本追踪（16 供应商定价表 + 预算熔断） |
-| `pipeline_core/alert_manager.py` | 告警机制（熔断/DLQ/限流/预算超限通知） |
-| `pipeline_core/quality_feedback.py` | 质量评分历史 + 弱项模式分析 + 写作建议 |
-| `pipeline_core/task_queue.py` | SQLite 持久化任务队列（原子 claim、租约回收、终态只写一次） |
-| `pipeline_core/worker.py` | 常驻 worker：消费队列里的 pending 任务（`--worker`），多 worker 互斥、崩溃租约回收 |
-| `pipeline_core/mcp_server.py` | MCP Server（JSON-RPC 2.0 over stdio，5 tools） |
-| `pipeline_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
-| `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
+| `loom_core/scheduler.py` | 读取 pipeline YAML → ExecutionPlan（含 Schema 校验、Lockfile） |
+| `loom_core/pipeline.py` | Orchestrator：DAG 执行、断点续传、rerun、统一节点模型 |
+| `loom_core/dag_executor.py` | DAG 构建、节点调度、熔断/限流/重做循环 |
+| `loom_core/message_bus_v3.py` | SQLite 持久化消息总线（WAL + 批量投递 + 背压） |
+| `loom_core/circuit_breaker.py` | 熔断器（CLOSED/OPEN/HALF_OPEN） |
+| `loom_core/rate_limiter.py` | 令牌桶限流器 |
+| `loom_core/registry.py` | Agent 注册表（健康检查 + 热插拔） |
+| `loom_core/observability.py` | 结构化日志（异步批量写入）+ Prometheus Metrics |
+| `loom_core/admin_api.py` | REST API（多线程，健康/指标/任务/成本/告警/日志/配置管理） |
+| `loom_core/version_manager.py` | 文档版本管理（自动版本号/diff/回滚） |
+| `loom_core/cache_manager.py` | 统一缓存（memory/file/multi 三级） |
+| `loom_core/llm_router.py` | 多供应商 LLM 路由器（16 供应商定义，按 .env 启用） |
+| `loom_core/cost_tracker.py` | LLM 成本追踪（16 供应商定价表 + 预算熔断） |
+| `loom_core/alert_manager.py` | 告警机制（熔断/DLQ/限流/预算超限通知） |
+| `loom_core/quality_feedback.py` | 质量评分历史 + 弱项模式分析 + 写作建议 |
+| `loom_core/task_queue.py` | SQLite 持久化任务队列（原子 claim、租约回收、终态只写一次） |
+| `loom_core/worker.py` | 常驻 worker：消费队列里的 pending 任务（`--worker`），多 worker 互斥、崩溃租约回收 |
+| `loom_core/mcp_server.py` | MCP Server（JSON-RPC 2.0 over stdio，5 tools） |
+| `loom_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
+| `loom_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
 | `loom_doc/renderer.py` | 渲染层：Markdown → docx（OOXML）/ pdf（ReportLab），双后端可选依赖 |
-| `artesian`（独立库，自本仓 `pipeline_core/` 迁出） | `fast_json`（orjson 优先、stdlib 回退）+ HTML 解析内核兼容层（modest/lexbor 按可用性选，降级显式记录）+ 嵌入层（hash 内置 / local 模型 / API，auto 自动回落）+ 知识库（切块 → 向量化 → SQLite 持久化 → 向量检索）+ 统一搜索引擎接口（10 引擎 + mock 测试桩 + 自带 LRU+TTL 缓存）+ URL 安全校验（SSRF：仅 http/https、拒私网/保留/链路本地、逐跳重定向复验、DNS 结果 TTL 缓存） |
-| `pipeline_core/state_paths.py` | 运行态路径解析（`LOOM_STATE_DIR` / `LOOM_VERSIONS_DIR`），测试与真实运行不再共用一份幂等键历史 |
+| `artesian`（独立库，自本仓 `loom_core/` 迁出） | `fast_json`（orjson 优先、stdlib 回退）+ HTML 解析内核兼容层（modest/lexbor 按可用性选，降级显式记录）+ 嵌入层（hash 内置 / local 模型 / API，auto 自动回落）+ 知识库（切块 → 向量化 → SQLite 持久化 → 向量检索）+ 统一搜索引擎接口（10 引擎 + mock 测试桩 + 自带 LRU+TTL 缓存）+ URL 安全校验（SSRF：仅 http/https、拒私网/保留/链路本地、逐跳重定向复验、DNS 结果 TTL 缓存） |
+| `loom_core/state_paths.py` | 运行态路径解析（`LOOM_STATE_DIR` / `LOOM_VERSIONS_DIR`），测试与真实运行不再共用一份幂等键历史 |
 | `loom_doc/ingest.py` | 摄入层：PDF/图片/文本 → 结构化 Markdown（PDF 按字号推断标题层级） |
 | `loom_doc/document_enhancer.py` | 文档增强：对已有 Markdown 逐章节 LLM 深化 + ASCII 图修复 + 导出 |
 | `agents/` | 14 个核心 Agent 实现（researcher/fetcher/safe_writer/requirements_analyzer/renderer/ingest/knowledge_base/http_request/transform + keyword_extract/readability/link_check/fact_coverage/tldr） |
-| `packs/docgen/` | 物理 pack（spec §5.2）：5 个文档件（writer/quality_gate/checker/layout/fact_checker）+ docgen 系 6 条流水线 + 2 个质量档案 + 2 个 prompt 模板，`pack.yaml` 为清册；引擎经 `pipeline_core.pack_manifest` 多目录发现，删掉本目录引擎照常工作 |
+| `packs/docgen/` | 物理 pack（spec §5.2）：5 个文档件（writer/quality_gate/checker/layout/fact_checker）+ docgen 系 6 条流水线 + 2 个质量档案 + 2 个 prompt 模板，`pack.yaml` 为清册；引擎经 `loom_core.pack_manifest` 多目录发现，删掉本目录引擎照常工作 |
 
 ---
 
@@ -302,7 +302,7 @@ agents:
         - {path: artifacts.results, op: truthy}
 ```
 
-求值上下文（`pipeline_core/conditions.py`，纯声明、不 eval）：
+求值上下文（`loom_core/conditions.py`，纯声明、不 eval）：
 
 | 前缀 | 内容 | 例子 |
 |------|------|------|
@@ -848,7 +848,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2675 个测试本机全绿**（`2675 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
+**2677 个测试本机全绿**（`2677 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -888,6 +888,7 @@ env 双读与 MCP/观测标识 15，另改写 7 条对应旧 flag 的存量用�
 checkpoint save/load 同源 3 条）；
 命名收官那批净加 8 条判据（loom_doc shim identity/warn-once/反向守卫 +
 entry_points group 双读）；
+命名收官·第二段净加 2 条判据（loom_core shim：MAOP 探径契约 + identity/version/枚举同一）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有
@@ -973,7 +974,7 @@ nexusloom/
 │       ├── pipelines/   #   docgen 系 6 条 + _quality-tail（均带 .lock 同目录）
 │       ├── quality/     #   质量档案：technical-doc / tutorial
 │       └── prompts/     #   prompt 模板：default / generic-tech
-├── pipeline_core/       # 引擎层：领域无关的编排框架（不 import 文档层）
+├── loom_core/       # 引擎层：领域无关的编排框架（不 import 文档层）
 │   ├── pipeline.py      # Orchestrator（统一节点模型）
 │   ├── dag_executor.py  # DAG 构建 + 节点调度
 │   ├── scheduler.py     # YAML → ExecutionPlan + Schema + Lockfile
@@ -997,7 +998,7 @@ nexusloom/
 │   ├── agent_loader.py  # Agent 安全加载（沙箱）
 │   ├── streaming.py     # SSE 流式输出
 │   └── ...              # 更多模块
-├── loom_doc/         # 文档领域层（只依赖 pipeline_core，方向单向）
+├── loom_doc/         # 文档领域层（只依赖 loom_core，方向单向）
 │   ├── renderer.py      # Markdown → docx / pdf
 │   ├── ingest.py        # PDF / 图片 / 文本 → 结构化 Markdown
 │   └── document_enhancer.py # 已有文档逐章节 LLM 增强

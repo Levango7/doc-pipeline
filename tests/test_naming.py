@@ -7,7 +7,7 @@
 """
 import pytest
 
-from pipeline_core.naming import ALIAS_SEP, POOL_SEP, agent_of, alias_of, family_of, node_id, pool_index_of
+from loom_core.naming import ALIAS_SEP, POOL_SEP, agent_of, alias_of, family_of, node_id, pool_index_of
 
 
 class TestAgentOf:

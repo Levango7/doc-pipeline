@@ -1,7 +1,7 @@
 """tests/test_message_store.py — PersistentStore SQLite CRUD + WAL + 并发。"""
 import threading
 
-from pipeline_core.message_store import Message, MessageMetrics, PersistentStore
+from loom_core.message_store import Message, MessageMetrics, PersistentStore
 
 
 def _make_msg(msg_id="m1", topic="test.topic"):

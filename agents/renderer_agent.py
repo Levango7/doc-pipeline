@@ -14,8 +14,8 @@
 from pathlib import Path
 from typing import Any
 
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 from loom_doc import renderer
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "renderer"
 # 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
@@ -27,7 +27,7 @@ AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 80
 INPUT_TOPICS = ["renderer.render", "renderer.input", "layout.done", "checker.done"]
 OUTPUT_TOPICS = ["renderer.done", "renderer.failed"]
-# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：产出文件在磁盘，结果仅供观测
+# 产物契约（引擎按此声明组装下游载荷，见 loom_core/artifacts.py）：产出文件在磁盘，结果仅供观测
 PRODUCES: dict = {}
 CONSUMES = ["content"]
 DEPENDENCIES = ["layout"]

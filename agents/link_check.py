@@ -10,7 +10,7 @@ make the plugin network-bound and non-reproducible.
 """
 import re
 
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 
 SANDBOX_TRUSTED = True
 AGENT_NAME = "link_check"

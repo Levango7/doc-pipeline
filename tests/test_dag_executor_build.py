@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pipeline_core.dag_executor import DAGExecutor
+from loom_core.dag_executor import DAGExecutor
 
 
 def _make_executor():

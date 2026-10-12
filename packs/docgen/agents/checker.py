@@ -10,7 +10,7 @@ Checker Agent - 结构检查插件（改进版）
 import os
 from pathlib import Path
 
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "checker"
 # 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
@@ -18,7 +18,7 @@ AGENT_NAME = "checker"
 SANDBOX_TRUSTED = True
 
 # 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
-# （类型名表见 pipeline_core/config_schema.py）
+# （类型名表见 loom_core/config_schema.py）
 CONFIG_SCHEMA = {
     "fail_fast": ('bool', False),
     "block_on_p1": ('bool', False),
@@ -29,7 +29,7 @@ AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 50
 INPUT_TOPICS = ["writer.done", "checker.check", "checker.input"]
 OUTPUT_TOPICS = ["checker.done", "checker.failed"]
-# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：只做结构检查，产出问题清单
+# 产物契约（引擎按此声明组装下游载荷，见 loom_core/artifacts.py）：只做结构检查，产出问题清单
 PRODUCES: dict = {}
 CONSUMES = ["content"]
 DEPENDENCIES = ["quality_gate"]

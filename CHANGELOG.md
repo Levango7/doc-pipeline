@@ -35,6 +35,29 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Changed（2026-10-12·续40，命名收官·第二段：import 根包 pipeline_core → loom_core）
+
+- **`pipeline_core` → `loom_core`**（spec §7.1 命名系统最后一行落地）：git mv
+  保历史全迁（引擎 46 模块）；仓内 191 文件机械迁移（src/tests/scripts/spike/
+  pyproject/CI/docs 一次到位）。旧名保留为**兼容 shim**——meta-path 别名把
+  `pipeline_core.X` 映射到 `loom_core.X` 的**同一模块对象**（identity 保真：
+  枚举比较 / isinstance / patch / 事件钩子全部照常），首导旧根名记一次
+  DeprecationWarning；**`pipeline_core/__init__.py` 文件保留是刻意的**——MAOP
+  的 `_resolve_doc_pipeline_root()` 用它判项目根、其两条运行时 import 经 shim
+  命中同一模块对象，**它侧零改动**（"需与 MAOP lockstep"的条件以零改动方案
+  满足）。
+- **全链更新**：pyproject（packages 双 shim 化 + coverage 口径）、CI 三检
+  （py_compile/mypy/bandit 覆盖 loom_core + 两个 shim）、verify_dist（PACKAGES
+  加 shim；**安装态新增断言：`import pipeline_core is loom_core`**——发布门禁
+  亲自验证兼容承诺；它刻意 import 旧名，由反向守卫豁免并注明）。
+- **判据**：`tests/test_naming_compat.py` 新增 `TestPipelineCoreShim` 2 条
+  （MAOP 探径契约 / identity+version+枚举同一 + warn-once，子进程实证）；
+  反向守卫扩展到双旧名（docpipeline + pipeline_core）。全量 **2677 passed / 0 failed**
+  （一次全绿）。
+- 命名系统（§7.1）至此**全部落地**：产品名/仓名/发行名/CLI/env/MCP/观测/
+  import 根包/领域包/插件 group；仅剩"API 原语 RunHandle"一行是功能设计项、
+  不属改名。
+
 ### Changed（2026-10-12·续39，命名收官·第一段：领域包 loom_doc + 插件 group loom.*）
 
 - **`docpipeline` → `loom_doc`**（spec §7.1 命名系统收尾第一段）：git mv 保历史

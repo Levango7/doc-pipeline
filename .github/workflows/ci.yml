@@ -49,22 +49,22 @@ jobs:
 
       - name: Syntax check (all modules)
         run: |
-          python -m py_compile pipeline_core/*.py loom_doc/*.py docpipeline/*.py agents/*.py packs/docgen/agents/*.py run.py
+          python -m py_compile loom_core/*.py loom_doc/*.py docpipeline/*.py pipeline_core/*.py agents/*.py packs/docgen/agents/*.py run.py
           echo "SYNTAX OK"
 
       - name: Type check (mypy)
         run: |
-          mypy pipeline_core/ loom_doc/ docpipeline/ agents/ packs/ --ignore-missing-imports
+          mypy loom_core/ loom_doc/ docpipeline/ pipeline_core/ agents/ packs/ --ignore-missing-imports
 
       - name: Run tests with coverage
         run: |
-          # bare --cov 采用 pyproject [tool.coverage.run] 的源码口径（pipeline_core/loom_doc/agents/run.py，
+          # bare --cov 采用 pyproject [tool.coverage.run] 的源码口径（loom_core/loom_doc/agents/run.py，
           # 不含 tests/），并由 [tool.coverage.report] fail_under=83 门禁：覆盖率跌破阈值即红。
           python -m pytest tests/ -v --tb=short --cov --cov-report=term-missing --cov-report=html
 
       - name: Security scan (bandit)
         run: |
-          bandit -c pyproject.toml -ll -r pipeline_core loom_doc docpipeline agents packs -f json -o bandit-report.json
+          bandit -c pyproject.toml -ll -r loom_core loom_doc docpipeline pipeline_core agents packs -f json -o bandit-report.json
 
       - name: Dependency audit (pip-audit)
         run: |

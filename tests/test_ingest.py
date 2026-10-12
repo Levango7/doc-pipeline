@@ -403,7 +403,7 @@ class TestRowsToMarkdown:
 
 def _make_agent(tmp_path, config=None):
     from agents.ingest_agent import IngestAgent
-    from pipeline_core.registry import AgentMeta
+    from loom_core.registry import AgentMeta
 
     class _Bus:
         def subscribe(self, topic, handler=None):
@@ -422,7 +422,7 @@ def _make_agent(tmp_path, config=None):
 
 
 def _msg(**payload):
-    from pipeline_core.base_agent import Message
+    from loom_core.base_agent import Message
     payload.setdefault("task_id", "t1")
     return Message(topic="ingest.input", from_agent="test", payload=payload)
 
@@ -530,6 +530,6 @@ class TestIngestAgent:
     def test_ingest_agent_is_trusted(self):
         from pathlib import Path
 
-        from pipeline_core.agent_loader import declares_sandbox_trust
+        from loom_core.agent_loader import declares_sandbox_trust
         p = Path(__file__).parent.parent / "agents" / "ingest_agent.py"
         assert declares_sandbox_trust(p)

@@ -7,7 +7,7 @@
 - `GET /api/config/audit` 读回最近记录（新→旧），坏行跳过不炸整份读取。
 
 另有一条跨模块一致性判据：webhooks 与 config 两个通道共用
-`pipeline_core.audit` 的同一份实现（不做第二份写盘代码）。
+`loom_core.audit` 的同一份实现（不做第二份写盘代码）。
 """
 import json
 from pathlib import Path
@@ -15,8 +15,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pipeline_core import audit as audit_mod
-from pipeline_core.admin_api import AdminHandler
+from loom_core import audit as audit_mod
+from loom_core.admin_api import AdminHandler
 
 
 @pytest.fixture
@@ -127,7 +127,7 @@ class TestAuditChannelShared:
     """webhooks 与 config 共用同一实现——不做第二份写盘代码会漂移。"""
 
     def test_webhooks_delegates_to_shared_module(self, state_dir):
-        from pipeline_core import webhooks as wh
+        from loom_core import webhooks as wh
 
         assert wh._audit_path() == audit_mod.audit_path("webhooks")
         assert wh.write_audit({"event": "x"}) is None

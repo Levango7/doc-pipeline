@@ -1,7 +1,7 @@
 """Cron 表达式解析与下次触发计算（5 字段，本地时间）。
 
 为什么自研而不是装 APScheduler / croniter：本仓的引擎层坚持零新依赖
-（`pipeline_core` 只依赖 artesian 与标准库），而定时触发需要的只是
+（`loom_core` 只依赖 artesian 与标准库），而定时触发需要的只是
 "解析 + 算下一次"，这两个纯函数百来行能写透，且可以拿判据钉死语义。
 
 语义按 POSIX cron 的常见子集实现：

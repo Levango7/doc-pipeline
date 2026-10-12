@@ -19,8 +19,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core.dag_executor import DAGExecutor  # noqa: E402
-from pipeline_core.registry import AgentMeta  # noqa: E402
+from loom_core.dag_executor import DAGExecutor  # noqa: E402
+from loom_core.registry import AgentMeta  # noqa: E402
 
 
 def _ex(metas: dict[str, AgentMeta]) -> DAGExecutor:
@@ -92,8 +92,8 @@ class TestPoolQuerySharding:
 
         这条是上面四条的"接线"证明：模块里写了 True 但加载器没取，效果等于没写。
         """
-        from pipeline_core.agent_loader import AgentLoader
-        from pipeline_core.registry import Registry
+        from loom_core.agent_loader import AgentLoader
+        from loom_core.registry import Registry
 
         reg = Registry()
         loader = AgentLoader(reg, MagicMock(),

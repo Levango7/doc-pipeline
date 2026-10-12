@@ -19,8 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
-from pipeline_core.cache_manager import CacheManager
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.cache_manager import CacheManager
 
 AGENT_NAME = "researcher"
 # 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
@@ -28,7 +28,7 @@ AGENT_NAME = "researcher"
 SANDBOX_TRUSTED = True
 
 # 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
-# （类型名表见 pipeline_core/config_schema.py）
+# （类型名表见 loom_core/config_schema.py）
 CONFIG_SCHEMA = {
     "search_engines": ("list", ["bing"]),
     "max_results": ('int', 10),
@@ -43,7 +43,7 @@ AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 10
 INPUT_TOPICS = ["researcher.input", "researcher.search"]
 OUTPUT_TOPICS = ["researcher.done", "researcher.progress", "researcher.partial"]
-# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：检索结果列表；查询词由引擎从输入文件解析，不属于产物
+# 产物契约（引擎按此声明组装下游载荷，见 loom_core/artifacts.py）：检索结果列表；查询词由引擎从输入文件解析，不属于产物
 PRODUCES = {"results": "list"}
 CONSUMES: list = []
 DEPENDENCIES = []  # type: ignore[var-annotated]
@@ -133,7 +133,7 @@ class ResearcherAgent(BaseAgent):
             research_cfg = config["researcher"]
             self._search_engines = research_cfg.get("search_engines", self._search_engines)
 
-        from pipeline_core.rate_limiter import RateLimiterRegistry
+        from loom_core.rate_limiter import RateLimiterRegistry
         self._rate_limiters = RateLimiterRegistry()
 
         self._min_score = config.get("min_score", 0.25)

@@ -95,7 +95,7 @@ def test_search_multi_engine_fallback():
 @skip_no_llm
 def test_llm_router_real():
     """真实 LLM 调用 — 验证 LLMRouter 能调通至少一个供应商"""
-    from pipeline_core.llm_router import LLMRouter
+    from loom_core.llm_router import LLMRouter
 
     router = LLMRouter.from_env(str(ENV_FILE))
     providers = router.get_active_providers()
@@ -120,8 +120,8 @@ def test_full_pipeline_real():
     这是唯一一个真正端到端的测试：输入主题 → 输出 Markdown 文档。
     超时 120s，标记为 slow。
     """
-    from pipeline_core import PipelineOrchestrator
-    from pipeline_core.scheduler import Scheduler
+    from loom_core import PipelineOrchestrator
+    from loom_core.scheduler import Scheduler
 
     sched = Scheduler()
     plan = sched.parse("docgen")
@@ -163,8 +163,8 @@ def test_submit_task_api_real():
     import json
     import urllib.request
 
-    from pipeline_core import PipelineOrchestrator
-    from pipeline_core.admin_api import AdminAPI
+    from loom_core import PipelineOrchestrator
+    from loom_core.admin_api import AdminAPI
 
     orch = PipelineOrchestrator(
         agents_dir=str(PROJECT / "agents"),

@@ -16,7 +16,7 @@ import pytest
 PROJECT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT))
 
-from pipeline_core.base_agent import Message  # noqa: E402
+from loom_core.base_agent import Message  # noqa: E402
 
 
 def _msg(payload):
@@ -311,8 +311,8 @@ class TestGenericAgentsAreWired:
     """出厂必须真有人用：能力没接进任何流水线就等于零。"""
 
     def test_shipped_api_pipeline_uses_both_agents(self):
-        from pipeline_core.naming import agent_of
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.naming import agent_of
+        from loom_core.scheduler import Scheduler
 
         plan = Scheduler(agents_dir=str(PROJECT / "agents"),
                          pipeline_dir=str(PROJECT / "pipelines")).parse(
@@ -322,8 +322,8 @@ class TestGenericAgentsAreWired:
         assert "safe_writer" in agents, "没有落盘节点的通用流水线不该算交付"
 
     def test_registry_meta_declares_the_new_topics(self):
-        from pipeline_core.agent_loader import AgentLoader
-        from pipeline_core.registry import Registry
+        from loom_core.agent_loader import AgentLoader
+        from loom_core.registry import Registry
 
         reg = Registry(enable_health_check=False)
         AgentLoader(reg, MagicMock(), str(PROJECT / "agents"), strict_safety=True).register()
@@ -334,7 +334,7 @@ class TestGenericAgentsAreWired:
 
     def test_both_agents_pass_the_ast_sandbox_scan(self):
         """出网与转换件必须能在 strict 沙箱下加载：真出网靠的是 url 校验而不是免检。"""
-        from pipeline_core.agent_loader import _check_safety
+        from loom_core.agent_loader import _check_safety
 
         for fname in ("http_request_agent.py", "transform_agent.py"):
             dangers = _check_safety(PROJECT / "agents" / fname, strict=False)
@@ -358,8 +358,8 @@ class TestApiReportEndToEnd:
     }, ensure_ascii=False).encode("utf-8")
 
     def _orch_and_plan(self, tmp_path, out_file):
-        from pipeline_core import PipelineOrchestrator
-        from pipeline_core.scheduler import Scheduler
+        from loom_core import PipelineOrchestrator
+        from loom_core.scheduler import Scheduler
 
         orch = PipelineOrchestrator(agents_dir=str(PROJECT / "agents"),
                                     checkpoint_dir=str(tmp_path / "ck"))
@@ -420,7 +420,7 @@ class TestLegacyAutoAdmission:
     """
 
     def _orch(self, tmp_path):
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         orch = PipelineOrchestrator(agents_dir=str(PROJECT / "agents"),
                                     checkpoint_dir=str(tmp_path / "ck"))

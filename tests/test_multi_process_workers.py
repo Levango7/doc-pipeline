@@ -23,7 +23,7 @@ PROJECT = Path(__file__).resolve().parent.parent
 _CLAIM_SCRIPT = """
 import json, sys
 sys.path.insert(0, {project!r})
-from pipeline_core.task_queue import TaskQueue
+from loom_core.task_queue import TaskQueue
 db, worker_id, out = sys.argv[1], sys.argv[2], sys.argv[3]
 item = TaskQueue(db).acquire(worker_id=worker_id)
 json.dump(item or {{}}, open(out, "w", encoding="utf-8"))
@@ -33,7 +33,7 @@ json.dump(item or {{}}, open(out, "w", encoding="utf-8"))
 _HOLD_SCRIPT = """
 import sys, time
 sys.path.insert(0, {project!r})
-from pipeline_core.task_queue import TaskQueue
+from loom_core.task_queue import TaskQueue
 db, worker_id, ready = sys.argv[1], sys.argv[2], sys.argv[3]
 item = TaskQueue(db).acquire(worker_id=worker_id)
 with open(ready, "w", encoding="utf-8") as f:
@@ -61,7 +61,7 @@ class TestCrossProcessMutualExclusion:
     """真跨进程抢同一份库：每条任务只被抢到一次。"""
 
     def test_each_task_claimed_exactly_once_across_processes(self, tmp_path):
-        from pipeline_core.task_queue import TaskQueue
+        from loom_core.task_queue import TaskQueue
 
         db = str(tmp_path / "tasks.db")
         n = 6
@@ -92,7 +92,7 @@ class TestCrossProcessLeaseReclaim:
     """跨进程租约：owner 被强杀 → 另一台必须能回收；owner 活着 → 不许抢。"""
 
     def test_killed_owner_task_is_reclaimed_by_another_process(self, tmp_path):
-        from pipeline_core.task_queue import TaskQueue, _pid_alive
+        from loom_core.task_queue import TaskQueue, _pid_alive
 
         db = str(tmp_path / "tasks.db")
         queue = TaskQueue(db)
@@ -113,7 +113,7 @@ class TestCrossProcessLeaseReclaim:
         reclaim_script = """
 import json, sys
 sys.path.insert(0, {project!r})
-from pipeline_core.task_queue import TaskQueue
+from loom_core.task_queue import TaskQueue
 db, out = sys.argv[1], sys.argv[2]
 q = TaskQueue(db)
 n = len(q.recover(stale_seconds=0.01))
@@ -133,7 +133,7 @@ json.dump({{"recovered": n, "status": q.get("t-crash")["status"]}},
         assert item and item["task_id"] == "t-crash"
 
     def test_live_owner_task_is_not_stolen_across_processes(self, tmp_path):
-        from pipeline_core.task_queue import TaskQueue
+        from loom_core.task_queue import TaskQueue
 
         db = str(tmp_path / "tasks.db")
         queue = TaskQueue(db)
@@ -149,7 +149,7 @@ json.dump({{"recovered": n, "status": q.get("t-crash")["status"]}},
             reclaim_script = """
 import json, sys
 sys.path.insert(0, {project!r})
-from pipeline_core.task_queue import TaskQueue
+from loom_core.task_queue import TaskQueue
 q = TaskQueue(sys.argv[1])
 json.dump({{"recovered": len(q.recover(stale_seconds=0.01)),
             "status": q.get("t-live")["status"]}},

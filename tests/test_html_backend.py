@@ -33,7 +33,7 @@ ARTICLE_HTML = (
 
 @pytest.fixture
 def agent(tmp_path):
-    from pipeline_core.base_agent import AgentMeta
+    from loom_core.base_agent import AgentMeta
     config = {"temp_dir": str(tmp_path / "tmp"), "quiet": True, "retry": 1}
     return fetcher_mod.FetcherAgent(
         "fetcher", AgentMeta(name="fetcher", version="1.0"), config, None, None)

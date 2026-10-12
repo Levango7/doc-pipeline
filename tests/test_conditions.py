@@ -6,7 +6,7 @@
 """
 import pytest
 
-from pipeline_core.conditions import (
+from loom_core.conditions import (
     _UNRESOLVED,
     OPS,
     ConditionError,

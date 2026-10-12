@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from pipeline_core.task_queue import TaskQueue
+from loom_core.task_queue import TaskQueue
 
 
 @pytest.fixture

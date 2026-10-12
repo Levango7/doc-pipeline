@@ -2,8 +2,8 @@
 import threading
 import time
 
-import pipeline_core.rate_limiter as rl_mod
-from pipeline_core.rate_limiter import RateLimiter
+import loom_core.rate_limiter as rl_mod
+from loom_core.rate_limiter import RateLimiter
 
 
 class TestRateLimiterBasics:

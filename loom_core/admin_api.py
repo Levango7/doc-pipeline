@@ -856,7 +856,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         """POST /api/webhooks/<name> —— 入站触发（自携密钥 + 审计）。
 
         请求体在这里自行读取：HMAC 要用**原始字节**验签，且这条路不经过管理
-        鉴权门（见 do_POST 的注释）。业务逻辑全在 pipeline_core.webhooks，
+        鉴权门（见 do_POST 的注释）。业务逻辑全在 loom_core.webhooks，
         这里只做 HTTP 层的取头/读数/回包。
         """
         from . import webhooks as _webhooks
@@ -1110,7 +1110,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             return self._json({"error": "orchestrator not set"}, 500)
         orch = self.orch
         try:
-            from pipeline_core import __version__ as _v
+            from loom_core import __version__ as _v
         except ImportError:
             _v = "unknown"
         pipeline_info = {
@@ -1263,7 +1263,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 
         # 3. LLM Router
         try:
-            from pipeline_core.llm_router import get_router
+            from loom_core.llm_router import get_router
             router = get_router()
             providers = router.list_providers() if hasattr(router, "list_providers") else []
             active = router.get_active() if hasattr(router, "get_active") else None
@@ -1289,7 +1289,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 
         # 5. 缓存
         try:
-            from pipeline_core.cache_manager import all_stats
+            from loom_core.cache_manager import all_stats
             stats = all_stats()
             result["components"]["cache"] = {
                 "status": "healthy",
@@ -1324,7 +1324,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_cache_stats(self):
         """缓存统计"""
         try:
-            from pipeline_core.cache_manager import all_stats
+            from loom_core.cache_manager import all_stats
             self._json({"caches": all_stats()})
         except Exception as e:
             self._json({"error": str(e)}, 500)
@@ -1332,7 +1332,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_cost_stats(self):
         """LLM 成本统计"""
         try:
-            from pipeline_core.cost_tracker import get_cost_tracker
+            from loom_core.cost_tracker import get_cost_tracker
             self._json(get_cost_tracker().summary())
         except Exception as e:
             self._json({"error": str(e)}, 500)
@@ -1342,7 +1342,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         try:
             data = _fast_loads(body) if body else {}
             max_cost = float(data.get("max_cost", 0))
-            from pipeline_core.cost_tracker import get_cost_tracker
+            from loom_core.cost_tracker import get_cost_tracker
             get_cost_tracker().set_budget(max_cost)
             self._json({"budget_set": True, "max_cost": max_cost})
         except Exception as e:
@@ -1435,7 +1435,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_cache_clear(self):
         """清空所有缓存"""
         try:
-            from pipeline_core.cache_manager import clear_all_caches
+            from loom_core.cache_manager import clear_all_caches
             clear_all_caches()
             _logger.info("[AdminAPI] 所有缓存已清空")
             self._json({"cleared": True})
@@ -1444,13 +1444,13 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def _handle_list_hooks(self):
         """列出已注册事件钩子"""
-        from pipeline_core.event_hook import get_hook_manager
+        from loom_core.event_hook import get_hook_manager
         mgr = get_hook_manager()
         self._json({"hooks": mgr.list_hooks()})
 
     def _handle_register_hook(self, body: bytes):
         """注册事件钩子。body: {"event": "task.completed", "url": "https://..."}"""
-        from pipeline_core.event_hook import get_hook_manager
+        from loom_core.event_hook import get_hook_manager
         try:
             data = _fast_loads(body) if body else {}
         except (json.JSONDecodeError, Exception):
@@ -1470,7 +1470,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def _handle_unregister_hook(self, hook_id: str):
         """注销事件钩子"""
-        from pipeline_core.event_hook import get_hook_manager
+        from loom_core.event_hook import get_hook_manager
         mgr = get_hook_manager()
         ok = mgr.unregister(hook_id)
         self._json({"unregistered": ok, "hook_id": hook_id})
@@ -1582,7 +1582,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         def _run():
             import asyncio as _aio
 
-            from pipeline_core.scheduler import Scheduler
+            from loom_core.scheduler import Scheduler
             try:
                 sched = Scheduler()
                 name, err = resolve_pipeline_name(
@@ -1651,7 +1651,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             with contextlib.suppress(ValueError):
                 last_event_id = int(last_event_id_header)
 
-        from pipeline_core.streaming import (
+        from loom_core.streaming import (
             StreamCallback,
             StreamEvent,
             get_callback,

@@ -11,7 +11,7 @@
   要么在 `EXTERNAL` 登记表明文认领（`artesian` 未上 PyPI，写版本约束会让
   `pip install` 直接装不上——这是发布形态问题，登记表负责说明）；
 - 版本三处一致：产物文件名、`pyproject.toml` 的 `project.version`、
-  装好之后 `pipeline_core.__version__` 与包元数据版本。
+  装好之后 `loom_core.__version__` 与包元数据版本。
 
 用法：
     python scripts/verify_dist.py [dist目录] [期望版本] [--installed]
@@ -30,9 +30,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 #: 打进 wheel 的 Python 包（与 [tool.setuptools] packages 同源）
-PACKAGES = ["pipeline_core", "loom_doc", "agents", "scripts", "artesian",
+PACKAGES = ["loom_core", "loom_doc", "agents", "scripts", "artesian",
             "packs", "packs.docgen", "packs.docgen.agents",
-            "docpipeline"]  # 兼容 shim（旧名转会别名，安装态仍可 import）
+            "docpipeline", "pipeline_core"]  # 兼容 shim（旧名转会别名，安装态仍可 import）
 
 #: wheel 与 sdist 里都必须有的数据文件（相对仓库根）
 REQUIRED_DATA = (
@@ -198,15 +198,24 @@ def check_dependency_closure() -> None:
 def check_installed(ver: str) -> None:
     import importlib.metadata
 
-    import pipeline_core
-    if getattr(pipeline_core, "__version__", None) != ver:
-        fail(f"装出来的 pipeline_core.__version__="
-             f"{getattr(pipeline_core, '__version__', None)} 与 pyproject 的 {ver} 不符")
+    import loom_core
+    if getattr(loom_core, "__version__", None) != ver:
+        fail(f"装出来的 loom_core.__version__="
+             f"{getattr(loom_core, '__version__', None)} 与 pyproject 的 {ver} 不符")
+    # 旧名 shim：安装态旧 import 必须命中**同一模块对象**（MAOP 零改动承诺）
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter("ignore", DeprecationWarning)
+        import pipeline_core.scheduler as _legacy_sched  # noqa: F401
+
+        import pipeline_core as _legacy
+    if _legacy is not loom_core:
+        fail("安装态的 pipeline_core shim 与 loom_core 不是同一模块对象")
     meta = importlib.metadata.version("nexusloom")
     if meta != ver:
         fail(f"包元数据版本 {meta} 与 pyproject 的 {ver} 不符")
     # 安装态冒烟：流水线清册非空（wheel 数据文件的最终判据）
-    from pipeline_core.pack_manifest import discover
+    from loom_core.pack_manifest import discover
     packs = [p for p in discover() if p.source in ("builtin", "pack")]
     if not packs:
         fail("装出来的包里流水线清册为空——pipelines/ 数据没有随 wheel 走（PR #13 真踩过）")

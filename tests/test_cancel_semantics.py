@@ -15,9 +15,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline_core.dag_executor import DAGExecutor
-from pipeline_core.executor_factory import create_executor
-from pipeline_core.pipeline import PipelineTask, TaskNode, TaskStatus
+from loom_core.dag_executor import DAGExecutor
+from loom_core.executor_factory import create_executor
+from loom_core.pipeline import PipelineTask, TaskNode, TaskStatus
 
 
 @pytest.fixture

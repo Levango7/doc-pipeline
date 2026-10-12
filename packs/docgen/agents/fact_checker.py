@@ -15,7 +15,7 @@ FactChecker Agent - 轻量事实核查插件（MVP）
 
 import re
 
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "fact_checker"
 # 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
@@ -27,7 +27,7 @@ AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 45
 INPUT_TOPICS = ["checker.done", "fact_checker.check", "fact_checker.input"]
 OUTPUT_TOPICS = ["fact_checker.done"]
-# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：核查后可能补注来源，重新导出正文
+# 产物契约（引擎按此声明组装下游载荷，见 loom_core/artifacts.py）：核查后可能补注来源，重新导出正文
 PRODUCES = {"content": "last"}
 CONSUMES = ["content", "results"]
 DEPENDENCIES = ["checker"]
@@ -199,7 +199,7 @@ class FactCheckerAgent(BaseAgent):
 
     def _llm_available(self) -> bool:
         try:
-            from pipeline_core.llm_router import get_router
+            from loom_core.llm_router import get_router
             router = get_router()
             return bool(router and router.get_active_providers())
         except Exception:
@@ -225,7 +225,7 @@ class FactCheckerAgent(BaseAgent):
         """LLM 批量语义判定（带总时长预算，防止多供应商 failover 超过节点 timeout）"""
         import time
 
-        from pipeline_core.llm_router import get_router
+        from loom_core.llm_router import get_router
         router = get_router()
 
         deadline = time.time() + self._llm_timeout

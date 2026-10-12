@@ -16,8 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core.cost_tracker import BudgetExceededError, estimate_tokens
-from pipeline_core.llm_router import (
+from loom_core.cost_tracker import BudgetExceededError, estimate_tokens
+from loom_core.llm_router import (
     LLMProvider,
     LLMRouter,
     _call_llm,
@@ -30,8 +30,8 @@ from pipeline_core.llm_router import (
 @pytest.fixture
 def cost_tracker(tmp_path):
     """临时 DB 的全局成本追踪器（测试后还原单例）"""
-    import pipeline_core.cost_tracker as ct_mod
-    from pipeline_core.cost_tracker import CostTracker
+    import loom_core.cost_tracker as ct_mod
+    from loom_core.cost_tracker import CostTracker
     old = ct_mod._tracker_instance
     tracker = CostTracker(db_path=str(tmp_path / "cost.db"))
     ct_mod._tracker_instance = tracker
@@ -122,7 +122,7 @@ class TestLLMProvider:
         p = self._make_provider()
         p._healthy = False
         p._last_check = time.time() - 120  # 超过冷却期
-        with patch("pipeline_core.llm_router._call_llm", return_value="ok"):
+        with patch("loom_core.llm_router._call_llm", return_value="ok"):
             result = p.check_health(cooldown=60.0)
         assert result is True
         assert p.healthy is True
@@ -130,15 +130,15 @@ class TestLLMProvider:
     def test_check_health_failure_marks_unhealthy(self):
         """健康检查失败后累计失败计数（3 次后才标记不健康）"""
         p = self._make_provider()
-        with patch("pipeline_core.llm_router._call_llm", side_effect=Exception("conn refused")):
+        with patch("loom_core.llm_router._call_llm", side_effect=Exception("conn refused")):
             result = p.check_health(cooldown=0)
         assert result is False
         # 1 次失败不标记不健康，但累计失败计数
         assert p._fail_count == 1
         # 连续 3 次后才标记不健康
-        with patch("pipeline_core.llm_router._call_llm", side_effect=Exception("conn refused")):
+        with patch("loom_core.llm_router._call_llm", side_effect=Exception("conn refused")):
             p.check_health(cooldown=0)
-        with patch("pipeline_core.llm_router._call_llm", side_effect=Exception("conn refused")):
+        with patch("loom_core.llm_router._call_llm", side_effect=Exception("conn refused")):
             p.check_health(cooldown=0)
         assert p.healthy is False
 
@@ -203,7 +203,7 @@ class TestLLMRouterFallback:
             if provider.name == "p0":
                 raise Exception("p0 down")
             return "response from p1"
-        with patch("pipeline_core.llm_router._call_llm", side_effect=mock_call):
+        with patch("loom_core.llm_router._call_llm", side_effect=mock_call):
             content, provider_name = router.chat([{"role": "user", "content": "hi"}])
         assert provider_name == "p1"
         assert content == "response from p1"
@@ -212,7 +212,7 @@ class TestLLMRouterFallback:
     def test_chat_raises_when_all_fail(self):
         """所有供应商都失败时抛 RuntimeError"""
         router = self._make_router()
-        with patch("pipeline_core.llm_router._call_llm", side_effect=Exception("all down")), \
+        with patch("loom_core.llm_router._call_llm", side_effect=Exception("all down")), \
                 pytest.raises(RuntimeError, match="所有 LLM 供应商调用失败"):
             router.chat([{"role": "user", "content": "hi"}])
 
@@ -229,14 +229,14 @@ class TestLLMRouterFallback:
         def mock_call(provider, messages, *args, **kwargs):
             seen.append(provider.name)
             return "ok"
-        with patch("pipeline_core.llm_router._call_llm", side_effect=mock_call):
+        with patch("loom_core.llm_router._call_llm", side_effect=mock_call):
             router.chat([{"role": "user", "content": "hi"}], preferred="p2")
         assert seen[0] == "p2"
 
     def test_chat_success_marks_provider_healthy(self):
         """调用成功后供应商标记为健康"""
         router = self._make_router()
-        with patch("pipeline_core.llm_router._call_llm", return_value="ok"):
+        with patch("loom_core.llm_router._call_llm", return_value="ok"):
             router.chat([{"role": "user", "content": "hi"}])
         assert router._providers[0].healthy is True
         assert router._providers[0]._fail_count == 0
@@ -254,7 +254,7 @@ class TestLLMRouterHealthCheck:
             LLMProvider(name="p1", api_url="http://h1", api_key="k1", model="m1", enabled=False),
         ]
         router = LLMRouter(providers)
-        with patch("pipeline_core.llm_router._call_llm", return_value="ok"):
+        with patch("loom_core.llm_router._call_llm", return_value="ok"):
             result = router.health_check_all()
         assert "p0" in result
         assert "p1" in result
@@ -290,7 +290,7 @@ class TestLLMRouterConfig:
 
     def test_from_env_with_empty_env_returns_empty_router(self):
         """空 env 返回空路由器"""
-        with patch("pipeline_core.llm_router._load_env", return_value={}):
+        with patch("loom_core.llm_router._load_env", return_value={}):
             router = LLMRouter.from_env()
         assert len(router._providers) == 0
 
@@ -301,7 +301,7 @@ class TestLLMRouterConfig:
             "LLM_API_URL": "http://localhost/v1",
             "LLM_MODEL": "test-model",
         }
-        with patch("pipeline_core.llm_router._load_env", return_value=env):
+        with patch("loom_core.llm_router._load_env", return_value=env):
             router = LLMRouter.from_env()
         assert len(router._providers) == 1
         assert router._providers[0].name == "cloudflare"
@@ -415,7 +415,7 @@ class TestChatCostRecording:
         """chat_async 成功后 cost_log 新增一行，token 口径与同步版一致"""
         router = _make_single_router()
         messages = [{"role": "user", "content": "写一篇关于 Python 的文章"}]
-        with patch("pipeline_core.llm_router._call_llm_async",
+        with patch("loom_core.llm_router._call_llm_async",
                    new_callable=AsyncMock, return_value="同一份回复内容"):
             content, name = asyncio.run(router.chat_async(messages))
         assert name == "p0"
@@ -423,7 +423,7 @@ class TestChatCostRecording:
         rows_after_async = _fetch_cost_rows(cost_tracker._db_path)
         assert len(rows_after_async) == 1
 
-        with patch("pipeline_core.llm_router._call_llm", return_value="同一份回复内容"):
+        with patch("loom_core.llm_router._call_llm", return_value="同一份回复内容"):
             router.chat(messages)
         rows = _fetch_cost_rows(cost_tracker._db_path)
         assert len(rows) == 2
@@ -434,7 +434,7 @@ class TestChatCostRecording:
     def test_chat_records_cost_row(self, cost_tracker):
         """同步 chat 成功后 cost_log 新增一行（既有行为回归）"""
         router = _make_single_router()
-        with patch("pipeline_core.llm_router._call_llm", return_value="ok"):
+        with patch("loom_core.llm_router._call_llm", return_value="ok"):
             router.chat([{"role": "user", "content": "hi"}])
         rows = _fetch_cost_rows(cost_tracker._db_path)
         assert len(rows) == 1
@@ -444,8 +444,8 @@ class TestChatCostRecording:
     def test_record_failure_does_not_break_chat(self, cost_tracker):
         """记录成本异常不影响主流程"""
         router = _make_single_router()
-        with patch("pipeline_core.llm_router._call_llm", return_value="ok"), \
-                patch("pipeline_core.cost_tracker.CostTracker.record_call",
+        with patch("loom_core.llm_router._call_llm", return_value="ok"), \
+                patch("loom_core.cost_tracker.CostTracker.record_call",
                       side_effect=RuntimeError("db broken")):
             content, name = router.chat([{"role": "user", "content": "hi"}])
         assert name == "p0"
@@ -461,7 +461,7 @@ class TestBudgetEnforcement:
     def test_chat_raises_budget_exceeded_and_skips_call(self, cost_tracker):
         self._exhaust_budget(cost_tracker)
         router = _make_single_router()
-        with patch("pipeline_core.llm_router._call_llm") as mock_call, \
+        with patch("loom_core.llm_router._call_llm") as mock_call, \
                 pytest.raises(BudgetExceededError):
             router.chat([{"role": "user", "content": "hi"}])
         mock_call.assert_not_called()
@@ -470,7 +470,7 @@ class TestBudgetEnforcement:
         self._exhaust_budget(cost_tracker)
         router = _make_single_router()
         mock_async = AsyncMock(return_value="should not happen")
-        with patch("pipeline_core.llm_router._call_llm_async", mock_async), \
+        with patch("loom_core.llm_router._call_llm_async", mock_async), \
                 pytest.raises(BudgetExceededError):
             asyncio.run(router.chat_async([{"role": "user", "content": "hi"}]))
         mock_async.assert_not_called()
@@ -478,7 +478,7 @@ class TestBudgetEnforcement:
     def test_no_budget_passes_through(self, cost_tracker):
         """未设置预算时行为不变放行"""
         router = _make_single_router()
-        with patch("pipeline_core.llm_router._call_llm", return_value="ok") as mock_call:
+        with patch("loom_core.llm_router._call_llm", return_value="ok") as mock_call:
             content, name = router.chat([{"role": "user", "content": "hi"}])
         assert name == "p0"
         mock_call.assert_called_once()
@@ -486,16 +486,16 @@ class TestBudgetEnforcement:
     def test_zero_budget_behaves_as_unlimited(self, cost_tracker):
         cost_tracker.set_budget(0)
         router = _make_single_router()
-        with patch("pipeline_core.llm_router._call_llm", return_value="ok"):
+        with patch("loom_core.llm_router._call_llm", return_value="ok"):
             _, name = router.chat([{"role": "user", "content": "hi"}])
         assert name == "p0"
 
     def test_budget_check_failure_does_not_break_chat(self, cost_tracker):
         """检查器故障（DB 损坏）不影响主流程"""
         router = _make_single_router()
-        with patch("pipeline_core.cost_tracker.CostTracker.total_cost",
+        with patch("loom_core.cost_tracker.CostTracker.total_cost",
                    side_effect=RuntimeError("db broken")), \
-                patch("pipeline_core.llm_router._call_llm", return_value="ok"):
+                patch("loom_core.llm_router._call_llm", return_value="ok"):
             _, name = router.chat([{"role": "user", "content": "hi"}])
         assert name == "p0"
 
@@ -558,7 +558,7 @@ class TestUsageBasedCosting:
             "choices": [{"message": {"content": "hello"}}],
             "usage": {"prompt_tokens": 111, "completion_tokens": 22},
         })
-        with patch("pipeline_core.llm_router._get_shared_session", side_effect=_no_session), \
+        with patch("loom_core.llm_router._get_shared_session", side_effect=_no_session), \
                 patch("urllib.request.urlopen", return_value=resp):
             asyncio.run(router.chat_async([{"role": "user", "content": "hi"}]))
         s = cost_tracker.stats()["p0"]

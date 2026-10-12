@@ -22,9 +22,9 @@ from pathlib import Path
 
 import yaml
 
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.pack_manifest import quality_dirs as _quality_dirs
 from loom_doc import degradation
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
-from pipeline_core.pack_manifest import quality_dirs as _quality_dirs
 
 AGENT_NAME = "quality_gate"
 # 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
@@ -32,7 +32,7 @@ AGENT_NAME = "quality_gate"
 SANDBOX_TRUSTED = True
 
 # 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
-# （类型名表见 pipeline_core/config_schema.py）
+# （类型名表见 loom_core/config_schema.py）
 CONFIG_SCHEMA = {
     "quality_profile": ('str', 'technical-doc'),
     "threshold": (['int', 'float'], 70),
@@ -47,7 +47,7 @@ AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 40
 INPUT_TOPICS = ["writer.done", "quality_gate.check", "quality_gate.input"]
 OUTPUT_TOPICS = ["quality_gate.done", "quality_gate.failed"]
-# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：只做判定，不重新导出正文（评分细节走 dependencies_results）
+# 产物契约（引擎按此声明组装下游载荷，见 loom_core/artifacts.py）：只做判定，不重新导出正文（评分细节走 dependencies_results）
 PRODUCES: dict = {}
 CONSUMES = ["content"]
 DEPENDENCIES = ["writer"]
@@ -424,12 +424,12 @@ class QualityGateAgent(BaseAgent):
                          can_regenerate: bool, generation_count: int) -> None:
         """质量结果进反馈闭环 + 事件钩子（两条判定路径共用，语义必须一致）。"""
         with contextlib.suppress(Exception):
-            from pipeline_core.quality_feedback import record_quality
+            from loom_core.quality_feedback import record_quality
             record_quality(task_id=task_id, scores={k: round(v, 1) for k, v in scores.items()},
                            pipeline=cfg.profile_name)
 
         with contextlib.suppress(Exception):
-            from pipeline_core.event_hook import emit_event
+            from loom_core.event_hook import emit_event
             emit_event("quality_gate.evaluated", {"task_id": task_id, "score": round(overall, 1),
                        "threshold": cfg.threshold, "passed": not needs_regenerate,
                        "profile": cfg.profile_name})

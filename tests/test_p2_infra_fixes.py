@@ -16,12 +16,12 @@ import time
 
 import pytest
 
+from loom_core.base_agent import AgentStatus, Message
+from loom_core.message_bus_v3 import MessageBus
+from loom_core.registry import AgentMeta, Registry
+from loom_core.streaming import StreamCallback
+from loom_core.task_queue import TaskQueue, _pid_alive
 from packs.docgen.agents.writer import WriterAgent
-from pipeline_core.base_agent import AgentStatus, Message
-from pipeline_core.message_bus_v3 import MessageBus
-from pipeline_core.registry import AgentMeta, Registry
-from pipeline_core.streaming import StreamCallback
-from pipeline_core.task_queue import TaskQueue, _pid_alive
 
 # ─── 1. TaskQueue：recover stale / owner_pid / close_all ──────────────
 
@@ -178,7 +178,7 @@ class TestPersistentStoreCloseAll:
     """PersistentStore 与 TaskQueue 同模式：弱引用登记 + close_all 跨线程关闭 + 自愈"""
 
     def test_close_all_closes_cross_thread_connections_and_self_heals(self, tmp_path):
-        from pipeline_core.message_bus_v3 import PersistentStore
+        from loom_core.message_bus_v3 import PersistentStore
 
         store = PersistentStore(db_path=str(tmp_path / "store.db"))
         store._get_conn()  # 主线程登记一条连接

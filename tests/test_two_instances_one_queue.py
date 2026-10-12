@@ -24,8 +24,8 @@ PROJECT = Path(__file__).resolve().parent.parent
 _WORKER_SCRIPT = """
 import json, os, sys
 sys.path.insert(0, {project!r})
-from pipeline_core.task_queue import TaskQueue
-from pipeline_core.worker import TaskWorker
+from loom_core.task_queue import TaskQueue
+from loom_core.worker import TaskWorker
 
 worker_id = sys.argv[1]
 db = sys.argv[2]
@@ -54,7 +54,7 @@ class TestTwoInstancesShareOneQueueEndToEnd:
     LOOP_COUNT = 8
 
     def _run_two_workers(self, tmp_path, n_tasks):
-        from pipeline_core.task_queue import TaskQueue
+        from loom_core.task_queue import TaskQueue
 
         state = tmp_path / "state"
         state.mkdir()
@@ -109,7 +109,7 @@ class TestTwoInstancesShareOneQueueEndToEnd:
             f"任务丢失：领取 {sorted(set(a) | set(b))} vs 提交 {sorted(ids)}")
 
 # 全部真跑完并落盘
-        from pipeline_core.task_queue import TaskQueue
+        from loom_core.task_queue import TaskQueue
 
         queue = TaskQueue(db)
         try:

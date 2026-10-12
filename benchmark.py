@@ -207,7 +207,7 @@ def bench_html_extraction():
 
 def bench_cache_throughput():
     """基准 2: CacheManager get/set 吞吐"""
-    from pipeline_core.cache_manager import CacheManager
+    from loom_core.cache_manager import CacheManager
 
     cache = CacheManager(name="bench", max_size=10000, ttl=3600)
     n = 5000
@@ -282,7 +282,7 @@ def bench_parallel_execution():
 
 def bench_streaming_overhead():
     """基准 4: SSE 流式 chunk 传播开销"""
-    from pipeline_core.streaming import StreamCallback
+    from loom_core.streaming import StreamCallback
 
     callback = StreamCallback()
     n = 1000

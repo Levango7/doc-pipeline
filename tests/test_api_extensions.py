@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-from pipeline_core.event_hook import EventHookManager, emit_event, get_hook_manager
+from loom_core.event_hook import EventHookManager, emit_event, get_hook_manager
 
 # ── EventHook 系统测试 ──────────────────────────
 
@@ -118,7 +118,7 @@ class TestAdminAPIEndpoints:
     def orch(self):
         from pathlib import Path
 
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
         agents_dir = str(Path(__file__).parent.parent / "agents")
         ckpt_dir = str(Path(__file__).parent.parent / ".test_checkpoints")
         o = PipelineOrchestrator(agents_dir=agents_dir, checkpoint_dir=ckpt_dir)
@@ -162,13 +162,13 @@ class TestAdminAPIEndpoints:
 
     def test_cache_stats(self, orch):
         """GET /api/cache 返回缓存统计"""
-        from pipeline_core.cache_manager import all_stats
+        from loom_core.cache_manager import all_stats
         stats = all_stats()
         assert isinstance(stats, dict)
 
     def test_cache_clear(self, orch):
         """POST /api/cache/clear 清空缓存"""
-        from pipeline_core.cache_manager import all_stats, clear_all_caches
+        from loom_core.cache_manager import all_stats, clear_all_caches
         clear_all_caches()
         stats = all_stats()
         assert isinstance(stats, dict)

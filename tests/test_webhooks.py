@@ -1,4 +1,4 @@
-"""入站 webhook（pipeline_core/webhooks.py + AdminHandler 的 HTTP 粘合层）测试。
+"""入站 webhook（loom_core/webhooks.py + AdminHandler 的 HTTP 粘合层）测试。
 
 覆盖：配置校验 / 两种鉴权方案（HMAC 签名与 Token）/ fail-closed（密钥未配置
 拒绝一切）/ 审计留痕（成败都落 JSONL，写盘失败如实回报）/ 与手动 run 同一
@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline_core.admin_api import AdminHandler
-from pipeline_core.webhooks import (
+from loom_core.admin_api import AdminHandler
+from loom_core.webhooks import (
     SIGNATURE_HEADER,
     TOKEN_HEADER,
     Webhook,
@@ -238,9 +238,9 @@ class TestHandleInbound:
         monkeypatch.setenv("TEST_WH_SECRET", "s3cret")
         blocker = tmp_path / "blocked"
         blocker.write_text("file", encoding="utf-8")     # 以文件冒充目录 → mkdir 必败
-        # 审计实现已收口到 pipeline_core.audit（webhooks 只是转发），
+        # 审计实现已收口到 loom_core.audit（webhooks 只是转发），
         # patch 点跟到真实落盘处——patch 旧别名会变成"打了补丁但没命中"。
-        from pipeline_core import audit as audit_mod
+        from loom_core import audit as audit_mod
 
         monkeypatch.setattr(audit_mod, "audit_path",
                             lambda channel: blocker / "audit" / f"{channel}.jsonl")

@@ -1,8 +1,8 @@
 """CircuitBreaker — OPEN/CLOSED/HALF_OPEN, backoff, registry"""
 import time
 
-import pipeline_core.circuit_breaker as cb_mod
-from pipeline_core.circuit_breaker import CircuitBreaker
+import loom_core.circuit_breaker as cb_mod
+from loom_core.circuit_breaker import CircuitBreaker
 
 
 class TestCircuitBreakerBasics:

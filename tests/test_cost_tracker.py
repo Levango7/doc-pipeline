@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from pipeline_core.cost_tracker import (
+from loom_core.cost_tracker import (
     DEFAULT_PRICE,
     PRICING,
     BudgetExceededError,
@@ -183,7 +183,7 @@ class TestConnectionLifecycle:
     def test_all_connections_closed_after_ops(self, tmp_path, monkeypatch):
         import sqlite3
 
-        import pipeline_core.cost_tracker as ct_mod
+        import loom_core.cost_tracker as ct_mod
 
         created = []
         real_connect = sqlite3.connect

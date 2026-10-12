@@ -17,7 +17,7 @@
 用法：
     python run.py --worker                      # 一直跑，Ctrl-C 优雅退出
     python run.py --worker --once               # 只消费一条（调试/ cron）
-    python pipeline_core/worker.py              # 等价入口
+    python loom_core/worker.py              # 等价入口
 """
 from __future__ import annotations
 

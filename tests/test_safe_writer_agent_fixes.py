@@ -8,9 +8,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.safe_writer_agent import SafeWriterAgent
-from pipeline_core.base_agent import AgentMeta
-from pipeline_core.message_bus_v3 import Message, MessageType
-from pipeline_core.version_manager import VersionManager
+from loom_core.base_agent import AgentMeta
+from loom_core.message_bus_v3 import Message, MessageType
+from loom_core.version_manager import VersionManager
 
 
 def _make_agent(tmp_path: Path, **extra) -> SafeWriterAgent:
@@ -36,7 +36,7 @@ class TestPayloadIsolation:
     def test_quality_score_isolated_between_interleaved_messages(self, tmp_path, monkeypatch):
         """两消息并发交错处理时，quality_score 写进各自文档的版本元数据"""
         vm = VersionManager(versions_dir=str(tmp_path / "versions"))
-        monkeypatch.setattr("pipeline_core.version_manager.get_version_manager", lambda: vm)
+        monkeypatch.setattr("loom_core.version_manager.get_version_manager", lambda: vm)
         agent = _make_agent(tmp_path)
         assert not hasattr(agent, "_current_payload")
 
@@ -80,7 +80,7 @@ class TestPayloadIsolation:
     def test_handle_writer_done_passes_payload_score(self, tmp_path, monkeypatch):
         """handle_writer_done 路径同样显式传递 quality_score 到版本元数据"""
         vm = VersionManager(versions_dir=str(tmp_path / "versions"))
-        monkeypatch.setattr("pipeline_core.version_manager.get_version_manager", lambda: vm)
+        monkeypatch.setattr("loom_core.version_manager.get_version_manager", lambda: vm)
         agent = _make_agent(tmp_path)
         target = tmp_path / "w.md"
         target.write_text("old", encoding="utf-8")

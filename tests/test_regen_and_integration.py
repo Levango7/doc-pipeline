@@ -11,10 +11,10 @@ import tempfile
 import time
 from pathlib import Path
 
+from loom_core import PipelineOrchestrator
+from loom_core.base_agent import AgentMeta, BaseAgent
+from loom_core.message_bus_v3 import Message, MessageBus, MessageType
 from packs.docgen.agents.quality_gate import QualityGateAgent
-from pipeline_core import PipelineOrchestrator
-from pipeline_core.base_agent import AgentMeta, BaseAgent
-from pipeline_core.message_bus_v3 import Message, MessageBus, MessageType
 
 # ── 测试数据 ────────────────────────────────
 

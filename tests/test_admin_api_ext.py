@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pipeline_core.admin_api import (
+from loom_core.admin_api import (
     AdminHandler,
     _is_private_ip,
     _StreamMetricsHub,
@@ -311,7 +311,7 @@ class TestDoPostRouting:
     def test_rollback_success(self, handler, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         body = json.dumps({"file": "a.md", "version": 1}).encode()
-        with patch("pipeline_core.version_manager.get_version_manager") as mock_vm:
+        with patch("loom_core.version_manager.get_version_manager") as mock_vm:
             mock_vm.return_value.rollback.return_value = {"status": "ok"}
             self._post(handler, "/api/versions/rollback", body,
                        headers={"X-Confirm": "yes"})
@@ -610,7 +610,7 @@ class TestHealthDeepAndCaches:
         router.get_active.return_value = "p1"
         mgr = MagicMock()
         mgr.list_engines.return_value = []
-        with patch("pipeline_core.llm_router.get_router", return_value=router), \
+        with patch("loom_core.llm_router.get_router", return_value=router), \
                 patch("artesian.search_engines.SearchEngineManager.from_env",
                       return_value=mgr):
             handler._handle_health_deep()
@@ -625,7 +625,7 @@ class TestHealthDeepAndCaches:
         handler.orch.registry.list.return_value = []
         handler.orch.checkpoint_dir = tmp_path / "missing"
         handler.orch._cb_registry.list.return_value = []
-        with patch("pipeline_core.llm_router.get_router",
+        with patch("loom_core.llm_router.get_router",
                    side_effect=RuntimeError("no router")), \
                 patch("artesian.search_engines.SearchEngineManager.from_env",
                       side_effect=RuntimeError("no mgr")):
@@ -663,7 +663,7 @@ class TestAlertsAndLogs:
 
     def test_alerts_ok(self, handler):
         handler.path = "/api/alerts?level=error&limit=10"
-        with patch("pipeline_core.alert_manager.get_alerts", return_value=[]) as m:
+        with patch("loom_core.alert_manager.get_alerts", return_value=[]) as m:
             handler._handle_alerts()
         m.assert_called_once()
         assert handler._json.call_args[0][0]["alerts"] == []
@@ -739,7 +739,7 @@ class TestVersionsHandlers:
     def test_versions_list(self, handler, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "doc.md").write_text("x", encoding="utf-8")
-        with patch("pipeline_core.version_manager.get_version_manager") as mock_vm:
+        with patch("loom_core.version_manager.get_version_manager") as mock_vm:
             mock_vm.return_value.history.return_value = [{"version": 1}]
             handler._handle_versions_list("doc.md")
         data = handler._json.call_args[0][0]
@@ -754,20 +754,20 @@ class TestVersionsHandlers:
 
     def test_versions_diff(self, handler, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        with patch("pipeline_core.version_manager.get_version_manager") as mock_vm:
+        with patch("loom_core.version_manager.get_version_manager") as mock_vm:
             mock_vm.return_value.diff.return_value = "--- a\n+++ b"
             handler._handle_versions_diff("d.md", 1, 2)
         assert handler._json.call_args[0][0]["diff"].startswith("---")
 
     def test_versions_rollback_not_found(self, handler, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        with patch("pipeline_core.version_manager.get_version_manager") as mock_vm:
+        with patch("loom_core.version_manager.get_version_manager") as mock_vm:
             mock_vm.return_value.rollback.return_value = {"status": "error"}
             handler._handle_versions_rollback("d.md", 99)
         assert handler._json.call_args[0][1] == 404
 
     def test_versions_stats(self, handler):
-        with patch("pipeline_core.version_manager.get_version_manager") as mock_vm:
+        with patch("loom_core.version_manager.get_version_manager") as mock_vm:
             mock_vm.return_value.stats.return_value = {"total_files": 3}
             handler._handle_versions_stats()
         assert handler._json.call_args[0][0]["total_files"] == 3
@@ -821,7 +821,7 @@ class TestSubmitTask:
         task.error = None
         handler.orch.run_plan.return_value = task
         handler._find_streaming_agent = MagicMock(return_value=None)
-        with patch("pipeline_core.scheduler.Scheduler") as mock_sched:
+        with patch("loom_core.scheduler.Scheduler") as mock_sched:
             mock_sched.return_value.parse.return_value = MagicMock()
             handler._handle_submit_task(self._body(wait=True))
         data = handler._json.call_args[0][0]
@@ -836,7 +836,7 @@ class TestSubmitTask:
         handler.orch.run_plan.return_value = task
         handler._find_streaming_agent = MagicMock(return_value=None)
         handler._schedule_input_cleanup = MagicMock()
-        with patch("pipeline_core.scheduler.Scheduler") as mock_sched:
+        with patch("loom_core.scheduler.Scheduler") as mock_sched:
             mock_sched.return_value.parse.return_value = MagicMock()
             handler._handle_submit_task(self._body())
         data = handler._json.call_args[0][0]
@@ -844,7 +844,7 @@ class TestSubmitTask:
         handler._schedule_input_cleanup.assert_called_once()
 
     def test_submit_bad_pipeline_400(self, handler):
-        with patch("pipeline_core.scheduler.Scheduler") as mock_sched:
+        with patch("loom_core.scheduler.Scheduler") as mock_sched:
             mock_sched.return_value.parse.side_effect = RuntimeError("no yaml")
             handler._handle_submit_task(self._body(pipeline="ghost"))
         assert handler._json.call_args[0][1] == 400
@@ -852,7 +852,7 @@ class TestSubmitTask:
     def test_submit_run_plan_error_500(self, handler):
         handler.orch.run_plan.side_effect = RuntimeError("exec failed")
         handler._find_streaming_agent = MagicMock(return_value=None)
-        with patch("pipeline_core.scheduler.Scheduler") as mock_sched:
+        with patch("loom_core.scheduler.Scheduler") as mock_sched:
             mock_sched.return_value.parse.return_value = MagicMock()
             handler._handle_submit_task(self._body(wait=True))
         assert handler._json.call_args[0][1] == 500
@@ -866,8 +866,8 @@ class TestSubmitTask:
 
 class TestStreamCallbackHelpers:
     def test_attach_and_detach_with_writer(self, handler, tmp_path):
+        from loom_core.base_agent import AgentMeta
         from packs.docgen.agents.writer import WriterAgent
-        from pipeline_core.base_agent import AgentMeta
         writer = WriterAgent(
             name="writer", meta=AgentMeta(name="writer", version="2.0"),
             config={"quiet": True}, message_bus=None, registry=None)

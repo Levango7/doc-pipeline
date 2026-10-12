@@ -30,10 +30,10 @@ import json, os, sys
 sys.path.insert(0, {project!r})
 os.environ["LOOM_STATE_DIR"] = sys.argv[1]
 errors = []
-from pipeline_core.task_queue import TaskQueue
-from pipeline_core.cost_tracker import CostTracker
-from pipeline_core.quality_feedback import QualityFeedback
-from pipeline_core.message_store import PersistentStore
+from loom_core.task_queue import TaskQueue
+from loom_core.cost_tracker import CostTracker
+from loom_core.quality_feedback import QualityFeedback
+from loom_core.message_store import PersistentStore
 for name, factory in (("task_queue", TaskQueue), ("cost_tracker", CostTracker),
                       ("quality_feedback", QualityFeedback),
                       ("message_store", PersistentStore)):
@@ -94,7 +94,7 @@ class TestConcurrentFirstInit:
             assert proc.returncode == 0, out[-1500:]
 
         monkeypatch.setenv("LOOM_STATE_DIR", str(state))
-        from pipeline_core.task_queue import TaskQueue
+        from loom_core.task_queue import TaskQueue
 
         queue = TaskQueue()
         try:
@@ -112,7 +112,7 @@ class TestRetryHelpers:
 
     def test_enable_wal_retries_on_locked(self):
         """锁类错误必须重试；第 N 次成功后正常返回。"""
-        from pipeline_core import sqlite_util
+        from loom_core import sqlite_util
 
         calls = []
 
@@ -126,7 +126,7 @@ class TestRetryHelpers:
         assert len(calls) == 3
 
     def test_enable_wal_raises_after_exhausting_attempts(self):
-        from pipeline_core import sqlite_util
+        from loom_core import sqlite_util
 
         class AlwaysLocked:
             def execute(self, sql):
@@ -137,7 +137,7 @@ class TestRetryHelpers:
 
     def test_enable_wal_non_lock_error_raises_immediately(self):
         """非锁类错误（如库损坏）不许被重试掩盖。"""
-        from pipeline_core import sqlite_util
+        from loom_core import sqlite_util
 
         calls = []
 
@@ -153,7 +153,7 @@ class TestRetryHelpers:
 
     def test_add_column_if_missing_tolerates_duplicate_race(self, tmp_path):
         """并发下 check-then-act 撞 duplicate column：视为成功且不重复加列。"""
-        from pipeline_core import sqlite_util
+        from loom_core import sqlite_util
 
         conn = sqlite3.connect(str(tmp_path / "t.db"))
         try:
@@ -182,7 +182,7 @@ class TestRetryHelpers:
 
     def test_add_column_if_missing_other_errors_propagate(self, tmp_path):
         """非 duplicate 的 OperationalError 照抛。"""
-        from pipeline_core import sqlite_util
+        from loom_core import sqlite_util
 
         class Broken:
             def execute(self, sql):
@@ -238,7 +238,7 @@ class TestWalSwitchUnderDeterministicContention:
         import threading
         import time
 
-        from pipeline_core import sqlite_util
+        from loom_core import sqlite_util
 
         db = str(tmp_path / "fresh.db")
         holder = self._exclusive_lock_holder(db)

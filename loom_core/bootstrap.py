@@ -10,7 +10,7 @@ Bootstrap — 启动自检 + 零配置降级
   - 启动报告：一目了然的状态摘要
 
 用法：
-    from pipeline_core.bootstrap import run_startup_check
+    from loom_core.bootstrap import run_startup_check
     report = run_startup_check()
     if report.has_errors:
         print(report.summary())
@@ -174,7 +174,7 @@ def _check_project_structure(report: StartupReport, project_root: Path):
     另一套 pack、甚至只装引擎时，这些行与实际能否运行无关地红。
     product-spec P0 判据 1 要求的是反过来的方向：干净 venv 装完不红。
     """
-    engine_dirs = ["pipeline_core", "agents", "scripts"]
+    engine_dirs = ["loom_core", "agents", "scripts"]
     for d in engine_dirs:
         if (project_root / d).is_dir():
             report.add(CheckResult(f"目录 {d}/", "ok", "存在"))
@@ -184,9 +184,9 @@ def _check_project_structure(report: StartupReport, project_root: Path):
     # 关键文件：只留引擎自身三件。writer/researcher/docgen.yaml 是 pack 件，
     # 归 _check_pipeline_config 按清册量（装上什么报什么，没装不红）。
     key_files = [
-        ("pipeline_core/__init__.py", True),
-        ("pipeline_core/dag_executor.py", True),
-        ("pipeline_core/scheduler.py", True),
+        ("loom_core/__init__.py", True),
+        ("loom_core/dag_executor.py", True),
+        ("loom_core/scheduler.py", True),
         (".env", False),
         ("config.json", False),
     ]
@@ -203,7 +203,7 @@ def _check_project_structure(report: StartupReport, project_root: Path):
 def _check_llm_router(report: StartupReport):
     """检查 LLM 路由器"""
     try:
-        from pipeline_core.llm_router import get_router
+        from loom_core.llm_router import get_router
         router = get_router()
         active = router.get_active_providers()
         if active:
@@ -364,7 +364,7 @@ def run_startup_check(project_root: str = None,
     # 可选：LLM 健康检查（发送测试请求）
     if run_health_check:
         try:
-            from pipeline_core.llm_router import get_router
+            from loom_core.llm_router import get_router
             router = get_router()
             health = router.health_check_all()
             healthy = sum(1 for v in health.values() if v.get("healthy"))

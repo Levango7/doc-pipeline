@@ -6,8 +6,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from loom_core.base_agent import AgentMeta
 from packs.docgen.agents.quality_gate import QualityGateAgent
-from pipeline_core.base_agent import AgentMeta
 
 
 def _make_config(tmp_path: Path, **extra) -> dict:
@@ -94,7 +94,7 @@ class TestStyleRuleValidation:
         gate = QualityGateAgent("quality_gate", AgentMeta(name="quality_gate", version="2.0"),
                                 _make_config(tmp_path, quality_profile=str(good)), None, None)
 
-        from pipeline_core.message_bus_v3 import Message, MessageType
+        from loom_core.message_bus_v3 import Message, MessageType
         msg = Message(topic="quality_gate.check", payload={
             "task_id": "t", "content": "# Title\n\nbody content here.\n",
             "config": {"quality_profile": str(bad)},

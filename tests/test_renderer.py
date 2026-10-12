@@ -248,7 +248,7 @@ class TestRenderDispatch:
 
 def _make_agent(tmp_path, config=None):
     from agents.renderer_agent import RendererAgent
-    from pipeline_core.registry import AgentMeta
+    from loom_core.registry import AgentMeta
 
     class _Bus:
         def subscribe(self, topic, handler=None):
@@ -273,7 +273,7 @@ needs_both = pytest.mark.skipif(
 @needs_both
 class TestRendererAgent:
     def _msg(self, **payload):
-        from pipeline_core.base_agent import Message
+        from loom_core.base_agent import Message
         payload.setdefault("task_id", "t1")
         return Message(topic="renderer.render", from_agent="test", payload=payload)
 
@@ -351,7 +351,7 @@ class TestNodeConfigFromPayload:
 
     @staticmethod
     def _msg(**payload):
-        from pipeline_core.base_agent import Message
+        from loom_core.base_agent import Message
         payload.setdefault("task_id", "t1")
         return Message(topic="renderer.render", from_agent="test", payload=payload)
 
@@ -378,7 +378,7 @@ class TestNodeConfigFromPayload:
 
 class TestPipelineDeclaration:
     def test_docgen_render_parses(self):
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
         sched = Scheduler()
         plan = sched.parse_file(
             str(ROOT / "packs" / "docgen" / "pipelines" / "docgen-render.yaml"), verify_lock=False)
@@ -389,13 +389,13 @@ class TestPipelineDeclaration:
     def test_renderer_is_trusted_agent(self):
         from pathlib import Path
 
-        from pipeline_core.agent_loader import declares_sandbox_trust
+        from loom_core.agent_loader import declares_sandbox_trust
         p = Path(__file__).parent.parent / "agents" / "renderer_agent.py"
         assert declares_sandbox_trust(p)
 
     def test_lockfile_in_sync(self):
         """lockfile 必须与 YAML 一致，否则运行时会被拒绝执行。"""
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
         sched = Scheduler()
         sched.parse_file(
             str(ROOT / "packs" / "docgen" / "pipelines" / "docgen-render.yaml"), verify_lock=True)

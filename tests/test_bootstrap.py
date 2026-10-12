@@ -1,7 +1,7 @@
 """tests/test_bootstrap.py — 启动自检（StartupReport + 检查项）。"""
 
 
-from pipeline_core.bootstrap import (
+from loom_core.bootstrap import (
     CheckResult,
     StartupReport,
     quick_check,
@@ -56,7 +56,7 @@ class TestStartupCheck:
 
     def test_python_version_check_passes(self):
         report = StartupReport()
-        from pipeline_core.bootstrap import _check_python_version
+        from loom_core.bootstrap import _check_python_version
         _check_python_version(report)
         py_checks = [c for c in report.checks if c.name == "Python 版本"]
         assert len(py_checks) == 1
@@ -64,14 +64,14 @@ class TestStartupCheck:
 
     def test_project_structure_missing_dir(self, tmp_path):
         report = StartupReport()
-        from pipeline_core.bootstrap import _check_project_structure
+        from loom_core.bootstrap import _check_project_structure
         _check_project_structure(report, tmp_path)
         # 缺少 pipelines/ 等目录应报 error
         assert any(c.is_error for c in report.checks)
 
     def test_env_security_no_env(self, tmp_path):
         report = StartupReport()
-        from pipeline_core.bootstrap import _check_env_security
+        from loom_core.bootstrap import _check_env_security
         _check_env_security(report, tmp_path)
         # 无 .env 文件 → 不添加任何 check（早退）
         env_checks = [c for c in report.checks if c.name == ".env 安全"]
@@ -80,7 +80,7 @@ class TestStartupCheck:
     def test_env_security_with_real_key(self, tmp_path):
         (tmp_path / ".env").write_text("BOCHA_API_KEY=sk-realkey123\n", encoding="utf-8")
         report = StartupReport()
-        from pipeline_core.bootstrap import _check_env_security
+        from loom_core.bootstrap import _check_env_security
         _check_env_security(report, tmp_path)
         env_checks = [c for c in report.checks if c.name == ".env 安全"]
         assert len(env_checks) == 1
@@ -92,8 +92,8 @@ class TestStartupCheck:
         否则 keyless 环境永远 rc=1，CI 就只能像历史上那样不去读 rc、改用 grep
         一行文案来判断自检——那个 grep 只挡住了 selectolax 降级这一类故障。
         """
-        import pipeline_core.llm_router as llm
-        from pipeline_core.bootstrap import _check_llm_router
+        import loom_core.llm_router as llm
+        from loom_core.bootstrap import _check_llm_router
 
         class _NoProviderRouter:
             def get_active_providers(self):
@@ -108,8 +108,8 @@ class TestStartupCheck:
 
     def test_llm_router_crash_stays_error(self, monkeypatch):
         """缺凭据降级为 warn，但路由器真的炸了仍必须是 error——两者不能混为一谈。"""
-        import pipeline_core.llm_router as llm
-        from pipeline_core.bootstrap import _check_llm_router
+        import loom_core.llm_router as llm
+        from loom_core.bootstrap import _check_llm_router
 
         def _boom(*a, **k):
             raise RuntimeError("初始化不了")

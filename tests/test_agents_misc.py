@@ -1,9 +1,9 @@
 """Layout / Checker Agent 单元测试 — 补齐覆盖率薄弱区（layout 27% / checker 38%）。"""
 from unittest.mock import MagicMock, patch
 
+from loom_core.base_agent import AgentMeta, Message
 from packs.docgen.agents.checker import CheckerAgent
 from packs.docgen.agents.layout import LayoutAgent
-from pipeline_core.base_agent import AgentMeta, Message
 
 
 def _make_layout(tmp_path, dry_run=False) -> LayoutAgent:

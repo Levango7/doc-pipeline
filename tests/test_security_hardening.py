@@ -15,8 +15,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core.admin_api import AdminAPI, AdminHandler, mask_token_query
-from pipeline_core.ids import new_task_id
+from loom_core.admin_api import AdminAPI, AdminHandler, mask_token_query
+from loom_core.ids import new_task_id
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +55,7 @@ CONFIRM = {"X-Confirm": "yes", "Content-Type": "application/json"}
 
 @pytest.fixture
 def audit_capture():
-    with patch("pipeline_core.observability.get_logger") as mock_get:
+    with patch("loom_core.observability.get_logger") as mock_get:
         logger = MagicMock()
         mock_get.return_value = logger
         yield logger
@@ -66,7 +66,7 @@ def audit_capture():
 class TestDangerousOpsConfirmGate:
 
     def test_cache_clear_without_confirm_428(self):
-        with patch("pipeline_core.cache_manager.clear_all_caches") as mock_clear:
+        with patch("loom_core.cache_manager.clear_all_caches") as mock_clear:
             base, api = _start()
             try:
                 status, data = _request(base + "/api/cache/clear", method="POST")
@@ -77,7 +77,7 @@ class TestDangerousOpsConfirmGate:
                 api.stop()
 
     def test_cache_clear_with_confirm_200_and_audit(self, audit_capture):
-        with patch("pipeline_core.cache_manager.clear_all_caches") as mock_clear:
+        with patch("loom_core.cache_manager.clear_all_caches") as mock_clear:
             base, api = _start()
             try:
                 status, data = _request(base + "/api/cache/clear", method="POST",
@@ -139,7 +139,7 @@ class TestDangerousOpsConfirmGate:
         vm.rollback.return_value = {"status": "ok", "restored_version": 2}
         base, api = _start()
         try:
-            with patch("pipeline_core.version_manager.get_version_manager",
+            with patch("loom_core.version_manager.get_version_manager",
                        return_value=vm):
                 status, data = _request(
                     base + "/api/versions/rollback", method="POST",
@@ -260,7 +260,7 @@ class TestAccessLogTokenMasking:
 
 class TestMcpInitializeEcho:
     def _server(self):
-        from pipeline_core.mcp_server import MCPServer
+        from loom_core.mcp_server import MCPServer
         return MCPServer(orch=MagicMock())
 
     def test_initialize_echoes_client_requested_version(self):
@@ -271,7 +271,7 @@ class TestMcpInitializeEcho:
         assert resp["result"]["protocolVersion"] == "2025-06-18"
 
     def test_initialize_missing_version_falls_back_to_supported(self):
-        from pipeline_core.mcp_server import PROTOCOL_VERSION
+        from loom_core.mcp_server import PROTOCOL_VERSION
         resp = self._server()._handle_request({
             "jsonrpc": "2.0", "id": 31, "method": "initialize", "params": {},
         })
@@ -280,7 +280,7 @@ class TestMcpInitializeEcho:
     def test_generate_document_task_id_comes_from_new_task_id(self):
         import inspect
 
-        from pipeline_core.mcp_server import MCPServer
+        from loom_core.mcp_server import MCPServer
         # task_id 的生成点已收口到共享提交尾 `_submit_plan_run`（generate_document
         # 与 run_workflow 共用）——守卫跟着生成点走，并钉住两条工具都必须经过它，
         # 不然 id 来源就分叉了（原守卫只盯 _tool_generate_document，重构后失焦）。
@@ -308,7 +308,7 @@ class TestNewTaskId:
     def test_all_three_call_sites_wired(self):
         import inspect
 
-        import pipeline_core.admin_api as aa
+        import loom_core.admin_api as aa
         import run as run_mod
         assert "new_task_id()" in inspect.getsource(run_mod._run_single_task)
         assert "uuid.uuid4" not in inspect.getsource(run_mod._run_single_task)

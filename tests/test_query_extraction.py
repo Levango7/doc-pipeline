@@ -12,8 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core.cache_manager import CacheManager
-from pipeline_core.dag_executor import DAGExecutor
+from loom_core.cache_manager import CacheManager
+from loom_core.dag_executor import DAGExecutor
 
 
 def _make_executor() -> DAGExecutor:

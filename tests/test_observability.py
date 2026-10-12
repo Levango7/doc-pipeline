@@ -3,7 +3,7 @@ import shutil
 import threading
 import time
 
-from pipeline_core.observability import (
+from loom_core.observability import (
     MetricsRegistry,
     StructuredLogger,
     get_logger,
@@ -150,14 +150,14 @@ class TestMetricsRegistry:
 class TestSingletons:
     def test_get_logger_returns_singleton(self):
         # 重置单例以测试
-        import pipeline_core.observability as obs
+        import loom_core.observability as obs
         obs._logger = None
         l1 = get_logger()
         l2 = get_logger()
         assert l1 is l2
 
     def test_get_metrics_returns_singleton(self):
-        import pipeline_core.observability as obs
+        import loom_core.observability as obs
         obs._metrics = None
         m1 = get_metrics()
         m2 = get_metrics()

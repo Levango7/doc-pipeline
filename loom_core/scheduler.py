@@ -113,7 +113,7 @@ class AgentConfig:
     dependencies: list = field(default_factory=list)
     pool_size: int = 1
     rate_limit: dict = field(default_factory=dict)
-    #: 可选的执行条件（受限声明式，见 pipeline_core/conditions.py）。
+    #: 可选的执行条件（受限声明式，见 loom_core/conditions.py）。
     #: None = 无条件，永远执行 —— 不写 when 的老流水线行为完全不变。
     when: dict | None = None
     #: 引用另一条流水线（子流水线内联）。非空时本节点不是 Agent，
@@ -184,7 +184,7 @@ class ExecutionPlan:
 # ─── Agent 配置契约 ─────────────────────────
 #
 # 引擎侧不持有 Agent 名单：配置项与默认值由各 Agent 模块的 CONFIG_SCHEMA
-# 声明，Scheduler 用 AST 读取（见 pipeline_core/config_schema.py）。
+# 声明，Scheduler 用 AST 读取（见 loom_core/config_schema.py）。
 # 过去这里是一张 AGENT_SCHEMAS 表，把 researcher/quality_gate 等 9 个
 # 领域 Agent 的名字与默认值写死在 core 里。
 
@@ -239,7 +239,7 @@ def resolve_pipeline_name(requested: str, available: list[str],
 #: 会把解析过程挂住，而深度 3 已经覆盖"复用一段核查/发布子流程"的真实用法。
 MAX_CALL_DEPTH = 3
 
-#: 内联别名分隔符（见 pipeline_core/naming.py）
+#: 内联别名分隔符（见 loom_core/naming.py）
 _ALIAS_SEP = "__"
 
 

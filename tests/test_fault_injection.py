@@ -9,9 +9,9 @@ import os
 import time
 from pathlib import Path
 
-from pipeline_core.base_agent import AgentMeta, BaseAgent
-from pipeline_core.circuit_breaker import CircuitBreaker, CircuitState
-from pipeline_core.message_bus_v3 import MessageBus
+from loom_core.base_agent import AgentMeta, BaseAgent
+from loom_core.circuit_breaker import CircuitBreaker, CircuitState
+from loom_core.message_bus_v3 import MessageBus
 
 # ── 1. DLQ 真实重放 ──────────────────────────────
 
@@ -137,7 +137,7 @@ class TestOrchestratorCircuitBreaker:
         """连续成功执行不应误触发熔断（验证修复前 bug）"""
         from types import SimpleNamespace
 
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         o = PipelineOrchestrator(checkpoint_dir=str(Path(__file__).parent / ".test_checkpoints"))
         node = SimpleNamespace(
@@ -157,7 +157,7 @@ class TestOrchestratorCircuitBreaker:
         """连续失败达到阈值 → 熔断返回 True"""
         from types import SimpleNamespace
 
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         o = PipelineOrchestrator(checkpoint_dir=str(Path(__file__).parent / ".test_checkpoints"))
         node = SimpleNamespace(
@@ -197,8 +197,8 @@ class TestDLQSelfHeal:
         """REQUEST 死信 → orchestrator.replay_dlq → 真实重执行 node → 回填 task.result"""
         from types import SimpleNamespace
 
-        from pipeline_core import PipelineOrchestrator
-        from pipeline_core.message_bus_v3 import MessageBus
+        from loom_core import PipelineOrchestrator
+        from loom_core.message_bus_v3 import MessageBus
 
         o = PipelineOrchestrator(checkpoint_dir=str(Path(__file__).parent / ".test_checkpoints"))
         # 用真实总线（带持久化 store）
@@ -212,7 +212,7 @@ class TestDLQSelfHeal:
         o.registry.register(AgentMeta(name="writer", version="1.0", description="mock"), agent)
 
         # 构造一条 REQUEST 死信（模拟 writer 故障进 DLQ）
-        from pipeline_core.message_bus_v3 import Message, MessageType
+        from loom_core.message_bus_v3 import Message, MessageType
         dlq_msg = Message(
             topic="writer.input", payload={"content": "原始输入", "task_id": "task-abc", "node": "writer"},
             msg_type=MessageType.REQUEST, from_agent="orchestrator", to_agent="writer",

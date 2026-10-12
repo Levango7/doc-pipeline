@@ -15,7 +15,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "requirements_analyzer"
 # 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
@@ -29,7 +29,7 @@ AGENT_PRIORITY = 5
 # 否则会经总线收到发给其他 agent 的请求
 INPUT_TOPICS = ["requirements_analyzer.input"]
 OUTPUT_TOPICS = ["requirements_analyzer.done"]
-# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：结构化 DocumentSpec，供 writer 决定体裁
+# 产物契约（引擎按此声明组装下游载荷，见 loom_core/artifacts.py）：结构化 DocumentSpec，供 writer 决定体裁
 PRODUCES = {"spec": "first"}
 CONSUMES: list = []
 DEPENDENCIES = []  # type: ignore[var-annotated]
@@ -225,7 +225,7 @@ _LLM_PROMPT_TEMPLATE = """你是一个文档需求分析师。根据用户输入
 
 def _llm_analysis(raw: str, config: dict) -> DocumentSpec:
     """调用 LLM 生成 DocumentSpec"""
-    from pipeline_core.llm_router import get_router
+    from loom_core.llm_router import get_router
     router = get_router()
     if not router or not router.get_active_providers():
         raise RuntimeError("LLM 不可用")
@@ -380,7 +380,7 @@ def analyze(input_text: str, config: dict | None = None) -> DocumentSpec:
     llm_enabled = cfg.get("requirements_analyzer", {}).get("llm_enabled", True)
     with contextlib.suppress(Exception):
         if llm_enabled:
-            from pipeline_core.llm_router import get_router
+            from loom_core.llm_router import get_router
             router = get_router()
             if router and router.get_active_providers():
                 return _llm_analysis(input_text, cfg)

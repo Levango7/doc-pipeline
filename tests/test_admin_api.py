@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pipeline_core.admin_api import AdminHandler
+from loom_core.admin_api import AdminHandler
 
 
 class TestAdminHandlers:
@@ -126,13 +126,13 @@ class TestAdminHandlers:
 
     def test_cost_stats_returns_summary(self, handler):
         """_handle_cost_stats 应返回 cost_tracker summary"""
-        with patch("pipeline_core.cost_tracker.get_cost_tracker") as mock_ct:
+        with patch("loom_core.cost_tracker.get_cost_tracker") as mock_ct:
             mock_ct.return_value.summary.return_value = {"total_cost": 1.5}
             handler._handle_cost_stats()
             handler._json.assert_called_once_with({"total_cost": 1.5})
 
     def test_cost_stats_on_error_returns_500(self, handler):
-        with patch("pipeline_core.cost_tracker.get_cost_tracker") as mock_ct:
+        with patch("loom_core.cost_tracker.get_cost_tracker") as mock_ct:
             mock_ct.return_value.summary.side_effect = RuntimeError("boom")
             handler._handle_cost_stats()
             handler._json.assert_called_once()
@@ -141,7 +141,7 @@ class TestAdminHandlers:
     # ── POST /api/cost/budget 设置预算 ──
 
     def test_set_budget_valid(self, handler):
-        with patch("pipeline_core.cost_tracker.get_cost_tracker") as mock_ct:
+        with patch("loom_core.cost_tracker.get_cost_tracker") as mock_ct:
             handler._handle_set_budget(b'{"max_cost": 100.0}')
             mock_ct.return_value.set_budget.assert_called_once_with(100.0)
             handler._json.assert_called_once_with({"budget_set": True, "max_cost": 100.0})
@@ -178,7 +178,7 @@ class TestAdminHandlers:
 
     def test_alerts_returns_list(self, handler):
         handler.path = "/api/alerts?level=warning&limit=10"
-        with patch("pipeline_core.alert_manager.get_alerts") as mock_ga:
+        with patch("loom_core.alert_manager.get_alerts") as mock_ga:
             mock_ga.return_value = [{"level": "warning", "message": "test"}]
             handler._handle_alerts()
             mock_ga.assert_called_once()
@@ -193,7 +193,7 @@ class TestAdminHandlers:
     def test_logs_no_log_dir(self, handler):
         """logs 目录不存在时返回空列表"""
         handler.path = "/api/logs?level=error&limit=50"
-        with patch("pipeline_core.admin_api.Path") as mock_path:
+        with patch("loom_core.admin_api.Path") as mock_path:
             mock_path.return_value.exists.return_value = False
             handler._handle_logs()
             handler._json.assert_called_once_with({"logs": [], "count": 0})

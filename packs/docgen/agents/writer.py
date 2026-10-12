@@ -25,10 +25,10 @@ from dataclasses import dataclass, field
 
 from artesian.fast_json import dumps as _fast_dumps
 from artesian.fast_json import loads as _fast_loads
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.cache_manager import CacheManager
+from loom_core.streaming import StreamCallback
 from loom_doc import degradation
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
-from pipeline_core.cache_manager import CacheManager
-from pipeline_core.streaming import StreamCallback
 
 # ─── 章节级并行 LLM 润色 ──────────────────────────────
 # 当 LLM 可用时，多章节并行调用 LLM 润色（ThreadPoolExecutor），
@@ -42,7 +42,7 @@ AGENT_NAME = "writer"
 SANDBOX_TRUSTED = True
 
 # 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
-# （类型名表见 pipeline_core/config_schema.py）
+# （类型名表见 loom_core/config_schema.py）
 CONFIG_SCHEMA = {
     "prompt_profile": ('str', 'generic-tech'),
     "pending_expire_secs": ('int', 300),
@@ -54,7 +54,7 @@ AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 30
 INPUT_TOPICS = ["writer.input", "researcher.done", "researcher.partial", "fetcher.done"]
 OUTPUT_TOPICS = ["writer.done", "writer.progress"]
-# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：产出文档正文
+# 产物契约（引擎按此声明组装下游载荷，见 loom_core/artifacts.py）：产出文档正文
 PRODUCES = {"content": "last"}
 CONSUMES = ["articles", "results", "spec"]
 DEPENDENCIES = ["researcher", "fetcher"]
@@ -163,7 +163,7 @@ class WriterAgent(BaseAgent):
 
         # Prompt 模板配置
         self._prompt_profile = config.get("prompt_profile", "default")
-        from pipeline_core.pack_manifest import prompts_dirs as _prompts_dirs
+        from loom_core.pack_manifest import prompts_dirs as _prompts_dirs
         self._prompts_dirs = _prompts_dirs()
         self._prompt_template_cache = CacheManager(
             name="writer_prompt", max_size=50, ttl=0,
@@ -231,7 +231,7 @@ class WriterAgent(BaseAgent):
         """统一 LLM 调用（优先用 LLMRouter 多供应商 fallback，回退到单 LLM）"""
         # 优先尝试 LLMRouter（多供应商自动 fallback）
         try:
-            from pipeline_core.llm_router import get_router
+            from loom_core.llm_router import get_router
             router = get_router()
             if router and router.get_active_providers():
                 content, provider = router.chat(messages, max_tokens=max_tokens,
@@ -973,7 +973,7 @@ class WriterAgent(BaseAgent):
     def _enhance_system_prompt_with_feedback(self, system_prompt: str) -> str:
         """质量闭环：读取历史低分模式，附加改进提醒到 system prompt"""
         with contextlib.suppress(Exception):
-            from pipeline_core.quality_feedback import get_quality_feedback
+            from loom_core.quality_feedback import get_quality_feedback
             recs = get_quality_feedback().get_recommendations()
             if recs:
                 enhancement = "\n\n【质量改进提醒】基于历史评分数据，以下维度需要加强：\n"
@@ -1013,7 +1013,7 @@ class WriterAgent(BaseAgent):
         )
         try:
             try:
-                from pipeline_core.llm_router import get_router
+                from loom_core.llm_router import get_router
                 router = get_router()
                 if router and router.get_active_providers():
                     content, provider = await router.chat_async(

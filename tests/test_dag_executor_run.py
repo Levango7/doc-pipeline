@@ -1,7 +1,7 @@
 """tests/test_dag_executor_run.py — DAG 节点执行/层级调度/重做循环。"""
 from unittest.mock import MagicMock
 
-from pipeline_core.dag_executor import DAGExecutor
+from loom_core.dag_executor import DAGExecutor
 
 
 def _make_executor():

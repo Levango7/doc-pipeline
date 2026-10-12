@@ -12,9 +12,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from loom_core.base_agent import AgentMeta  # noqa: E402
+from loom_core.message_bus_v3 import Message, MessageType  # noqa: E402
 from packs.docgen.agents.quality_gate import QualityGateAgent  # noqa: E402
-from pipeline_core.base_agent import AgentMeta  # noqa: E402
-from pipeline_core.message_bus_v3 import Message, MessageType  # noqa: E402
 
 # 非完美文档（缺目录/参考资料等必需章节，completeness 必然 < 100）。
 # 长度需超过 quality_gate 的产出保真底线 min_output_chars（默认 120），

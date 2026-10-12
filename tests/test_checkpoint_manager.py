@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from pipeline_core.checkpoint_manager import CheckpointManager
+from loom_core.checkpoint_manager import CheckpointManager
 
 
 class _FakeTask:

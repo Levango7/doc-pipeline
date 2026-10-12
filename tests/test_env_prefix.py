@@ -28,7 +28,7 @@ class _Capture(logging.Handler):
 
 def _clean(monkeypatch):
     """清探针名 + 重置"已警告"缓存（warning-once 判据的前置）。"""
-    from pipeline_core import envs
+    from loom_core import envs
     envs.reset_warning_cache()
     for name in ("LOOM_PROBE", "DOC_PIPELINE_PROBE"):
         monkeypatch.delenv(name, raising=False)
@@ -55,13 +55,13 @@ class TestEnvsRead:
         envs = _clean(monkeypatch)
         monkeypatch.setenv("DOC_PIPELINE_PROBE", "legacy")
         cap = _Capture()
-        logging.getLogger("pipeline_core.envs").addHandler(cap)
+        logging.getLogger("loom_core.envs").addHandler(cap)
         try:
             envs.read("PROBE")
             envs.read("PROBE")
             envs.read("PROBE")
         finally:
-            logging.getLogger("pipeline_core.envs").removeHandler(cap)
+            logging.getLogger("loom_core.envs").removeHandler(cap)
         assert len(cap.messages) == 1
         assert "DOC_PIPELINE_PROBE" in cap.messages[0]
         assert "LOOM_PROBE" in cap.messages[0]
@@ -77,7 +77,7 @@ class TestStatePathsDualRead:
     """运行态目录解析：新名优先、旧名回退（MAOP 类部署的真实路径）。"""
 
     def _state_paths(self):
-        return importlib.import_module("pipeline_core.state_paths")
+        return importlib.import_module("loom_core.state_paths")
 
     def test_new_name(self, monkeypatch, tmp_path):
         sp = self._state_paths()
@@ -113,7 +113,7 @@ class TestStatePathsDualRead:
 
 class TestRootAndWebhooksDualRead:
     def test_paths_root_new_and_legacy(self, monkeypatch, tmp_path):
-        import pipeline_core.paths as paths
+        import loom_core.paths as paths
         assert paths.ROOT_ENV == "LOOM_ROOT"
         assert paths.LEGACY_ROOT_ENV == "DOC_PIPELINE_ROOT"
 
@@ -130,7 +130,7 @@ class TestRootAndWebhooksDualRead:
         assert paths.project_root() == old_root  # MAOP 兼容：旧名回退
 
     def test_webhooks_file_env(self, monkeypatch):
-        from pipeline_core import webhooks
+        from loom_core import webhooks
         assert webhooks.CONFIG_PATH_ENV == "LOOM_WEBHOOKS_FILE"
         assert webhooks.LEGACY_CONFIG_PATH_ENV == "DOC_PIPELINE_WEBHOOKS_FILE"
         monkeypatch.delenv("LOOM_WEBHOOKS_FILE", raising=False)
@@ -144,17 +144,17 @@ class TestIdentityStrings:
     """MCP/观测标识（spec §7.1 同名行）：serverInfo.name 与指标/日志前缀。"""
 
     def test_mcp_server_name_is_loom(self):
-        from pipeline_core.mcp_server import SERVER_NAME
+        from loom_core.mcp_server import SERVER_NAME
         assert SERVER_NAME == "loom"
 
     def test_metrics_namespace_is_loom(self):
-        from pipeline_core.observability import MetricsRegistry
+        from loom_core.observability import MetricsRegistry
         reg = MetricsRegistry()
         assert reg.counter("requests") == "loom_requests"
 
     def test_logger_app_name_is_loom(self):
         import inspect
 
-        from pipeline_core.observability import StructuredLogger
+        from loom_core.observability import StructuredLogger
         sig = inspect.signature(StructuredLogger.__init__)
         assert sig.parameters["app_name"].default == "loom"

@@ -28,7 +28,7 @@
 - **建议**: 删除或补充内容
 
 ### 2. 认证逻辑缺陷
-- **位置**: `pipeline_core/admin_api.py` `_check_auth()` 第 159-165 行
+- **位置**: `loom_core/admin_api.py` `_check_auth()` 第 159-165 行
 - **现象**:
   ```python
   def _check_auth(self) -> bool:
@@ -44,7 +44,7 @@
   - 或添加 startup 日志警告："Admin API 未配置 api_key，所有端点返回 401"
 
 ### 3. EventHook 异步处理中的全局状态风险
-- **位置**: `pipeline_core/event_hook.py` 第 41-100 行
+- **位置**: `loom_core/event_hook.py` 第 41-100 行
 - **现象**: 使用模块级全局变量 `_webhook_session`, `_webhook_loop`, `_webhook_async_queue` 等
 - **问题**:
   - 模块级全局状态在多进程/多线程场景下不安全
@@ -58,7 +58,7 @@
 ## 三、中等风险问题（P2）
 
 ### 4. `_query_cache` 无 TTL 且不可配置
-- **位置**: `pipeline_core/dag_executor.py` 第 52 行
+- **位置**: `loom_core/dag_executor.py` 第 52 行
 - **现象**: `CacheManager(name="dag_queries", max_size=100, ttl=0)`
 - **问题**: `ttl=0` 表示永不过期，在长期运行的服务中会逐渐累积过期查询结果
 - **建议**: 改为从 config 读取 TTL，或设置合理默认值（如 3600s）
@@ -76,7 +76,7 @@
 - **建议**: 改为环境变量或配置文件读取
 
 ### 7. `circuit_breaker` 重试语义
-- **位置**: `pipeline_core/dag_executor.py` `_handle_regeneration()` 第 296-320 行
+- **位置**: `loom_core/dag_executor.py` `_handle_regeneration()` 第 296-320 行
 - **现象**: quality gate 的 `_handle_regeneration` 在 `max_gen` 循环内调用 `_regenerate_one()`，但返回的 `result` 若仍不通过，外层 `execute_node_from_scheduler` 不记录失败状态
 - **影响**: 重做耗尽后，pipeline 标记为 `done` 但实际内容质量未达标
 - **建议**: 重做失败时应返回明确的 `status: "failed"` 而非空 dict
@@ -136,10 +136,10 @@
 | 编号 | 问题 | 文件 | 修复内容 | 状态 |
 |------|------|------|----------|------|
 | F1 | `fast_pool_0.py` 0字节空文件 | `agents/fast_pool_0.py` | 已删除 | ✅ |
-| F2 | auth 注释"默认关闭"与实际行为矛盾 | `pipeline_core/admin_api.py` | 注释改为"默认开启鉴权门，无钥匙不可进"；`start()` 已有 warning log，保持一致 | ✅ |
-| F3 | EventHook 全局变量无就绪标志 | `pipeline_core/event_hook.py` | 新增 `_webhook_engine_ready`；`_ensure_webhook_engine()` 末尾设为 True；`_fire_webhook()` 顶部检查，未就绪则 drop + log；`shutdown_webhook()` 退出时重置为 False | ✅ |
+| F2 | auth 注释"默认关闭"与实际行为矛盾 | `loom_core/admin_api.py` | 注释改为"默认开启鉴权门，无钥匙不可进"；`start()` 已有 warning log，保持一致 | ✅ |
+| F3 | EventHook 全局变量无就绪标志 | `loom_core/event_hook.py` | 新增 `_webhook_engine_ready`；`_ensure_webhook_engine()` 末尾设为 True；`_fire_webhook()` 顶部检查，未就绪则 drop + log；`shutdown_webhook()` 退出时重置为 False | ✅ |
 | F4 | `DEFAULT_SPAM_DOMAINS` `clickc.` 拼写 | `agents/researcher.py` | `clickc.admaster.com.cn` → `click.admaster.com.cn` | ✅ |
-| F5 | `_query_cache` TTL=0 永不过期 | `pipeline_core/dag_executor.py` | `ttl=0` → `ttl=3600`（1小时） | ✅ |
+| F5 | `_query_cache` TTL=0 永不过期 | `loom_core/dag_executor.py` | `ttl=0` → `ttl=3600`（1小时） | ✅ |
 | F6 | writer.py 引用 markdown 未转义 | `agents/writer.py` | 新增 `_md_escape()`；reference 拼接使用转义 | ✅ |
 
 ---

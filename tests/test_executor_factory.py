@@ -6,8 +6,8 @@ from concurrent.futures.process import BrokenProcessPool
 
 import pytest
 
-import pipeline_core.executor_factory as ef
-from pipeline_core.executor_factory import (
+import loom_core.executor_factory as ef
+from loom_core.executor_factory import (
     SmartExecutor,
     _estimate_task_cost,
     _is_picklable,
@@ -106,7 +106,7 @@ class TestDAGExecutorPickleCompatibility:
         """_execute_node_worker 必须是模块级函数（可 pickle）"""
         import types
 
-        from pipeline_core.dag_executor import _execute_node_worker
+        from loom_core.dag_executor import _execute_node_worker
 
         # 模块级函数的 __qualname__ 不含 '.'（不是 bound method）
         assert "." not in _execute_node_worker.__qualname__
@@ -115,7 +115,7 @@ class TestDAGExecutorPickleCompatibility:
 
     def test_execute_node_worker_picklable(self):
         """_execute_node_worker 可被 pickle 序列化"""
-        from pipeline_core.dag_executor import _execute_node_worker
+        from loom_core.dag_executor import _execute_node_worker
 
         # 不应抛出 pickle 错误
         data = pickle.dumps(_execute_node_worker)
@@ -124,7 +124,7 @@ class TestDAGExecutorPickleCompatibility:
 
     def test_dag_executor_getstate_setstate(self):
         """DAGExecutor __getstate__/__setstate__ 剥离非可序列化属性"""
-        from pipeline_core.dag_executor import DAGExecutor
+        from loom_core.dag_executor import DAGExecutor
 
         # 验证 __getstate__ 和 __setstate__ 方法存在
         assert hasattr(DAGExecutor, "__getstate__")
@@ -136,7 +136,7 @@ class TestDAGExecutorPickleCompatibility:
 
     def test_dag_executor_state_excludes_non_picklable(self):
         """__getstate__ 应排除 registry/bus 等非可序列化属性"""
-        from pipeline_core.dag_executor import DAGExecutor
+        from loom_core.dag_executor import DAGExecutor
 
         # 检查 _NON_PICKLABLE_ATTRS 属性列表存在
         assert hasattr(DAGExecutor, "_NON_PICKLABLE_ATTRS")

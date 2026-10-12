@@ -15,7 +15,7 @@ import types
 from unittest.mock import MagicMock, patch
 
 from agents.researcher import ResearcherAgent, SearchResult
-from pipeline_core.base_agent import AgentMeta, Message
+from loom_core.base_agent import AgentMeta, Message
 
 
 def _make_agent(**cfg) -> ResearcherAgent:

@@ -2,7 +2,7 @@
 
 启动方式：`python run.py <input> --admin`（或 `--dashboard`，隐含 `--admin`）。
 默认监听 `http://127.0.0.1:8910`。在线规范：`GET /api/openapi.json`
-（定义见 `pipeline_core/openapi_spec.py`，与本文同步）。
+（定义见 `loom_core/openapi_spec.py`，与本文同步）。
 
 ## 鉴权
 
@@ -129,4 +129,4 @@ curl -X POST http://127.0.0.1:8910/api/cache/clear \
 
 ---
 
-实现位置：全部端点（含 `/api/*` 扩展）在 `pipeline_core/admin_api.py`（`AdminHandler` 路由分发）。
+实现位置：全部端点（含 `/api/*` 扩展）在 `loom_core/admin_api.py`（`AdminHandler` 路由分发）。

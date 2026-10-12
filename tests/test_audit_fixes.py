@@ -14,15 +14,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core import TaskStatus
-from pipeline_core.admin_api import (
+from loom_core import TaskStatus
+from loom_core.admin_api import (
     AdminAPI,
     AdminHandler,
     stream_metrics_snapshot,
     track_stream_callback,
     untrack_stream_callback,
 )
-from pipeline_core.streaming import StreamCallback, StreamEvent
+from loom_core.streaming import StreamCallback, StreamEvent
 
 # ─── 公共工具 ─────────────────────────────────────
 
@@ -111,7 +111,7 @@ class TestCorsWhitelist:
 
     def test_extra_origin_via_env_allowed(self, monkeypatch):
         monkeypatch.setattr(
-            "pipeline_core.admin_api._EXTRA_CORS_ORIGINS",
+            "loom_core.admin_api._EXTRA_CORS_ORIGINS",
             ("https://dashboard.example.com",))
         h = _bare_handler()
         h.headers = {"Host": "127.0.0.1:8910",
@@ -338,7 +338,7 @@ class TestSubmitTaskTempCleanup:
         assert not Path(input_arg).exists()
 
     def _handler_with_task_lifecycle(self):
-        from pipeline_core.streaming import unregister_callback
+        from loom_core.streaming import unregister_callback
         unregister_callback("t456")
         h = _bare_handler("/api/tasks")
         h.orch = MagicMock()
@@ -440,7 +440,7 @@ class TestTaskExitCodeMapping:
         """--check 无错误仍退出 0（既有语义不受终态映射影响）"""
         from run import main
         with patch("sys.argv", ["run.py", "--check"]), \
-                patch("pipeline_core.bootstrap.run_startup_check") as mock_check:
+                patch("loom_core.bootstrap.run_startup_check") as mock_check:
             report = MagicMock()
             report.has_errors = False
             report.summary.return_value = "OK"
@@ -454,7 +454,7 @@ class TestTaskExitCodeMapping:
 
 class TestMcpBusinessFailureIsError:
     def _server(self, orch=None):
-        from pipeline_core.mcp_server import MCPServer
+        from loom_core.mcp_server import MCPServer
         return MCPServer(orch=orch if orch is not None else MagicMock())
 
     def test_missing_query_is_error_result(self):
@@ -481,7 +481,7 @@ class TestMcpBusinessFailureIsError:
     def test_pipeline_failure_is_error_result(self):
         orch = MagicMock()
         orch.run_plan.side_effect = RuntimeError("llm quota gone")
-        with patch("pipeline_core.scheduler.Scheduler") as mock_sched_cls:
+        with patch("loom_core.scheduler.Scheduler") as mock_sched_cls:
             mock_sched_cls.return_value.parse.return_value = MagicMock()
             resp = self._server(orch)._handle_request({
                 "jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -505,7 +505,7 @@ class TestMcpBusinessFailureIsError:
 
 class TestMcpValidationAndOutput:
     def _server(self, orch=None):
-        from pipeline_core.mcp_server import MCPServer
+        from loom_core.mcp_server import MCPServer
         return MCPServer(orch=orch if orch is not None else MagicMock())
 
     def test_get_task_invalid_task_id_rejected(self):
@@ -578,7 +578,7 @@ class TestMcpValidationAndOutput:
         assert Path(input_arg) not in before or True
 
     def test_list_pipelines_uses_project_root_anchor(self):
-        from pipeline_core.mcp_server import PROJECT_ROOT
+        from loom_core.mcp_server import PROJECT_ROOT
         resp = self._server()._handle_request({
             "jsonrpc": "2.0", "id": 14, "method": "tools/call",
             "params": {"name": "list_pipelines", "arguments": {}},
@@ -594,23 +594,23 @@ class TestMcpValidationAndOutput:
 
 class TestOpenApiSpecAdditions:
     def test_taskinfo_status_enum_includes_paused(self):
-        from pipeline_core.openapi_spec import generate_spec
+        from loom_core.openapi_spec import generate_spec
         enum = generate_spec()["components"]["schemas"]["TaskInfo"]["properties"]["status"]["enum"]
         assert "paused" in enum
 
     def test_stream_metrics_response_is_json(self):
-        from pipeline_core.openapi_spec import generate_spec
+        from loom_core.openapi_spec import generate_spec
         resp = generate_spec()["paths"]["/stream/metrics"]["get"]["responses"]["200"]
         assert "application/json" in resp["content"]
 
     def test_root_endpoint_declared(self):
-        from pipeline_core.openapi_spec import generate_spec
+        from loom_core.openapi_spec import generate_spec
         paths = generate_spec()["paths"]
         assert "/" in paths
         assert paths["/"]["get"]["summary"] != "/"
 
     def test_stream_declares_last_event_id_header(self):
-        from pipeline_core.openapi_spec import generate_spec
+        from loom_core.openapi_spec import generate_spec
         params = generate_spec()["paths"]["/stream"]["get"]["parameters"]
         header = [p for p in params if p["in"] == "header" and p["name"] == "Last-Event-ID"]
         assert len(header) == 1

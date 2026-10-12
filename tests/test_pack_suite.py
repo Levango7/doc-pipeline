@@ -55,7 +55,7 @@ def pack_orch(tmp_path_factory):
     每条 E2E 用独立 task_id（bus_data 的幂等记录按 checkout 绝对路径共享），
     并把 cwd 切到各自的 tmp 目录，交付物互不串台。
     """
-    from pipeline_core import PipelineOrchestrator
+    from loom_core import PipelineOrchestrator
 
     ck = tmp_path_factory.mktemp("pack_ck")
     orch = PipelineOrchestrator(agents_dir=str(PROJECT / "agents"),
@@ -100,7 +100,7 @@ def _deterministic_dns(monkeypatch):
 
 
 def _plan(pack: str, verify_lock: bool = True):
-    from pipeline_core.scheduler import Scheduler
+    from loom_core.scheduler import Scheduler
     sched = Scheduler(pipeline_dir=str(PIPELINES), agents_dir=PROJECT / "agents")
     return sched.parse(pack, verify_lock=verify_lock)
 
@@ -146,7 +146,7 @@ class TestIntelBriefE2E:
 
     def test_pipeline_runs_and_delivers_search_brief(self, pack_orch, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
 
         sched = Scheduler(pipeline_dir=str(tmp_path), agents_dir=PROJECT / "agents")
         plan = sched.parse_file(str(self._offline_yaml(tmp_path)), verify_lock=False)
@@ -440,7 +440,7 @@ class TestPackInventory:
         assert path.exists(), f"pack {pack!r} 没有 YAML"
         assert path.with_suffix(".lock").exists(), \
             f"pack {pack!r} 没有 lockfile（用 --write-lock 生成）"
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
         sched = Scheduler(pipeline_dir=str(path.parent), agents_dir=PROJECT / "agents")
         plan = sched.parse(pack, verify_lock=True)  # 漂移即抛 LockfileMismatchError
         assert plan.node_count >= 2, f"pack {pack!r} 只有 {plan.node_count} 个节点"

@@ -23,7 +23,7 @@ class TestExamplePackageShape:
     def test_entry_point_group_matches_loader_constant(self):
         import tomllib
 
-        from pipeline_core.agent_loader import ENTRY_POINT_GROUP
+        from loom_core.agent_loader import ENTRY_POINT_GROUP
 
         data = tomllib.loads((PLUGIN_DIR / "pyproject.toml").read_text(encoding="utf-8"))
         groups = data["project"]["entry-points"]
@@ -37,7 +37,7 @@ class TestExamplePackageShape:
         """与内置件同构：模块级 AGENT_NAME + 一个 BaseAgent 子类。"""
         import importlib.util
 
-        from pipeline_core.base_agent import BaseAgent
+        from loom_core.base_agent import BaseAgent
 
         mod_path = PLUGIN_DIR / "loom_plugin_hello" / "char_stats.py"
         spec = importlib.util.spec_from_file_location("_plugin_example_probe", mod_path)
@@ -50,7 +50,7 @@ class TestExamplePackageShape:
         assert classes, "示例模块里没有 BaseAgent 子类"
 
     def test_passes_ast_safety_scan(self):
-        from pipeline_core.agent_loader import _check_safety
+        from loom_core.agent_loader import _check_safety
 
         assert _check_safety(PLUGIN_DIR / "loom_plugin_hello" / "char_stats.py") == []
 
@@ -89,16 +89,16 @@ class TestRealPipInstallDiscovery:
                                capture_output=True, text=True, timeout=600)
         assert r.returncode == 0, f"pip install 失败：\n{r.stdout[-800:]}\n{r.stderr[-800:]}"
 
-        # 空 agents 目录 + 仓库根为 cwd（'' 进 sys.path，pipeline_core 从本仓导入）——
+        # 空 agents 目录 + 仓库根为 cwd（'' 进 sys.path，loom_core 从本仓导入）——
         # 发现的来源只可能是 pip 写进 site-packages 的那条 entry point 元数据。
         empty_agents = tmp_path / "empty_agents"
         empty_agents.mkdir()
         probe = (
             "import json\n"
             "from unittest.mock import MagicMock\n"
-            "from pipeline_core.agent_loader import AgentLoader\n"
-            "from pipeline_core.registry import Registry\n"
-            "from pipeline_core.base_agent import Message\n"
+            "from loom_core.agent_loader import AgentLoader\n"
+            "from loom_core.registry import Registry\n"
+            "from loom_core.base_agent import Message\n"
             f"loader = AgentLoader(Registry(), MagicMock(), r'{empty_agents}', strict_safety=True)\n"
             "names = loader.discover()\n"
             "loaded = loader.register(['char_stats'])\n"

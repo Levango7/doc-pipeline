@@ -7,12 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from loom_core.base_agent import AgentMeta
+from loom_core.circuit_breaker import CircuitBreaker, CircuitState
+from loom_core.llm_router import LLMProvider, LLMRouter
+from loom_core.message_bus_v3 import Message, MessageBus, MessageType
 from packs.docgen.agents.quality_gate import QualityGateAgent
 from packs.docgen.agents.writer import WriterAgent
-from pipeline_core.base_agent import AgentMeta
-from pipeline_core.circuit_breaker import CircuitBreaker, CircuitState
-from pipeline_core.llm_router import LLMProvider, LLMRouter
-from pipeline_core.message_bus_v3 import Message, MessageBus, MessageType
 
 # ════════════════════════════════════════════════
 # circuit_breaker → alert_manager
@@ -23,7 +23,7 @@ class TestCircuitBreakerAlertIntegration:
     def test_open_triggers_alert(self):
         """熔断器进入 OPEN 时必须调 alert_manager.alert"""
         cb = CircuitBreaker("test-agent", failure_threshold=2)
-        with patch("pipeline_core.alert_manager.alert") as mock_alert:
+        with patch("loom_core.alert_manager.alert") as mock_alert:
             cb.record_failure()
             assert not mock_alert.called, "第 1 次失败不应告警"
             cb.record_failure()
@@ -38,7 +38,7 @@ class TestCircuitBreakerAlertIntegration:
         cb.record_failure()  # 进入 OPEN
         # 等待 recovery_timeout 后模拟恢复
         cb.state = CircuitState.HALF_OPEN
-        with patch("pipeline_core.alert_manager.alert") as mock_alert:
+        with patch("loom_core.alert_manager.alert") as mock_alert:
             cb.record_success()
             assert not mock_alert.called, "恢复 CLOSED 不应触发 critical 告警"
 
@@ -59,8 +59,8 @@ class TestLLMRouterCostTrackerIntegration:
         )
         router = LLMRouter(providers=[provider])
 
-        with patch("pipeline_core.llm_router._call_llm", return_value="LLM response"), \
-             patch("pipeline_core.cost_tracker.get_cost_tracker") as mock_ct:
+        with patch("loom_core.llm_router._call_llm", return_value="LLM response"), \
+             patch("loom_core.cost_tracker.get_cost_tracker") as mock_ct:
             mock_ct.return_value.record_call = MagicMock()
             content, provider_name = router.chat([{"role": "user", "content": "hi"}])
             assert content == "LLM response"
@@ -79,8 +79,8 @@ class TestLLMRouterCostTrackerIntegration:
         )
         router = LLMRouter(providers=[provider])
 
-        with patch("pipeline_core.llm_router._call_llm", side_effect=RuntimeError("fail")), \
-             patch("pipeline_core.cost_tracker.get_cost_tracker") as mock_ct:
+        with patch("loom_core.llm_router._call_llm", side_effect=RuntimeError("fail")), \
+             patch("loom_core.cost_tracker.get_cost_tracker") as mock_ct:
             mock_ct.return_value.record_call = MagicMock()
             with pytest.raises(RuntimeError):
                 router.chat([{"role": "user", "content": "hi"}])
@@ -110,7 +110,7 @@ class TestQualityGateFeedbackIntegration:
             payload={"content": "# Test\n\nSome content here.", "task_id": "t-int", "queries": ["test"]},
             msg_type=MessageType.REQUEST,
         )
-        with patch("pipeline_core.quality_feedback.record_quality") as mock_rq:
+        with patch("loom_core.quality_feedback.record_quality") as mock_rq:
             qg.handle(msg)
             mock_rq.assert_called_once()
             kwargs = mock_rq.call_args.kwargs
@@ -125,7 +125,7 @@ class TestQualityGateFeedbackIntegration:
             payload={"content": watery, "task_id": "t-fail", "queries": ["test"]},
             msg_type=MessageType.REQUEST,
         )
-        with patch("pipeline_core.quality_feedback.record_quality") as mock_rq:
+        with patch("loom_core.quality_feedback.record_quality") as mock_rq:
             qg.handle(msg)
             mock_rq.assert_called_once()
             assert mock_rq.call_args.kwargs["task_id"] == "t-fail"
@@ -157,8 +157,8 @@ class TestWriterFeedbackIntegration:
 
         writer._llm_chat_async = _fake_llm_chat_async
 
-        with patch("pipeline_core.quality_feedback.get_quality_feedback") as mock_gqf, \
-                patch("pipeline_core.llm_router.get_router", return_value=None):
+        with patch("loom_core.quality_feedback.get_quality_feedback") as mock_gqf, \
+                patch("loom_core.llm_router.get_router", return_value=None):
             mock_gqf.return_value.get_recommendations = MagicMock(return_value=["加强引用"])
             # 不再用 suppress 吞异常 —— 让真实回归直接暴露
             writer._restructure_document(

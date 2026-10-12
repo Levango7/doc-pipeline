@@ -9,7 +9,7 @@ length, sentence-count, and average characters per sentence), for the
 quality gate to cite as a structural dimension. Pure stdlib, offline,
 reproducible.
 """
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 
 SANDBOX_TRUSTED = True
 AGENT_NAME = "readability"

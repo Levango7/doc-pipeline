@@ -6,12 +6,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pipeline_core.agent_loader import (
+from loom_core.agent_loader import (
     AgentLoader,
     SecurityError,
     _check_safety,
 )
-from pipeline_core.registry import Registry
+from loom_core.registry import Registry
 
 
 def _make_loader(tmp_path):
@@ -89,7 +89,7 @@ class TestAgentLoaderRegister:
     def test_register_loads_real_agent(self, tmp_path):
         # 写一个最小合法 Agent
         (tmp_path / "demo_agent.py").write_text(
-            'from pipeline_core.base_agent import BaseAgent, Message\n'
+            'from loom_core.base_agent import BaseAgent, Message\n'
             'AGENT_NAME = "demo_agent"\n'
             'AGENT_VERSION = "1.0"\n'
             'class DemoAgent(BaseAgent):\n'
@@ -103,7 +103,7 @@ class TestAgentLoaderRegister:
 
     def test_register_skips_unsafe_agent_in_strict_mode(self, tmp_path):
         (tmp_path / "unsafe_agent.py").write_text(
-            'from pipeline_core.base_agent import BaseAgent, Message\n'
+            'from loom_core.base_agent import BaseAgent, Message\n'
             'AGENT_NAME = "unsafe_agent"\n'
             'class UnsafeAgent(BaseAgent):\n'
             '    def handle(self, msg):\n'
@@ -118,7 +118,7 @@ class TestAgentLoaderRegister:
 
     def test_register_extracts_meta(self, tmp_path):
         (tmp_path / "meta_agent.py").write_text(
-            'from pipeline_core.base_agent import BaseAgent, Message\n'
+            'from loom_core.base_agent import BaseAgent, Message\n'
             'AGENT_NAME = "meta_agent"\n'
             'AGENT_VERSION = "2.0"\n'
             'AGENT_DESC = "A test agent"\n'
@@ -138,7 +138,7 @@ class TestAgentLoaderRegister:
         assert meta.dependencies == ["researcher"]
 
 
-_DEMO_SRC = '''from pipeline_core.base_agent import BaseAgent
+_DEMO_SRC = '''from loom_core.base_agent import BaseAgent
 AGENT_NAME = "{name}"
 AGENT_VERSION = "{version}"
 class DemoAgent(BaseAgent):
@@ -252,14 +252,14 @@ class TestModuleIdentity:
         loader = _make_loader(tmp_path)
         loader.register([name])
         calls = []
-        real = __import__("pipeline_core.agent_loader", fromlist=["_check_safety"])._check_safety
+        real = __import__("loom_core.agent_loader", fromlist=["_check_safety"])._check_safety
 
         def spy(file_path, strict=False):
             calls.append((file_path.name, strict))
             return real(file_path, strict)
 
-        monkeypatch.setattr("pipeline_core.agent_loader._check_safety", spy)
-        monkeypatch.setattr("pipeline_core.agent_loader.declares_sandbox_trust",
+        monkeypatch.setattr("loom_core.agent_loader._check_safety", spy)
+        monkeypatch.setattr("loom_core.agent_loader.declares_sandbox_trust",
                             lambda p: False)
         loader.register([name])          # 复用路径
         assert calls, "复用模块时跳过了安全扫描"
@@ -267,7 +267,7 @@ class TestModuleIdentity:
 
     def test_real_agents_dir_is_sandbox_trusted_so_no_spurious_scan(self, tmp_path):
         """出厂 Agent 自带 SANDBOX_TRUSTED，走的是"跳过黑名单"而不是"没检查"。"""
-        from pipeline_core.agent_loader import declares_sandbox_trust
+        from loom_core.agent_loader import declares_sandbox_trust
 
         root = Path(__file__).resolve().parent.parent
         # writer 随 pack-docgen 拆出，住 packs/docgen/agents/；researcher 是核心件
@@ -284,7 +284,7 @@ class TestEntryPointPlugins:
     """
 
     PLUGIN_SRC = (
-        "from pipeline_core.base_agent import BaseAgent\n"
+        "from loom_core.base_agent import BaseAgent\n"
         "AGENT_NAME = 'hello'\n"
         "AGENT_VERSION = '2.0'\n"
         "AGENT_DESC = '外部插件示例'\n"
@@ -297,7 +297,7 @@ class TestEntryPointPlugins:
         """装一个假插件：模块 exec 进 sys.modules，entry_points() 打桩返回它。"""
         import importlib.util as ilu
 
-        import pipeline_core.agent_loader as al
+        import loom_core.agent_loader as al
 
         f = tmp_path / f"{name}_plugin.py"
         f.write_text(src or self.PLUGIN_SRC, encoding="utf-8")
@@ -310,7 +310,7 @@ class TestEntryPointPlugins:
         return mod
 
     def test_discover_includes_plugins_and_queries_group(self, monkeypatch, tmp_path):
-        import pipeline_core.agent_loader as al
+        import loom_core.agent_loader as al
 
         self._install_plugin(monkeypatch, tmp_path)
         calls: list = []
@@ -325,7 +325,7 @@ class TestEntryPointPlugins:
 
     def test_local_file_wins_on_name_collision(self, monkeypatch, tmp_path):
         (tmp_path / "hello.py").write_text(
-            "from pipeline_core.base_agent import BaseAgent\n"
+            "from loom_core.base_agent import BaseAgent\n"
             "AGENT_NAME = 'hello'\n"
             "class LocalHello(BaseAgent):\n"
             "    def handle(self, msg): return {'status': 'ok'}\n",
@@ -347,7 +347,7 @@ class TestEntryPointPlugins:
         assert meta.source == "entry_point:hello"
         assert meta.version == "2.0"
         # "能作为节点执行"：DAG 执行器按同一 registry 取实例，这里直接跑 handle
-        from pipeline_core.base_agent import Message
+        from loom_core.base_agent import Message
 
         inst = loader.registry.get_instance("hello")
         out = inst.handle(Message(topic="t", from_agent="test", payload={"x": "42"}))
@@ -356,7 +356,7 @@ class TestEntryPointPlugins:
     def test_untrusted_plugin_goes_through_ast_scan(self, monkeypatch, tmp_path):
         self._install_plugin(monkeypatch, tmp_path, src=(
             "import os\n"
-            "from pipeline_core.base_agent import BaseAgent\n"
+            "from loom_core.base_agent import BaseAgent\n"
             "AGENT_NAME = 'hello'\n"
             "class Evil(BaseAgent):\n"
             "    def handle(self, msg):\n"
@@ -369,7 +369,7 @@ class TestEntryPointPlugins:
     def test_plugin_may_declare_sandbox_trust(self, monkeypatch, tmp_path):
         self._install_plugin(monkeypatch, tmp_path, src=(
             "SANDBOX_TRUSTED = True\n"
-            "from pipeline_core.base_agent import BaseAgent\n"
+            "from loom_core.base_agent import BaseAgent\n"
             "AGENT_NAME = 'hello'\n"
             "class Trusted(BaseAgent):\n"
             "    def handle(self, msg): return {'status': 'ok'}\n"))
@@ -377,7 +377,7 @@ class TestEntryPointPlugins:
         assert loader.register(["hello"]) == ["hello"]
 
     def test_class_valued_entry_point_rejected(self, monkeypatch, tmp_path):
-        import pipeline_core.agent_loader as al
+        import loom_core.agent_loader as al
 
         class NotAModule:
             pass
@@ -389,7 +389,7 @@ class TestEntryPointPlugins:
         assert loader.registry.get_meta("hello") is None
 
     def test_broken_metadata_does_not_break_local_discovery(self, monkeypatch, tmp_path):
-        import pipeline_core.agent_loader as al
+        import loom_core.agent_loader as al
 
         (tmp_path / "foo.py").write_text("# agent", encoding="utf-8")
 

@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from artesian.search_engines import SearchEngineManager
-from pipeline_core.llm_router import get_router
+from loom_core.llm_router import get_router
 
 logger = logging.getLogger(__name__)
 

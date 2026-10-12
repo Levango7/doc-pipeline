@@ -12,7 +12,7 @@
 现在默认值在调用期解析，`LOOM_STATE_DIR` / `LOOM_VERSIONS_DIR`
 可以把状态整体挪走；不设环境变量时行为与既往一致（仍是 `<checkout>/bus_data`）。
 旧名 `DOC_PIPELINE_STATE_DIR` / `DOC_PIPELINE_VERSIONS_DIR` 过渡期仍可读
-（双读规则见 `pipeline_core.envs`）。
+（双读规则见 `loom_core.envs`）。
 """
 from __future__ import annotations
 

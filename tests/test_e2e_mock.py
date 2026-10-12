@@ -57,8 +57,8 @@ class TestMockE2E:
 
         mock_results = [_mock_search_result(f"Result {i}") for i in range(3)]
 
-        from pipeline_core import PipelineOrchestrator
-        from pipeline_core.scheduler import Scheduler
+        from loom_core import PipelineOrchestrator
+        from loom_core.scheduler import Scheduler
 
         orch = PipelineOrchestrator(
             agents_dir=str(PROJECT / "agents"),
@@ -108,8 +108,8 @@ class TestMockE2E:
         input_file = tmp_path / "input.md"
         input_file.write_text("Python 异步编程的基本概念和用法\n", encoding="utf-8")
 
-        from pipeline_core import PipelineOrchestrator
-        from pipeline_core.scheduler import Scheduler
+        from loom_core import PipelineOrchestrator
+        from loom_core.scheduler import Scheduler
 
         monkeypatch.setattr(PipelineOrchestrator, "_delivered",
                             lambda self, task, plan=None: False)
@@ -131,7 +131,7 @@ class TestMockE2E:
 
     def test_dag_builds_correct_levels(self):
         """验证 test_pipeline.yaml 的 DAG 层级正确。"""
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
         sched = Scheduler()
         plan = sched.parse_file(str(PROJECT / "pipelines" / "test_pipeline.yaml"))
 
@@ -143,8 +143,8 @@ class TestMockE2E:
 
     def test_checkpoint_save_and_load(self, tmp_path):
         """验证断点保存 → 加载 → 恢复。"""
-        from pipeline_core import PipelineOrchestrator
-        from pipeline_core.pipeline import PipelineTask, TaskStatus
+        from loom_core import PipelineOrchestrator
+        from loom_core.pipeline import PipelineTask, TaskStatus
 
         orch = PipelineOrchestrator(
             agents_dir=str(PROJECT / "agents"),
@@ -166,8 +166,8 @@ class TestMockE2E:
 
     def test_task_cancellation(self):
         """验证任务取消信号传播。"""
-        from pipeline_core import PipelineOrchestrator
-        from pipeline_core.pipeline import PipelineTask, TaskStatus
+        from loom_core import PipelineOrchestrator
+        from loom_core.pipeline import PipelineTask, TaskStatus
 
         orch = PipelineOrchestrator(
             agents_dir=str(PROJECT / "agents"),
@@ -186,7 +186,7 @@ class TestMockE2E:
 
     def test_rate_limiter_allows_when_unconfigured(self):
         """验证无限流配置时直接放行。"""
-        from pipeline_core.dag_executor import DAGExecutor
+        from loom_core.dag_executor import DAGExecutor
         ex = DAGExecutor(MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())
         assert ex._acquire_rate_limit("any", {}) is True
         assert ex._acquire_rate_limit("any", {"rate": 0}) is True

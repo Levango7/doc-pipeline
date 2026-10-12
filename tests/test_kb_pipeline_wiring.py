@@ -66,12 +66,12 @@ def _payload(**kw) -> dict:
 
 
 def _make_agent(cls, config: dict, name: str):
-    from pipeline_core.base_agent import AgentMeta
+    from loom_core.base_agent import AgentMeta
     return cls(name, AgentMeta(name=name, version="1.0"), config, None, None)
 
 
 def _msg(payload: dict):
-    from pipeline_core.base_agent import Message
+    from loom_core.base_agent import Message
     return Message(topic="kb.input", payload=payload, from_agent="test")
 
 
@@ -79,8 +79,8 @@ def _msg(payload: dict):
 
 class TestPipelineDefinition:
     def test_kb_docgen_parses_with_expected_levels(self):
-        from pipeline_core.naming import agent_of
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.naming import agent_of
+        from loom_core.scheduler import Scheduler
         plan = Scheduler().parse_file(str(PROJECT / "packs" / "docgen" / "pipelines" / "kb-docgen.yaml"))
         assert plan.pipeline_name == "kb-docgen"
         # 8 = ingest + knowledge_base + writer + 质量尾内联的五个节点
@@ -97,13 +97,13 @@ class TestPipelineDefinition:
 
         声明由各 Agent 模块持有，Scheduler 用 AST 读取（core 不再集中名单）。
         """
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
         sched = Scheduler()
         assert "files_from_input" in sched._schema_for_agent("ingest")
         assert "embedder" in sched._schema_for_agent("knowledge_base")
 
     def test_bad_type_in_config_rejected(self, tmp_path, corpus):
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
         src = (PROJECT / "packs" / "docgen" / "pipelines" / "kb-docgen.yaml").read_text(encoding="utf-8")
         drifted = src.replace("top_k: 6", 'top_k: "很多"')
         target = tmp_path / "kb-drift.yaml"
@@ -344,8 +344,8 @@ class TestKbPipelineOfflineE2E:
         shutil.copy(PROJECT / "packs" / "docgen" / "pipelines" / "_quality-tail.yaml",
                     corpus["tmp"] / "_quality-tail.yaml")
 
-        from pipeline_core import PipelineOrchestrator
-        from pipeline_core.scheduler import Scheduler
+        from loom_core import PipelineOrchestrator
+        from loom_core.scheduler import Scheduler
         orch = PipelineOrchestrator(
             agents_dir=str(PROJECT / "agents"),
             checkpoint_dir=str(corpus["tmp"] / "checkpoints"))
@@ -478,7 +478,7 @@ class TestBusAddressing:
         results → writer 吐占位文。定向 RPC 的 topic 是排他的，多一个订阅者
         就是改路由，必须由测试钉住。
         """
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
         orch = PipelineOrchestrator(agents_dir=self._agents_dir(),
                                     checkpoint_dir=str(Path(".pytest_tmp") / "addr2"))
         try:
@@ -496,9 +496,9 @@ class TestBusAddressing:
             orch.shutdown()
 
     def test_every_pipeline_node_listens_on_its_input_topic(self):
-        from pipeline_core import PipelineOrchestrator
-        from pipeline_core.naming import agent_of
-        from pipeline_core.scheduler import Scheduler
+        from loom_core import PipelineOrchestrator
+        from loom_core.naming import agent_of
+        from loom_core.scheduler import Scheduler
         orch = PipelineOrchestrator(agents_dir=self._agents_dir(),
                                     checkpoint_dir=str(Path(".pytest_tmp") / "addr"))
         try:

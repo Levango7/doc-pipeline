@@ -83,7 +83,7 @@ class TestPluginPackagesMetadata:
         for key in ("license", "readme", "dependencies", "classifiers"):
             assert key in proj, f"{pkg_dir.name}: pyproject 缺 {key}"
 
-        # 依赖宿主：插件 import pipeline_core，宿主发行名 2026-10-11 起为 nexusloom
+        # 依赖宿主：插件 import loom_core，宿主发行名 2026-10-11 起为 nexusloom
         assert any(d.startswith("nexusloom") for d in proj["dependencies"]), (
             f"{pkg_dir.name}: 未声明对宿主 nexusloom 的依赖")
 

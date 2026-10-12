@@ -8,7 +8,7 @@
 背景：pipeline YAML 曾内嵌与 profile 不一致的 weights（且总和≠1.0），
 修复后权重统一由 profile 提供（单一事实来源），本测试锁定该约束。
 
-另含版本一致性护栏：pyproject.toml 的 version 与 pipeline_core.__version__
+另含版本一致性护栏：pyproject.toml 的 version 与 loom_core.__version__
 必须一致（banner/Admin API/MCP 对外报告取后者；曾漂移 3.7.0 vs 3.8.0
 长达一个版本周期未被发现）。
 """
@@ -30,14 +30,14 @@ PROFILE_NAMES = sorted(p.stem for p in QUALITY_DIR.glob("*.yaml"))
 
 class TestVersionConsistency:
     def test_pyproject_version_matches_pipeline_core(self):
-        """pyproject version == pipeline_core.__version__（对外报告的单一事实来源）"""
+        """pyproject version == loom_core.__version__（对外报告的单一事实来源）"""
         pyproject = (PROJECT / "pyproject.toml").read_text(encoding="utf-8")
         m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M)
         assert m, "pyproject.toml 未找到 version 字段"
-        import pipeline_core
-        assert m.group(1) == pipeline_core.__version__, (
+        import loom_core
+        assert m.group(1) == loom_core.__version__, (
             f"版本漂移: pyproject={m.group(1)} != "
-            f"pipeline_core={pipeline_core.__version__}")
+            f"loom_core={loom_core.__version__}")
 
 
 def _code_dimensions() -> set[str]:
@@ -105,7 +105,7 @@ class TestLockfileInSync:
     """lockfile 的 quality_gate config_hash 与当前 YAML 一致（无配置漂移）"""
 
     def test_docgen_parse_verifies_lockfile(self):
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
         lock = PROJECT / "packs" / "docgen" / "pipelines" / "docgen.lock"
         if not lock.exists():
             pytest.skip("docgen.lock 不存在")

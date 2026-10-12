@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline_core.pipeline import PipelineOrchestrator, TaskStatus
+from loom_core.pipeline import PipelineOrchestrator, TaskStatus
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ class TestRunPlanAsync:
     @pytest.mark.asyncio
     async def test_run_plan_async_with_empty_plan(self, orchestrator, tmp_path):
         """空 plan 的 run_plan_async 应正常完成"""
-        from pipeline_core.scheduler import ExecutionPlan
+        from loom_core.scheduler import ExecutionPlan
 
         plan = ExecutionPlan(
             pipeline_name="test_async",

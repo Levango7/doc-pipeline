@@ -1,7 +1,7 @@
 """OpenAPI Spec — 结构有效性测试"""
 import pytest
 
-from pipeline_core.openapi_spec import generate_spec
+from loom_core.openapi_spec import generate_spec
 
 
 @pytest.fixture
