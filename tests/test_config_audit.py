@@ -22,7 +22,7 @@ from pipeline_core.admin_api import AdminHandler
 @pytest.fixture
 def state_dir(tmp_path, monkeypatch):
     d = tmp_path / "state"
-    monkeypatch.setenv("DOC_PIPELINE_STATE_DIR", str(d))
+    monkeypatch.setenv("LOOM_STATE_DIR", str(d))
     return d
 
 

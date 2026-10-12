@@ -16,6 +16,10 @@ def server():
 
 
 class TestMCPServer:
+    def test_server_identity_is_loom(self):
+        """serverInfo.name = loom（spec §7.1 同名行；旧值 doc-pipeline 已更）。"""
+        assert SERVER_NAME == "loom"
+
     def test_initialize(self, server):
         resp = server._handle_request({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -226,7 +230,7 @@ class TestMCPOverRealStdio:
         payload = "\n".join(json.dumps(r) for r in requests) + "\n"
         env = dict(__import__("os").environ,
                    # 状态目录隔离：幂等库按检出绝对路径共享，跑在真 bus_data/ 上会串台
-                   DOC_PIPELINE_STATE_DIR=str(tmp_path))
+                   LOOM_STATE_DIR=str(tmp_path))
         proc = subprocess.run([sys.executable, "run.py", "--mcp"], input=payload,
                               capture_output=True, text=True, timeout=120,
                               cwd=str(self.REPO), env=env)

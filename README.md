@@ -16,7 +16,7 @@
 | **实验性** | 需求分析 | `--pipeline docreq` | requirements_analyzer 输出结构化 DocumentSpec |
 | **通用** | 任意 JSON 接口 → 报告 | `--pipeline api-report` | 无领域节点：`http_request` 取接口 → `transform` 挑字段渲染 → 落盘 |
 | **通用** | 接口列表 → **逐项摘要** | `--pipeline api-digest` | 同一个 Agent 按 `foreach` 逐项跑 N 次，聚合产物再落盘（列表长度超 `max_items` 直接报错） |
-| **实验性** | 文档增强 | `--enhance <input>` | 逐章节 LLM 深化 + 搜索补充 |
+| **实验性** | 文档增强（库） | `docpipeline.document_enhancer` | 逐章节 LLM 深化 + 搜索补充；CLI 入口已随动词收敛摘除（库仍可用，见 `docs/agents.md`） |
 | **实验性** | MCP Server | `--mcp` | JSON-RPC 2.0 over stdio，供外部 Agent 调度 |
 
 ### 输出格式
@@ -84,7 +84,7 @@ kb.search("本季度营收增长多少", top_k=3)        # 向量检索
 | **可观测** | 结构化日志（轮转）、Prometheus Metrics、Admin REST API、Dashboard、日志查询 |
 | **成本** | LLM 调用成本追踪（16 供应商定价表）、预算熔断、`GET /api/cost` |
 | **安全** | Agent 沙箱（AST 安全检查 + 白名单）、.env 明文密钥检测 |
-| **运维** | 版本锁定（`--write-lock` 生成/刷新 pipelines/*.lock；运行时自动比对 version + config_hash，配置漂移即拒绝执行）、Schema 校验、基础鉴权、Docker 化、配置热更新、MCP Server |
+| **运维** | 版本锁定（`loom lock` 生成/刷新锁文件；运行时自动比对 version + config_hash，配置漂移即拒绝执行）、Schema 校验、基础鉴权、Docker 化、配置热更新、MCP Server |
 
 ---
 
@@ -126,8 +126,8 @@ python run.py test_input.md --pipeline docgen --output out.md
 # 指定检索词
 python run.py topic.md --queries "RAG 架构" "检索增强生成" --pipeline docgen
 
-# 仅预览执行计划（不实际运行）
-python run.py test_input.md --plan
+# 仅预览执行计划（不实际运行；动词形态）
+loom plan docgen
 
 # 从断点恢复
 python run.py test_input.md --resume --task-id <id>
@@ -136,7 +136,20 @@ python run.py test_input.md --resume --task-id <id>
 python run.py test_input.md --dashboard
 ```
 
-### CLI 参数
+### CLI 动词与参数
+
+**动词**（spec §5.3；缺省动词 = run，`loom input.md` 等价 `loom run input.md`）：
+
+| 动词 | 说明 |
+|------|------|
+| `loom run [input]` | 执行流水线（最常见形态，动词可省） |
+| `loom plan [name]` | 只预览执行计划，不执行 |
+| `loom lock [name]` | 生成/刷新锁文件后退出（与 YAML 同目录：核心落 `pipelines/*.lock`，pack 落 `packs/<pack>/pipelines/*.lock`；纯维护动作，不执行流水线） |
+| `loom pack list` | 列出 pack 清册（物理 pack + 散装流水线） |
+| `loom pack check` | 运行启动自检（等价 `--check`） |
+| `loom plugin list` | 列出全部 Agent / 插件（含来源标记） |
+
+**其余参数**（服务/运维开关保持 flag）：
 
 | 参数 | 说明 |
 |------|------|
@@ -145,7 +158,6 @@ python run.py test_input.md --dashboard
 | `--queries, -q` | 检索词（可多个） |
 | `--output, -o` | 输出文件路径 |
 | `--resume` | 从断点续传（声明式与 legacy 两条路径都生效），配 `--task-id` 指定要续的任务；断点属另一条流水线时会被拒收并告警，而不是合错状态 |
-| `--plan / --dry-run` | 仅预览计划，不执行 |
 | `--admin / --dashboard` | 启动管理 API / 仪表盘 |
 | `--daemon` | 执行完后保持 API 常驻 |
 | `--mcp` | 启动 MCP Server（JSON-RPC over stdio，供外部 Agent 调度） |
@@ -154,7 +166,6 @@ python run.py test_input.md --dashboard
 | `--config, -c` | 自定义配置文件 |
 | `--json-output` | 输出 JSON 结果（供 wrapper 解析） |
 | `--legacy` | （已冻结，仅兜底）按 Agent 注册元数据执行，不经 Scheduler/YAML；生产请用默认 DAG 模式 |
-| `--write-lock` | 为当前流水线生成/刷新锁文件（写在与 YAML 同目录：核心流水线落 `pipelines/*.lock`，pack 流水线落 `packs/<pack>/pipelines/*.lock`；配置变更需显式重写锁，运行时比对 config_hash + 拓扑指纹） |
 | `--check` | 启动自检后退出：如实报告 HTML 解析内核、LLM 供应商、依赖与目录结构。退出码只反映**结构性故障**——缺 LLM 凭据记 WARN 不记 ERROR，因此 `rc` 可被 CI 直接采信（历史上 CI 从不读这个 rc，只 grep 一行文案） |
 
 > **执行路径说明**：默认走声明式 DAG（`pipelines/*.yaml` + Scheduler，含 lockfile 校验与 per-node 配置）。
@@ -221,7 +232,7 @@ python run.py test_input.md --dashboard
 | `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
 | `docpipeline/renderer.py` | 渲染层：Markdown → docx（OOXML）/ pdf（ReportLab），双后端可选依赖 |
 | `artesian`（独立库，自本仓 `pipeline_core/` 迁出） | `fast_json`（orjson 优先、stdlib 回退）+ HTML 解析内核兼容层（modest/lexbor 按可用性选，降级显式记录）+ 嵌入层（hash 内置 / local 模型 / API，auto 自动回落）+ 知识库（切块 → 向量化 → SQLite 持久化 → 向量检索）+ 统一搜索引擎接口（10 引擎 + mock 测试桩 + 自带 LRU+TTL 缓存）+ URL 安全校验（SSRF：仅 http/https、拒私网/保留/链路本地、逐跳重定向复验、DNS 结果 TTL 缓存） |
-| `pipeline_core/state_paths.py` | 运行态路径解析（`DOC_PIPELINE_STATE_DIR` / `DOC_PIPELINE_VERSIONS_DIR`），测试与真实运行不再共用一份幂等键历史 |
+| `pipeline_core/state_paths.py` | 运行态路径解析（`LOOM_STATE_DIR` / `LOOM_VERSIONS_DIR`），测试与真实运行不再共用一份幂等键历史 |
 | `docpipeline/ingest.py` | 摄入层：PDF/图片/文本 → 结构化 Markdown（PDF 按字号推断标题层级） |
 | `docpipeline/document_enhancer.py` | 文档增强：对已有 Markdown 逐章节 LLM 深化 + ASCII 图修复 + 导出 |
 | `agents/` | 14 个核心 Agent 实现（researcher/fetcher/safe_writer/requirements_analyzer/renderer/ingest/knowledge_base/http_request/transform + keyword_extract/readability/link_check/fact_coverage/tldr） |
@@ -308,7 +319,7 @@ agents:
 - **路径取不到就抛错**，整条 run 失败——把它当"条件不成立"就会静默跳过分支却照报 done。
   只有 `exists` / `truthy` / `falsy` 允许路径缺失。
 
-`when` 参与 `topology_hash`：给节点加条件会让既有 lockfile 报拓扑漂移，必须 `--write-lock`。
+`when` 参与 `topology_hash`：给节点加条件会让既有 lockfile 报拓扑漂移，必须 `loom lock <name>` 重写锁。
 不写 `when` 的节点行为与之前完全一致（各内置流水线的 lockfile 指纹实测未变，`tests/test_condition_nodes.py` 逐条校验）。
 
 右值也能从上下文取，这是子流水线参数化的前提：
@@ -348,7 +359,7 @@ agents:
 - `call` 节点不接受 `config` / `when` / `pool_size` / `rate_limit` / `foreach` —— 配置属于
   子流水线，父子各写一份会变成两处真相；`foreach` 更是没有对象（展开后"本节点"不存在）。
 - **被引子流水线改了，调用方的 lockfile 会报拓扑漂移**（展开后的图算指纹，
-  `inputs` 的实参也算），必须 `--write-lock`。
+  `inputs` 的实参也算），必须 `loom lock <name>` 重写锁。
 
 参数（`inputs`）的作用域：
 
@@ -411,7 +422,7 @@ agents:
 - 不与 `pool_size>1` / `call` / 质量重做（`REGENERATION_*`）/ 落盘（`WRITES_OUTPUT`）同用。
   前两者的展开分配语义没有唯一答案，后两者的操作对象是"整份产物"，逐项展开里没这个东西；
   要落盘就把落盘节点排在 foreach 之后，让它拿聚合产物。
-- 展开契约（`over` 与 `max_items`）进 `topology_hash`：改了必须 `--write-lock`，否则运行时
+- 展开契约（`over` 与 `max_items`）进 `topology_hash`：改了必须 `loom lock <name>` 重写锁，否则运行时
   报拓扑漂移。锁的是**声明**而不是运行期解析出的项数——项数来自数据，每次跑都可能不同。
 
 出厂消费者 `pipelines/api-digest.yaml`（HTTP 列表接口 → `transform` 逐项渲染 → `safe_writer`
@@ -645,9 +656,9 @@ POST /api/webhooks/<name>        # <name> 在 webhooks.yaml 里定义（模板�
   提交走 `run_plan(wait=False)`，任务出现在同一队列与观测面，响应 `202 + task_id`。
 
 ```bash
-# 例：HMAC 签名调用（密钥在环境变量 DOC_PIPELINE_WEBHOOK_CI_SECRET）
+# 例：HMAC 签名调用（密钥在环境变量 LOOM_WEBHOOK_CI_SECRET）
 body='{"ref":"main"}'
-sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$DOC_PIPELINE_WEBHOOK_CI_SECRET" | awk '{print $2}')
+sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$LOOM_WEBHOOK_CI_SECRET" | awk '{print $2}')
 curl -X POST http://127.0.0.1:8910/api/webhooks/ci-deploy \
      -H "X-Webhook-Signature: sha256=$sig" -d "$body"
 ```
@@ -656,12 +667,12 @@ curl -X POST http://127.0.0.1:8910/api/webhooks/ci-deploy \
 
 ### 多机 worker（共享一份任务队列）
 
-`--worker` 可以起多份、跑在多台机器上——前提是 `DOC_PIPELINE_STATE_DIR` 指向**同一份
+`--worker` 可以起多份、跑在多台机器上——前提是 `LOOM_STATE_DIR` 指向**同一份
 持久卷**（`tasks.db` 是 SQLite WAL，跨机共享需要是真共享文件系统，不是本地盘各自一份）。
 
 ```bash
 # 机器 A / 机器 B / 机器 C 各起一个（同一份 state 目录）
-DOC_PIPELINE_STATE_DIR=/mnt/shared/dp-state python run.py --worker --worker-id=node-a
+LOOM_STATE_DIR=/mnt/shared/dp-state python run.py --worker --worker-id=node-a
 ```
 
 并发契约由 SQL 守卫保证，不靠时钟与运气：
@@ -724,7 +735,7 @@ Webhook 使用独立事件循环异步发送（aiohttp 连接池），不阻塞�
 my_agent = "my_pkg.my_agent"
 ```
 
-安装后即被发现与注册——`python run.py --list-agents` 会带来源标记
+安装后即被发现与注册——`loom plugin list` 会带来源标记
 `[entry_point:my_agent]`，且能作为任何 pipeline 的节点执行；同名时本仓
 `agents/*.py` 优先，插件不能悄悄顶掉内置 Agent。
 
@@ -732,7 +743,7 @@ my_agent = "my_pkg.my_agent"
 [`examples/README.md`](examples/README.md)：`char_stats`（字符统计）、
 `keyword_extract`（关键词抽取）、`readability`（可读性）、`link_check`（链接清单）、
 `fact_coverage`（证据密度）、`tldr`（离线摘要）。`pip install ./examples/plugin-tldr`
-后即可在 `--list-agents` 里看到 `tldr`。
+后即可在 `loom plugin list` 里看到 `tldr`。
 
 判据分两层：`tests/test_plugin_example.py` 盯**示例包契约**（真 venv + 真
 pip install，空 agents 目录下仍被发现/注册/执行——"本仓零改动"的可复现证明）；
@@ -805,7 +816,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2601 个测试本机全绿**（`2601 passed, 2 skipped, 6 deselected`，2026-10-09 本机全量实测；
+**2646 个测试本机全绿**（`2646 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -836,7 +847,11 @@ PyPI 发布准备那批加了 16 条判据（依赖闭合 / data-files 子目录
 插件元数据与合法 trove classifier / release.yml 的 OIDC 发布链）；
 单发行物整合那批加了 9 条判据（artesian 并入后 307 条底座判据随库走 /
 五支内置件发现注册执行 / plugin-hello 模板形状 / 第三方诚实计数=0）；
-agent 名按 AGENT_NAME 派生、call 节点不算缺失）；
+pack-docgen 物理拆分那批净加 4 条判据（引擎不 import packs / pack agents 不 import
+核心 agents 双向守卫等，其余为清册口径改写）；
+§9 收口那批为口径批（README 索引 + spec 决策备选附录），存量判据改口径不加条数；
+CLI 动词收敛与命名尾款那批净加 41 条判据（动词翻译/摘除/门面/真 CLI 冒烟 26 +
+env 双读与 MCP/观测标识 15，另改写 7 条对应旧 flag 的存量用例）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有

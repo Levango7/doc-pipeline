@@ -37,8 +37,17 @@ from .input_docs import render_inputs_doc
 _logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_NAME = "webhooks.yaml"
-#: 覆盖配置文件路径（与 DOC_PIPELINE_STATE_DIR 同一族约定）
-CONFIG_PATH_ENV = "DOC_PIPELINE_WEBHOOKS_FILE"
+#: 覆盖配置文件路径（双读：LOOM_WEBHOOKS_FILE 优先，旧名回退可读，
+#: 规则见 pipeline_core.envs；调用方用 webhooks_file_env() 取值）
+CONFIG_PATH_ENV = "LOOM_WEBHOOKS_FILE"
+LEGACY_CONFIG_PATH_ENV = "DOC_PIPELINE_WEBHOOKS_FILE"
+
+
+def webhooks_file_env() -> str | None:
+    """webhooks 配置路径的环境变量取值（LOOM_ 优先，旧名回退）。"""
+    from .envs import read
+
+    return read("WEBHOOKS_FILE")
 
 SIGNATURE_HEADER = "X-Webhook-Signature"
 TOKEN_HEADER = "X-Webhook-Token"

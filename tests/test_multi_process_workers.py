@@ -171,7 +171,7 @@ class TestWorkerCliIsUsableAcrossProcesses:
     """worker CLI 的真进程巡检：`--once` 空库退出码 0、不卡死。"""
 
     def test_once_on_empty_queue_exits_cleanly(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("DOC_PIPELINE_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("LOOM_STATE_DIR", str(tmp_path / "state"))
         r = subprocess.run(
             [sys.executable, "run.py", "--worker", "--once", "--worker-id=probe"],
             capture_output=True, text=True, timeout=180, cwd=str(PROJECT))

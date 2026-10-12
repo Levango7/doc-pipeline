@@ -28,7 +28,7 @@ from .sqlite_util import enable_wal
 
 # ─── 常量 ─────────────────────────────────────
 
-# 兼容旧引用：仅表示"未设置 DOC_PIPELINE_STATE_DIR 时的默认位置"，
+# 兼容旧引用：仅表示"未设置 LOOM_STATE_DIR 时的默认位置"，
 # 真实解析走 state_paths.store_path（调用期解析，见该模块 docstring）
 DEFAULT_DB_PATH = os.path.join(Path(__file__).parent.parent.absolute(), "bus_data", "message_bus.db")
 MAX_PROCESSED_KEYS = 50000

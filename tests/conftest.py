@@ -28,8 +28,8 @@ OUTPUT_DIR = PROJECT / ".test_outputs"
 # 这些默认值在**导入期**解析，所以环境变量必须在 import pipeline_core 之前设置。
 _STATE_DIR = PROJECT / ".test_state" / f"pid{os.getpid()}"
 _STATE_DIR.mkdir(parents=True, exist_ok=True)
-os.environ["DOC_PIPELINE_STATE_DIR"] = str(_STATE_DIR)
-os.environ["DOC_PIPELINE_VERSIONS_DIR"] = str(_STATE_DIR / "versions")
+os.environ["LOOM_STATE_DIR"] = str(_STATE_DIR)
+os.environ["LOOM_VERSIONS_DIR"] = str(_STATE_DIR / "versions")
 
 import contextlib  # noqa: E402
 

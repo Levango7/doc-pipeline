@@ -9,7 +9,7 @@
 判据读回。
 
 存储：state_paths.store_path("deliveries.db")（SQLite WAL）——跟随
-DOC_PIPELINE_STATE_DIR 隔离，测试互不污染。
+LOOM_STATE_DIR 隔离，测试互不污染。
 """
 from __future__ import annotations
 

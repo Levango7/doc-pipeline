@@ -1,10 +1,9 @@
 """MCP Server — Model Context Protocol 标准接口
 
-让 AI agent（Claude / GPT / GLM 等）通过 MCP 协议调度 doc-pipeline。
+让 AI agent（Claude / GPT / GLM 等）通过 MCP 协议调度 Loom。
 
 协议: JSON-RPC 2.0 over stdio（每行一个 JSON 消息）
-启动: python run.py --mcp
-     或 doc-pipeline mcp
+启动: loom --mcp（等价 python run.py --mcp）
 
 暴露的 MCP Tools:
   - generate_document: 提交文档生成任务
@@ -15,7 +14,7 @@
 
 示例（AI agent 侧）:
   → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}
-  ← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"doc-pipeline","version":"3.2.0"}}}
+  ← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"loom","version":"3.2.0"}}}
 
   → {"jsonrpc":"2.0","id":2,"method":"tools/list"}
   ← {"jsonrpc":"2.0","id":2,"result":{"tools":[...]}}
@@ -47,7 +46,8 @@ from .input_docs import render_inputs_doc as _render_inputs_doc
 from .scheduler import resolve_pipeline_name
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_NAME = "doc-pipeline"
+#: serverInfo.name（spec §7.1「MCP serverInfo.name → loom」）
+SERVER_NAME = "loom"
 
 # 项目根锚（与 generate_document / list_pipelines 共用，消除同文件内分叉）
 def _default_pipeline_from(orch) -> str:

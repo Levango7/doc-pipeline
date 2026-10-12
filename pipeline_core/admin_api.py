@@ -1692,7 +1692,7 @@ class AdminAPI:
         self.dashboard_dir = dashboard_dir
         # 从环境变量或参数获取 API key
         self.api_key = api_key or os.environ.get("ADMIN_API_KEY", "")
-        # 入站 webhook 配置路径（None = 用 DOC_PIPELINE_WEBHOOKS_FILE 或仓库根默认）
+        # 入站 webhook 配置路径（None = 用 LOOM_WEBHOOKS_FILE——旧名回退可读——或仓库根默认）
         self.webhooks_path = webhooks_path
         self._server: HTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -1710,11 +1710,12 @@ class AdminAPI:
             AdminHandler.orch = orch
             AdminHandler.api_key = self.api_key
             AdminHandler.server_host = self.host
-            # 入站 webhook：默认读仓库根 webhooks.yaml（可用 DOC_PIPELINE_WEBHOOKS_FILE
-            # 或显式路径覆盖）；未配置文件 = 能力休眠（不报错）。配置写坏则整体禁用
-            # 并大声记日志——半个配置放行比全禁更危险。
-            from .webhooks import CONFIG_PATH_ENV, WebhookConfigError, default_config_path, load_webhooks
-            wh_path = (self.webhooks_path or os.environ.get(CONFIG_PATH_ENV)
+            # 入站 webhook：默认读仓库根 webhooks.yaml（可用 LOOM_WEBHOOKS_FILE——
+            # 旧名 DOC_PIPELINE_WEBHOOKS_FILE 过渡期仍可读——或显式路径覆盖）；
+            # 未配置文件 = 能力休眠（不报错）。配置写坏则整体禁用并大声记日志——
+            # 半个配置放行比全禁更危险。
+            from .webhooks import WebhookConfigError, default_config_path, load_webhooks, webhooks_file_env
+            wh_path = (self.webhooks_path or webhooks_file_env()
                        or str(default_config_path()))
             try:
                 AdminHandler.webhooks = load_webhooks(wh_path)

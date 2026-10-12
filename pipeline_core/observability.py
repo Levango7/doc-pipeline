@@ -19,7 +19,7 @@ from pathlib import Path
 class StructuredLogger:
     """JSON Lines 结构化日志"""
 
-    def __init__(self, log_dir: str = "logs", app_name: str = "doc-pipeline",
+    def __init__(self, log_dir: str = "logs", app_name: str = "loom",
                  max_file_mb: int = 100):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -158,7 +158,7 @@ class StructuredLogger:
 class MetricsRegistry:
     """轻量级指标注册中心（Prometheus text 格式输出）"""
 
-    def __init__(self, namespace: str = "docpipeline"):
+    def __init__(self, namespace: str = "loom"):
         self.namespace = namespace
         self._counters: dict[str, int] = {}
         self._gauges: dict[str, float] = {}

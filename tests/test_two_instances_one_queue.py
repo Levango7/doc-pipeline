@@ -79,7 +79,7 @@ class TestTwoInstancesShareOneQueueEndToEnd:
         logs = [tmp_path / "worker-a.log", tmp_path / "worker-b.log"]
         procs = []
         for idx, worker_id in enumerate(("inst-a", "inst-b")):
-            env = dict(os.environ, DOC_PIPELINE_STATE_DIR=str(state))
+            env = dict(os.environ, LOOM_STATE_DIR=str(state))
             # 输出重定向到文件而不是 PIPE：worker 真跑流水线会打大量日志，
             # PIPE 不读会写满管道缓冲区把子进程卡死（经典的 Popen 死锁），
             # 那是测试写法的问题，不是 worker 的问题——实测踩过（等了 900s）。

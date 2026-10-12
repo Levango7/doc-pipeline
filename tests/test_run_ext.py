@@ -5,8 +5,8 @@
 - _load_config / _task_exit_code / _print_task_summary / _collect_steps
 - _poll_task_progress（正常完成 + KeyboardInterrupt 暂停 + daemon 驻留）
 - _resolve_output_path / _render_task_result（JSON/人类可读/降级警告/导出分发）
-- _run_single_task（预览/dry-run/plan 缺失退出/中断返回 None）
-- _run_daemon / main 的 --check/--mcp/--recover/--enhance/端口非法/启动失败/退出码
+- _run_single_task（预览/plan 缺失退出/中断返回 None/输出注入）
+- _run_daemon / main 的 --check/--mcp/--recover/动词摘除/端口非法/启动失败/退出码
 
 注意：test_run.py 会 `del sys.modules["run"]` 后重新 import，因此本文件
 不持有模块级 `import run` 引用，所有用例通过 importlib 现取当前模块实例，
@@ -369,9 +369,16 @@ class TestRenderTaskResult:
 # ─── _run_single_task ────────────────────────────
 
 class TestRunSingleTask:
+    @staticmethod
+    def _plan_args(argv=None):
+        """构造 plan 预览的 args（plan 是内部开关，CLI 面走 `loom plan` 动词注入）。"""
+        args = _args(argv or ["x.md"])
+        args.plan = True
+        return args
+
     def test_plan_preview_with_plan(self, capsys):
         run = _run_module()
-        args = _args(["x.md", "--plan"])
+        args = self._plan_args()
         plan = MagicMock()
         with patch.object(run, "_resolve_pipeline_plan", return_value=(plan, True)), \
                 patch("pipeline_core.scheduler.Scheduler.visualize",
@@ -381,7 +388,7 @@ class TestRunSingleTask:
 
     def test_plan_preview_legacy(self, capsys):
         run = _run_module()
-        args = _args(["x.md", "--plan"])
+        args = self._plan_args()
         orch = MagicMock()
         orch.visualize_plan.return_value = "LEGACY-PREVIEW"
         with patch.object(run, "_resolve_pipeline_plan", return_value=(None, False)):
@@ -391,7 +398,7 @@ class TestRunSingleTask:
 
     def test_plan_preview_legacy_error_exits(self):
         run = _run_module()
-        args = _args(["x.md", "--plan"])
+        args = self._plan_args()
         orch = MagicMock()
         orch.plan.side_effect = RuntimeError("no plan")
         with patch.object(run, "_resolve_pipeline_plan", return_value=(None, False)), \
@@ -399,27 +406,31 @@ class TestRunSingleTask:
             run._run_single_task(args, orch, {})
         assert ei.value.code == 1
 
-    def test_dry_run_returns_none(self, capsys):
+    def test_run_plan_waits_for_completion(self, capsys):
+        """dry-run 已随收敛批次摘除：提交即等待（wait=True），不再有 fire-and-forget。"""
         run = _run_module()
-        args = _args(["x.md", "--dry-run"])
+        args = _args(["x.md"])
         plan = MagicMock()
         plan.raw = {}
         orch = MagicMock()
         orch.registry.list_agent_names.return_value = ["a"]
-        with patch.object(run, "_resolve_pipeline_plan", return_value=(plan, True)):
-            assert run._run_single_task(args, orch, {}) is None
+        with patch.object(run, "_resolve_pipeline_plan", return_value=(plan, True)), \
+                patch.object(run, "_poll_task_progress", return_value=True), \
+                patch.object(run, "_render_task_result"):
+            run._run_single_task(args, orch, {})
         orch.run_plan.assert_called_once()
-        assert orch.run_plan.call_args.kwargs["wait"] is False
-        assert "dry-run" in capsys.readouterr().out
+        assert orch.run_plan.call_args.kwargs["wait"] is True
 
     def test_output_injected_into_plan_raw(self):
         run = _run_module()
-        args = _args(["x.md", "--dry-run", "-o", "out.md"])
+        args = _args(["x.md", "-o", "out.md"])
         plan = MagicMock()
         plan.raw = {}
         orch = MagicMock()
         orch.registry.list_agent_names.return_value = ["a"]
-        with patch.object(run, "_resolve_pipeline_plan", return_value=(plan, True)):
+        with patch.object(run, "_resolve_pipeline_plan", return_value=(plan, True)), \
+                patch.object(run, "_poll_task_progress", return_value=True), \
+                patch.object(run, "_render_task_result"):
             run._run_single_task(args, orch, {})
         assert plan.raw["pipeline"]["output"] == "out.md"
 
@@ -513,26 +524,18 @@ class TestMainBranches:
         assert "恢复任务 t1" in out and "恢复失败" in out
         orch.shutdown.assert_called_once()
 
-    def test_enhance_mode(self, capsys):
+    def test_enhance_removed_from_cli(self):
+        """--enhance 已摘除（spec §7.3）：flag 不认、run.py 不再引用增强器。
+
+        库层（docpipeline.document_enhancer）保留并被单测覆盖；
+        CLI 面是引擎门面，不再挂具体领域的增强入口。
+        """
         run = _run_module()
-        result = {"status": "ok", "duration": 1.5,
-                  "stats": {"sections": 4, "enhanced": 3, "searched": 2,
-                            "ascii_fixed": 1},
-                  "output_path": "out/enhanced.md"}
-        with patch("sys.argv", ["run.py", "doc.md", "--enhance",
-                                "--enhance-output", "out", "--no-search",
-                                "--fix-ascii", "--export", "html"]), \
-                patch("pipeline_core.bootstrap.quick_check", return_value=True), \
-                patch("docpipeline.document_enhancer.DocumentEnhancer") as cls, \
-                patch.object(run, "_run_ascii_fix") as fix, \
-                patch.object(run, "_run_export") as exp:
-            cls.return_value.enhance.return_value = result
-            run.main()
-        # --no-search 传递 with_search=False
-        assert cls.return_value.enhance.call_args.kwargs["with_search"] is False
-        fix.assert_called_once_with("out/enhanced.md")
-        exp.assert_called_once()
-        assert "文档增强完成" in capsys.readouterr().out
+        with pytest.raises(SystemExit):
+            _args(["doc.md", "--enhance"])
+        src = Path(run.__file__).read_text(encoding="utf-8")
+        assert "DocumentEnhancer" not in src
+        assert "--enhance" not in src
 
     def test_admin_bad_port_exits_1(self):
         run = _run_module()

@@ -128,7 +128,7 @@ def render_trigger_input(trigger: Trigger) -> str:
 
 
 def input_file_for(trigger: Trigger) -> Path:
-    """输入文件的固定存放路径（状态目录可被 DOC_PIPELINE_STATE_DIR 重定向）。"""
+    """输入文件的固定存放路径（状态目录可被 LOOM_STATE_DIR 重定向）。"""
     d = state_root() / "trigger_inputs"
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{trigger.name}.md"

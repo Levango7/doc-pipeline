@@ -155,7 +155,7 @@ class TestInputDoc:
         assert doc.startswith("# 自定义标题") and not doc.startswith("# t1")
 
     def test_input_file_written_under_state_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("DOC_PIPELINE_STATE_DIR", str(tmp_path))
+        monkeypatch.setenv("LOOM_STATE_DIR", str(tmp_path))
         p = input_file_for(_trigger(name="wf", inputs="X"))
         assert p == tmp_path / "trigger_inputs" / "wf.md"
         assert p.read_text(encoding="utf-8") == "# wf\n\nX\n"
@@ -223,7 +223,7 @@ class TestTick:
 
 class TestSubmitTriggerRun:
     def test_submits_via_run_plan_with_output_override(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("DOC_PIPELINE_STATE_DIR", str(tmp_path))
+        monkeypatch.setenv("LOOM_STATE_DIR", str(tmp_path))
         t = _trigger(name="wf", inputs="主题", output="output/wf.md")
         orch = FakeOrch()
         got = submit_trigger_run(orch, t, datetime(2026, 10, 9, 0, 0))
@@ -237,7 +237,7 @@ class TestSubmitTriggerRun:
 
 class TestRunTriggerLoop:
     def test_loop_fires_with_fake_clock(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("DOC_PIPELINE_STATE_DIR", str(tmp_path))
+        monkeypatch.setenv("LOOM_STATE_DIR", str(tmp_path))
         triggers = load_triggers(_write_cfg(tmp_path, """
 triggers:
   - {name: job, pipeline: docgen, cron: "0 9 * * *"}

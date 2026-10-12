@@ -35,6 +35,39 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Changed（2026-10-12·续37，CLI 动词收敛 + env 前缀 LOOM_* + MCP/观测标识：§7.3 尾款三件落地）
+
+- **CLI 动词收敛**（spec §5.3 v1 目标）：动词层 `run / plan / lock / pack /
+  plugin` 落地（前缀翻译；缺省动词 = run，裸输入 `loom input.md` 与既有
+  `python run.py input.md …` 形态全部照旧）。旧散装 flag 摘除：
+  `--plan` / `--dry-run`（→ `loom plan`）、`--write-lock`（→ `loom lock`，
+  语义改为**纯维护**：写完锁即退出，不再顺手执行）、`--list-agents`
+  （→ `loom plugin list`）；新增 `loom pack list`（清册）与 `loom pack check`
+  （自检，等价 `--check`）。`--enhance` / `--enhance-output` / `--no-search`
+  摘除（库层 `docpipeline.document_enhancer` 保留并被单测覆盖）；dry-run 的
+  fire-and-forget 提交路径删除（提交即等待）。判据 `tests/test_cli_verbs.py`
+  26 条：翻译层（纯函数）/ 摘除（七个旧 flag 必被拒，in-process + 一条真 CLI）/
+  门面（`--help` 列出五动词）/ 真 CLI 冒烟（pack list / plugin list / plan /
+  lock 沙盒实证）。
+- **env 前缀 `LOOM_*`**：`LOOM_ROOT`、`LOOM_STATE_DIR`、`LOOM_VERSIONS_DIR`、
+  `LOOM_WEBHOOKS_FILE` 为新名；**旧名 `DOC_PIPELINE_*` 过渡期回退可读**——
+  MAOP 侧按 §7.3 第 6 步约定设置的 `DOC_PIPELINE_ROOT` 继续生效（它侧零改动
+  的承诺不因改名而破）；旧名首次命中记一次迁移 warning（高频调用不复读）。
+  新模块 `pipeline_core/envs.py` 收口双读；paths / state_paths / webhooks /
+  admin_api 全部接入。判据 `tests/test_env_prefix.py` 15 条（优先序 / 回退 /
+  warning-once / 常量名 / MCP 与观测标识）。
+- **MCP/观测标识**：`serverInfo.name` `doc-pipeline` → `loom`
+  （`mcp_server.py` 的 `SERVER_NAME`，docstring 示例同步）；指标 namespace
+  `docpipeline` → `loom`（`loom_requests` 这类）；结构化日志文件前缀
+  `loom_YYYYMMDD.jsonl`。
+- **判据面**：存量测试同步迁移（test_run / test_run_ext / test_observability /
+  test_admin_api_ext / test_mcp_server + 12 个测试文件的 env 名切换为
+  `LOOM_*`，旧名回退由 test_env_prefix 专门覆盖）。
+- **刻意保留（未改名，留档）**：import 根包 `pipeline_core` / `docpipeline`
+  （§7.1 第一阶段保持不动，且被 MAOP 硬绑）；entry_points group
+  `doc_pipeline.agents` / `doc_pipeline.packs`（第三方插件出现前不动——
+  动手前是零成本窗口，动手后是破坏性变更）。
+
 ### Changed（2026-10-12·续36，§9 未决项收口：五闭二备选 + 遗留提交复位）
 
 - **§9 收口**：闭 #5（FP-2 的 CI 真实验证——ubuntu runner 上多轮全绿重取：

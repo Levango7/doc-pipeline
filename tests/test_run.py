@@ -99,10 +99,10 @@ class TestCLIArgumentParsing:
         with patch("sys.argv", ["run.py"]), pytest.raises(SystemExit):
             main()
 
-    def test_list_agents_flag(self):
-        """--list-agents 标志解析"""
+    def test_plugin_list_verb(self):
+        """`loom plugin list` 动词（旧 --list-agents 已随收敛批次摘除）"""
         from run import main
-        with patch("sys.argv", ["run.py", "input.md", "--list-agents"]), \
+        with patch("sys.argv", ["run.py", "plugin", "list"]), \
                 patch("run.PipelineOrchestrator") as mock_orch_cls:
             mock_orch = MagicMock()
             mock_orch.register_agents.return_value = ["agent1", "agent2"]
@@ -112,20 +112,18 @@ class TestCLIArgumentParsing:
             with patch("builtins.print"), contextlib.suppress(SystemExit):
                 main()
 
-    def test_dry_run_flag(self):
-        """--dry-run 标志解析"""
+    def test_plan_verb_does_not_submit(self):
+        """`loom plan` 只预览：既不执行也不提交任务（旧 --plan/--dry-run 已摘除）"""
         from run import main
-        with patch("sys.argv", ["run.py", "input.md", "--dry-run"]), \
+        with patch("sys.argv", ["run.py", "plan", "test_pipeline"]), \
                 patch("run.PipelineOrchestrator") as mock_orch_cls:
             mock_orch = MagicMock()
             mock_orch.register_agents.return_value = ["agent1"]
-            mock_task = MagicMock()
-            mock_task.status = MagicMock()
-            mock_task.status.name = "PENDING"
-            mock_orch.run.return_value = mock_task
             mock_orch_cls.return_value = mock_orch
             with patch("builtins.print"), contextlib.suppress(SystemExit):
                 main()
+            mock_orch.run.assert_not_called()
+            mock_orch.run_plan.assert_not_called()
 
 
 # ─── YAML 加载失败处理（P0 修复验证）────────────────────────────
@@ -202,7 +200,7 @@ class TestRoutingBranches:
         input_file = tmp_path / "input.md"
         input_file.write_text("# Test")
 
-        with patch("sys.argv", ["run.py", str(input_file), "--legacy", "--dry-run"]), \
+        with patch("sys.argv", ["run.py", str(input_file), "--legacy"]), \
                 patch("run.PipelineOrchestrator") as mock_orch_cls:
             mock_orch = MagicMock()
             mock_orch.register_agents.return_value = ["agent1"]

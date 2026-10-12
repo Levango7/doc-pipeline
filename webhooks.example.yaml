@@ -18,12 +18,12 @@
 webhooks:
   - name: ci-deploy        # 端点名：POST /api/webhooks/ci-deploy
     pipeline: docgen-render
-    secret_env: DOC_PIPELINE_WEBHOOK_CI_SECRET
+    secret_env: LOOM_WEBHOOK_CI_SECRET
     output: output/ci_report.md
     enabled: false         # 示例默认停用：先配好密钥环境变量再启用
 
   # HMAC 验签示例（GitHub 风格 hook 可直接复用）：
   #   body='{"ref":"main"}'
-  #   sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$DOC_PIPELINE_WEBHOOK_CI_SECRET" | awk '{print $2}')
+  #   sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$LOOM_WEBHOOK_CI_SECRET" | awk '{print $2}')
   #   curl -X POST http://127.0.0.1:8910/api/webhooks/ci-deploy \
   #        -H "X-Webhook-Signature: sha256=$sig" -d "$body"

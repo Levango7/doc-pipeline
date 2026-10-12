@@ -169,7 +169,7 @@ class EchoAgent(BaseAgent):
 
 放入 `agents/` 目录后，`python run.py input.md --agent echo` 或在 pipeline YAML 的
 `agents:` 列表中声明即可被加载。若 Agent 未被流水线 DAG 引用，
-可用 `--list-agents` 确认注册状态。
+可用 `loom plugin list` 确认注册状态。
 
 ## 8. 节点级配置从 `payload["config"]` 来
 

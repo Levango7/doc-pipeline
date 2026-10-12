@@ -28,7 +28,7 @@ PROJECT = Path(__file__).resolve().parent.parent
 _INIT_SCRIPT = """
 import json, os, sys
 sys.path.insert(0, {project!r})
-os.environ["DOC_PIPELINE_STATE_DIR"] = sys.argv[1]
+os.environ["LOOM_STATE_DIR"] = sys.argv[1]
 errors = []
 from pipeline_core.task_queue import TaskQueue
 from pipeline_core.cost_tracker import CostTracker
@@ -84,7 +84,7 @@ class TestConcurrentFirstInit:
 
         状态目录用 monkeypatch.setenv 注入——它在用例结束自动还原。
         这里**不能**用 os.environ + pop：conftest 已在会话级把
-        DOC_PIPELINE_STATE_DIR 指向 .test_state，pop 会把会话值一并删掉，
+        LOOM_STATE_DIR 指向 .test_state，pop 会把会话值一并删掉，
         污染后续所有依赖它的判据（test_state_isolation 实测被抓红过）。
         """
         state = tmp_path / "state"
@@ -93,7 +93,7 @@ class TestConcurrentFirstInit:
             out, _ = proc.communicate(timeout=120)
             assert proc.returncode == 0, out[-1500:]
 
-        monkeypatch.setenv("DOC_PIPELINE_STATE_DIR", str(state))
+        monkeypatch.setenv("LOOM_STATE_DIR", str(state))
         from pipeline_core.task_queue import TaskQueue
 
         queue = TaskQueue()
