@@ -33,6 +33,30 @@ REPO = Path(__file__).resolve().parent.parent
 PACKAGES = ["pipeline_core", "docpipeline", "agents", "scripts", "artesian",
             "packs", "packs.docgen", "packs.docgen.agents"]
 
+
+def pkg_rel_path(pkg: str) -> str:
+    """点号包名 → 仓库/wheel 相对路径（两处都用斜杠）。
+
+    2026-10-12 v3.10.0 首发实证：此前把 `packs.docgen` 直接当路径前缀查
+    wheel 条目（`n.startswith(pkg + "/")`），嵌套包永远零命中——wheel 本身
+    合规却被门禁误拦；同一处"点号当路径"也让依赖闭合扫描对嵌套包静默空转。
+    """
+    return pkg.replace(".", "/")
+
+
+def packages_missing_init(names: set[str]) -> list[str]:
+    """声明的包里，哪些在给定条目集合里缺少**自己那一层**的 `__init__.py`。
+
+    按精确路径判（`packs/docgen/__init__.py`），不是前缀——前缀匹配会让
+    子包的 `__init__.py`（`packs/docgen/agents/__init__.py`）冒充满足父包，
+    父包文件缺失时门禁静默放行（与点号/斜杠是同一族"看着像在检查"的洞）。
+    """
+    missing: list[str] = []
+    for pkg in PACKAGES:
+        if pkg_rel_path(pkg) + "/__init__.py" not in names:
+            missing.append(pkg)
+    return missing
+
 #: wheel 与 sdist 里都必须有的数据文件（相对仓库根）
 REQUIRED_DATA = (
     "pipelines/api-report.yaml",
@@ -96,11 +120,10 @@ def check(dist: Path, want: str | None) -> str:
 
     names = set(zipfile.ZipFile(wheel).namelist())
     # 包内容：每个声明的包里至少要有 __init__（新增子包忘了进 packages 当场红）
-    for pkg in PACKAGES:
-        inits = [n for n in names
-                 if n.startswith(pkg + "/") and n.endswith("__init__.py")]
-        if not inits:
-            fail(f"wheel 里没有 {pkg}/ 的任何 __init__.py——包清单与 pyproject 漂移")
+    missing = packages_missing_init(names)
+    if missing:
+        fail("wheel 里没有 " + "、".join(p + "/" for p in missing)
+             + " 的任何 __init__.py——包清单与 pyproject 漂移")
 
     # 流水线数据两处都在（wheel + sdist）：丢了它，装出来的引擎没有流水线
     with tarfile.open(sdist) as t:
@@ -143,7 +166,7 @@ def check_dependency_closure() -> None:
 
     found: set[str] = set()
     for pkg in PACKAGES:
-        for py in (REPO / pkg).rglob("*.py"):
+        for py in (REPO / pkg_rel_path(pkg)).rglob("*.py"):
             if "__pycache__" in py.parts:
                 continue
             try:
