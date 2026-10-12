@@ -149,6 +149,12 @@ class PipelineTask:
     # DAG 执行相关
     dag_nodes: dict[str, TaskNode] = field(default_factory=dict)  # name -> TaskNode
     execution_order: list[list[str]] = field(default_factory=list)  # 拓扑层级
+    #: 审批闸门（approval 节点）等待中的信息：{"nodes": [...], "messages": {...},
+    #: "pipeline": ...}。非 None = 任务停在闸门前，只认 approve/reject（resume 被拒）。
+    awaiting_approval: dict | None = None
+    #: 已落定的审批决策流水：[{"nodes": [...], "decision": "approved"/"rejected",
+    #: "note": ..., "reason": ..., "at": ts, "by": <客户端标识>}, ...]
+    approvals: list = field(default_factory=list)
     # Per-task 取消事件（替代全局 _stop_event 实现精确取消）
     stop_event: threading.Event = field(default_factory=threading.Event)
     # Per-task 结果锁（保护 result dict 的多线程写入）
@@ -161,6 +167,8 @@ class PipelineTask:
             "input": self.input_file,
             "status": self.status.value,
             "progress": self.progress,
+            "awaiting_approval": dict(self.awaiting_approval) if self.awaiting_approval else None,
+            "approvals": [dict(a) for a in self.approvals],
             "steps": [
                 {
                     "name": s.step_name,
@@ -590,15 +598,91 @@ class PipelineOrchestrator:
         return False
 
     def resume(self, task_id: str) -> bool:
-        """恢复暂停的任务（从断点续传）"""
+        """恢复暂停的任务（从断点续传）。
+
+        审批闸门等待中的任务**拒绝 resume**：那种 PAUSED 不是"用户按了暂停"，
+        而是流水线声明的人工关卡；resume 直通等于绕过审批，只认 approve/reject。
+        """
         with self._lock:
             task = self._running_tasks.get(task_id)
+            if task and task.awaiting_approval:
+                self._log("warning", "任务在审批等待中：请用 approve/reject（resume 被拒）",
+                          task_id=task_id)
+                return False
             if task and task.status == TaskStatus.PAUSED:
                 task.status = TaskStatus.RUNNING
                 # C7：同 pause()——不向 registry 广播 on_resume（共享单例跨任务污染）
                 self._log("info", "Pipeline resumed", task_id=task_id)
                 return True
         return False
+
+    def approve(self, task_id: str, note: str = "", by: str = "") -> tuple[bool, str]:
+        """审批放行：等待中的闸门任务 → RUNNING，决策进台账与审计。
+
+        返回 (ok, error)；error 非空时 ok=False 且任务状态未动——
+        "没等在审批上的任务"不允许被"批准"，否则审计里会出现无中生有的决策。
+        """
+        with self._lock:
+            task = self._running_tasks.get(task_id)
+            if task is None:
+                return False, f"task not found: {task_id}"
+            if not task.awaiting_approval or task.status != TaskStatus.PAUSED:
+                return False, (f"task {task_id} 未在审批等待中"
+                               f"（status={task.status.value}）")
+            pending = dict(task.awaiting_approval)
+            decision = {"nodes": list(pending.get("nodes", [])), "decision": "approved",
+                        "note": note, "reason": "", "at": time.time(), "by": by}
+            task.approvals.append(decision)
+            task.awaiting_approval = None
+            task.status = TaskStatus.RUNNING
+            self._log("info", f"审批放行：{decision['nodes']}", task_id=task_id)
+        self._audit_approval(task_id, decision)
+        emit_event("task.approved", {"task_id": task_id, "nodes": decision["nodes"]})
+        return True, ""
+
+    def reject(self, task_id: str, reason: str = "", by: str = "") -> tuple[bool, str]:
+        """审批驳回：任务终止（CANCELLED），原因进错误信息、台账与审计。
+
+        最小闭环不做"驳回到另一分支"：驳回就是终止并可注明原因——
+        分支语义需要一个尚不存在的评审工作流，先不猜（spec §9 决策 C）。
+        """
+        with self._lock:
+            task = self._running_tasks.get(task_id)
+            if task is None:
+                return False, f"task not found: {task_id}"
+            if not task.awaiting_approval or task.status != TaskStatus.PAUSED:
+                return False, (f"task {task_id} 未在审批等待中"
+                               f"（status={task.status.value}）")
+            pending = dict(task.awaiting_approval)
+            decision = {"nodes": list(pending.get("nodes", [])), "decision": "rejected",
+                        "note": "", "reason": reason, "at": time.time(), "by": by}
+            task.approvals.append(decision)
+            task.awaiting_approval = None
+            task.error = (f"审批被驳回: {reason}" if reason else "审批被驳回")
+            task.status = TaskStatus.CANCELLED
+            task.stop_event.set()  # 与 cancel() 同款：执行循环见 CANCELLED/事件即退出
+            self._log("warning", f"审批驳回：{decision['nodes']} —— {reason or '无原因'}",
+                      task_id=task_id)
+        self._audit_approval(task_id, decision)
+        emit_event("task.rejected", {"task_id": task_id, "nodes": decision["nodes"],
+                                     "reason": reason})
+        return True, ""
+
+    def _audit_approval(self, task_id: str, decision: dict) -> None:
+        """审批决策落审计（复用 audit 通道约定；失败不炸调用方，记 warning）。"""
+        try:
+            from .audit import write_audit
+
+            task = self._running_tasks.get(task_id)
+            err = write_audit("approvals", {
+                "task_id": task_id,
+                "pipeline": task.pipeline_name if task else "",
+                **decision,
+            })
+            if err:
+                self._log("warning", "审批审计写盘失败", task_id=task_id, error=err)
+        except Exception as e:  # noqa: BLE001  审计不许拖垮审批动作
+            self._log("warning", "审批审计异常", task_id=task_id, error=str(e))
 
     # ─── 委托：断点续传 ─────────────────────────────
 
@@ -754,6 +838,73 @@ class PipelineOrchestrator:
         with self._lock:
             self._trim_task_history()
 
+    # ─── 审批闸门（approval 节点，spec §9 决策 C 最小闭环）────────
+
+    def _arm_approval_gate(self, task: PipelineTask, plan: ExecutionPlan,
+                           level: list) -> list:
+        """闸门预处理：为闸门建 dag_node；有"待批"闸门时把任务置 PAUSED。
+
+        置 PAUSED 后由执行循环既有的暂停边界等待接管（含 checkpoint 保存、
+        stop_event 取消），approve/reject 才有东西可作用。返回本层节点列表
+        **原样**——过滤留给 `_settle_approval_gate`，计数与 checkpoint 语义
+        都按原始层级走（闸门也是节点，放行即算完成）。
+        """
+        gates = [n for n in level if getattr(n, "approval", None) is not None]
+        if not gates:
+            return level
+        pending: list[str] = []
+        messages: dict[str, str] = {}
+        for node in gates:
+            dag_node = TaskNode(
+                name=node.agent_name,
+                agent_name=node.agent_name,
+                dependencies=node.dependencies,
+                timeout=node.timeout,
+                max_retries=node.max_retries,
+            )
+            dag_node.attempts = 0
+            task.dag_nodes[node.agent_name] = dag_node
+            # when 不成立的闸门不挂起（结算时直接记 skipped，和普通条件节点同款）
+            if self._executor._should_skip_by_condition(task, node, plan):
+                continue
+            pending.append(node.agent_name)
+            messages[node.agent_name] = str((node.approval or {}).get("message", ""))
+        if pending:
+            task.awaiting_approval = {"nodes": pending, "messages": messages,
+                                      "pipeline": plan.pipeline_name}
+            task.status = TaskStatus.PAUSED
+            self._log("info", f"审批闸门等待人工放行：{pending}", task_id=task.id)
+        return level
+
+    def _settle_approval_gate(self, task: PipelineTask, plan: ExecutionPlan,
+                              level: list) -> list:
+        """闸门结算（放行后）：标记闸门节点，返回仍需执行的节点列表。
+
+        - 放行的闸门 → success，决策（含 note）进节点结果，下游可读
+          `upstream.<gate>.status == "approved"`；
+        - when 不成立的闸门 → skipped（condition），与普通条件节点同语义。
+        """
+        gates = [n for n in level if getattr(n, "approval", None) is not None]
+        if not gates:
+            return level
+        note = ""
+        for d in reversed(task.approvals):
+            if d.get("decision") == "approved":
+                note = str(d.get("note") or "")
+                break
+        for node in gates:
+            dag_node = task.dag_nodes.get(node.agent_name)
+            if dag_node is None:
+                continue
+            reason = self._executor._should_skip_by_condition(task, node, plan)
+            if reason:
+                self._executor._skip_node_by_condition(task, node, dag_node, plan, reason)
+            else:
+                self._executor.settle_approval_node(task, node, dag_node, plan, note=note)
+        if task.awaiting_approval:
+            task.awaiting_approval = None
+        return [n for n in level if getattr(n, "approval", None) is None]
+
     def _execute_plan(self, task: PipelineTask, plan: ExecutionPlan, input_file: str) -> None:
         """执行计划的所有层级（run_plan 的内核，拆分为独立方法便于测试）。"""
         total_nodes = plan.node_count
@@ -763,6 +914,11 @@ class PipelineOrchestrator:
             if task.stop_event.is_set() or self._stop_event.is_set():
                 task.status = TaskStatus.CANCELLED
                 return
+
+            # 审批闸门（approval 节点）：先把任务置 PAUSED 并记录待批信息，
+            # 随后的暂停边界等待（下面的 while 循环）同时服务它——checkpoint
+            # 语义、外部 pause、reject 取消都走同一条既有路径。
+            level = self._arm_approval_gate(task, plan, level)
 
             # 暂停检查点
             paused_saved = False
@@ -780,6 +936,18 @@ class PipelineOrchestrator:
                 task.stop_event.wait(0.5)
             if task.status == TaskStatus.CANCELLED:
                 return
+
+            # 闸门放行后结算（标记闸门节点），并把闸门从待执行集合里滤掉。
+            # 计数仍按本层**原始**节点数推进（闸门也是节点，放行即算完成）。
+            level_total = len(level)
+            level = self._settle_approval_gate(task, plan, level)
+            if not level:
+                # 整层都是闸门（已放行）：本层无事可执行，直接推进
+                completed += level_total
+                task.current_step = completed
+                task.progress = int((completed / total_nodes) * 100)
+                self._save_checkpoint(task, full_state=True)
+                continue
 
             max_workers = max(
                 (node.agent_config.parallelism.get("max_workers", 1) for node in level),
@@ -801,7 +969,7 @@ class PipelineOrchestrator:
                 if not self._execute_level(task, level, input_file, plan, executor):
                     return
 
-            completed += len(level)
+            completed += level_total
             task.current_step = completed
             task.progress = int((completed / total_nodes) * 100)
             self._merge_pooled_results(task)
@@ -1019,6 +1187,9 @@ class PipelineOrchestrator:
                     task.status = TaskStatus.CANCELLED
                     break
 
+                # 审批闸门：与同步版同一条机制（置 PAUSED → 走下面的暂停等待）
+                level = self._arm_approval_gate(task, plan, level)
+
                 # 暂停边界：与同步版一致，进入等待时保存无并发写入的边界快照
                 paused_saved = False
                 while task.status == TaskStatus.PAUSED:
@@ -1036,6 +1207,16 @@ class PipelineOrchestrator:
                 if task.status == TaskStatus.CANCELLED:
                     break
 
+                # 闸门放行后结算（计数按本层原始节点数推进）
+                level_total = len(level)
+                level = self._settle_approval_gate(task, plan, level)
+                if not level:
+                    completed += level_total
+                    task.current_step = completed
+                    task.progress = int((completed / total_nodes) * 100)
+                    self._save_checkpoint(task, full_state=True)
+                    continue
+
                 for node in level:
                     dag_node = TaskNode(
                         name=node.agent_name,
@@ -1050,7 +1231,7 @@ class PipelineOrchestrator:
                 if not await self._executor.execute_level_async(task, level, input_file, plan):
                     break
 
-                completed += len(level)
+                completed += level_total
                 task.current_step = completed
                 task.progress = int((completed / total_nodes) * 100)
 

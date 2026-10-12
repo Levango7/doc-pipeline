@@ -150,11 +150,13 @@ def _physical_packs_in(root: Path) -> list[PackInfo]:
 def _yaml_agent_names(path: Path, _depth: int = 0) -> list[str]:
     """Agent names a pipeline really needs (unparseable YAML -> empty).
 
-    Two subtleties that produced phantom results before:
+    Three subtleties that produced phantom results before:
       1. `call` nodes declare a `name` too (e.g. quality_tail) but they are
          *sub-pipeline* references, not agents;
       2. that sub-pipeline's own agents get inlined into the caller's graph,
-         so they must be inventoried as well or a missing one goes unseen.
+         so they must be inventoried as well or a missing one goes unseen;
+      3. `approval` nodes are human gates, not agents — counting them as
+         "referenced but uninstallable" is the same phantom class as (1).
     """
     import yaml
 
@@ -170,6 +172,8 @@ def _yaml_agent_names(path: Path, _depth: int = 0) -> list[str]:
     names: list[str] = []
     for item in agents:
         if not isinstance(item, dict):
+            continue
+        if "approval" in item:
             continue
         call = item.get("call")
         if isinstance(call, str) and call:
