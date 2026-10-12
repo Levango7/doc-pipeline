@@ -771,6 +771,8 @@ my_agent = "my_pkg.my_agent"
 `[entry_point:my_agent]`，且能作为任何 pipeline 的节点执行；同名时本仓
 `agents/*.py` 优先，插件不能悄悄顶掉内置 Agent。
 
+**首个真第三方插件（生态轴 0→1，2026-10-12）**：[`loom-plugin-sqlite`](https://github.com/Levango7/loom-plugin-sqlite)——外部仓独立维护，补“只读 SQLite 取数 → 报表”取数面，含报表/审批闸门两条示例管线与双宿主版本 CI。它同时是外部作者的最佳参照（含过渡期双名/双组兼容范式）。
+
 可运行的参考实现共**六个独立 pip 包**，与完整契约说明见
 [`examples/README.md`](examples/README.md)：`char_stats`（字符统计）、
 `keyword_extract`（关键词抽取）、`readability`（可读性）、`link_check`（链接清单）、
