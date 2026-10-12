@@ -527,7 +527,7 @@ class TestMainBranches:
     def test_enhance_removed_from_cli(self):
         """--enhance 已摘除（spec §7.3）：flag 不认、run.py 不再引用增强器。
 
-        库层（docpipeline.document_enhancer）保留并被单测覆盖；
+        库层（loom_doc.document_enhancer）保留并被单测覆盖；
         CLI 面是引擎门面，不再挂具体领域的增强入口。
         """
         run = _run_module()

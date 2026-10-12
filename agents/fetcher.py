@@ -292,7 +292,7 @@ class FetcherAgent(BaseAgent):
 
     def __init__(self, name, meta, config, message_bus, registry):
         super().__init__(name, meta, config, message_bus, registry)
-        self._temp_dir = Path(config.get("temp_dir", tempfile.gettempdir())) / "doc_pipeline_fetcher"
+        self._temp_dir = Path(config.get("temp_dir", tempfile.gettempdir())) / "loom_fetcher"
         self._temp_dir.mkdir(parents=True, exist_ok=True)
         # 多 UA 池：规避基础反爬
         self._ua_pool = [

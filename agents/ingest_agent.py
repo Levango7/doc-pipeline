@@ -16,7 +16,7 @@ import json
 import logging
 from pathlib import Path
 
-from docpipeline import ingest as ingest_core
+from loom_doc import ingest as ingest_core
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 logger = logging.getLogger("agent.ingest")

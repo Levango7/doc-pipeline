@@ -283,7 +283,7 @@ def _doc_with_placeholders(total: int, empty: int) -> str:
     有内容的章节里塞的是抓取回来的网页样板文字 —— 真实事故的形状就是如此：
     长度足以过 `min_output_chars`，内容却几乎全是噪声。
     """
-    from docpipeline import degradation
+    from loom_doc import degradation
     parts = ["# 自动生成文档", "", "> 主题: Python 异步编程的基本概念和用法", ""]
     for i in range(total - empty):
         body = _SCRAPE_JUNK if i == 0 else (
@@ -355,7 +355,7 @@ class TestPlaceholderSectionFloor:
     def test_markers_have_a_single_definition_site(self):
         """writer 与门禁共用一处定义 —— 两处各写一份时漂移过一次（假绿的根因）。"""
         import packs.docgen.agents.quality_gate as qg
-        from docpipeline import degradation
+        from loom_doc import degradation
         assert qg.PLACEHOLDER_MARKERS is degradation.PLACEHOLDER_MARKERS
         src = (Path(__file__).parent.parent / "packs" / "docgen" / "agents"
                / "writer.py").read_text(encoding="utf-8")
@@ -416,7 +416,7 @@ class TestRawFetchBlockFloor:
         import inspect
 
         import agents.fetcher as fetcher
-        from docpipeline import degradation
+        from loom_doc import degradation
         src = inspect.getsource(fetcher.FetcherAgent._save_article)
         assert '"标题: ' in src and "{'='*60}" in src, "fetcher 的块格式变了，签名要同步"
         assert degradation.raw_fetch_block_count(FETCH_LEAK_DOC) == 1

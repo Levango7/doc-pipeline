@@ -164,7 +164,7 @@ class TestRendererHtml:
     """renderer 的 html 后端：纯标准库、永远可用。"""
 
     def test_render_html_writes_page(self, tmp_path):
-        from docpipeline import renderer
+        from loom_doc import renderer
 
         target = tmp_path / "out" / "x.html"
         res = renderer.render("# T\n\n正文 here", target, fmt="html", title="页面")

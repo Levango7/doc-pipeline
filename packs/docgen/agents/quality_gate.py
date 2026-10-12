@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-from docpipeline import degradation
+from loom_doc import degradation
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 from pipeline_core.pack_manifest import quality_dirs as _quality_dirs
 
@@ -61,7 +61,7 @@ AGENT_TAGS = ["quality", "gate"]
 # 产出保真底线（先于评分维度判定）
 DEFAULT_MIN_OUTPUT_CHARS = 120
 # "没内容"的标志语与占位章节占比阈值。这些字符串是 writer ↔ 门禁之间的契约，
-# 单处定义在 docpipeline.degradation —— 两处各写一份时漂移过：writer 改发
+# 单处定义在 loom_doc.degradation —— 两处各写一份时漂移过：writer 改发
 # 「降级声明」和「（暂无可用的相关内容）」，门禁名单里没有，于是 4/5 章节为
 # 占位符的文档被判 98.8 pass 并正常落盘（2026-10-06 实测）。
 PLACEHOLDER_MARKERS = degradation.PLACEHOLDER_MARKERS

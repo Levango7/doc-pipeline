@@ -30,8 +30,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 #: 打进 wheel 的 Python 包（与 [tool.setuptools] packages 同源）
-PACKAGES = ["pipeline_core", "docpipeline", "agents", "scripts", "artesian",
-            "packs", "packs.docgen", "packs.docgen.agents"]
+PACKAGES = ["pipeline_core", "loom_doc", "agents", "scripts", "artesian",
+            "packs", "packs.docgen", "packs.docgen.agents",
+            "docpipeline"]  # 兼容 shim（旧名转会别名，安装态仍可 import）
 
 
 def pkg_rel_path(pkg: str) -> str:

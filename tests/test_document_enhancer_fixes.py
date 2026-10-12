@@ -7,8 +7,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import docpipeline.document_enhancer as de_module
-from docpipeline.document_enhancer import DocumentEnhancer
+import loom_doc.document_enhancer as de_module
+from loom_doc.document_enhancer import DocumentEnhancer
 
 
 def _make_enhancer():
