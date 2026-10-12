@@ -318,7 +318,7 @@
 
 1. ~~是否授权改 MAOP 仓~~ **已定：不改**（§7.3 第 6 步）。迁移用 `DOC_PIPELINE_ROOT` 环境变量指向新路径；MAOP 那 5 处硬编码测试会红，属它自己的账，本项目只记账不代改。
 2. **`perf-regression` 是否纳入 required**（待拍板；候选方案见下「决策备选·2」）。`enforce_admins` 子项已闭：2026-10-08 已翻 true，2026-10-12 实测确认为 true（§5.5 口径已更新）；`perf-regression` 近期 42 次连续绿（PR 18 + main 24）。
-3. **人审/approval 节点**进 P0 还是 P1（本文暂放 P1；2026-10-12 勘察：`TaskStatus.PAUSED` + checkpoint + `POST /tasks/<id>/pause|resume` 已存在，缺的是声明式 YAML 审批节点与 approve/reject 决策面——候选方案见下「决策备选·3」）。
+3. ~~人审/approval 节点进 P0 还是 P1~~ **已拍板并实施（2026-10-12）：走 C（机制先行最小闭环）**——声明式 `approval` 节点（挂起复用 PAUSED 边界 + checkpoint）、`POST /tasks/<id>/approve|reject`（reject=终止含原因，不做分支）、审计落库（复用 audit 通道）均已落地（`feat/approval-gate`，`tests/test_approval_gate.py` 五层判据）；通知/控制台/多级审批/超时策略留 P1，见「决策备选·3」实施落地附注。
 4. ~~Chassis / Tessera 的 PyPI 占用复查~~ **已查**：两者裸名均已被占（§7.1 注）。当前定名 Loom / 发行名 `nexusloom`（实测空闲）。
 5. ~~FP-2 的真实验证只能在 CI 上做~~ **已关**（2026-10-12）：CI 全绿已在 ubuntu runner 上多轮重取（test 3.11–3.14 + docker + perf-regression；`--check` 退出码与 pip-audit 进程健康均为硬依赖），§3 P0 判据第 4 条以此为准。
 6. ~~README 文档表与 CHANGELOG 对本 spec 的引用~~ **已关**（2026-10-12）：README 文档索引表已加 `product-spec.md` 一行；CHANGELOG 对 spec 的引用随各批同步记录。
@@ -342,3 +342,5 @@
 - **C. 机制先行，最小闭环现在做（推荐候选）**：只做引擎层——YAML 声明式 `approval` 节点（挂起→释放等待）、`POST /tasks/<id>/approve|reject`（决策面，reject 语义=终止并可注释原因，不做分支）、审计落库（复用 audit.py）。通知/控制台/多级审批/超时策略留 P1。规模约 1–2 天，复用已有 PAUSED/checkpoint/审计三个半成品，不碰 UI。优：以最低成本补齐"工作台"关键机制，P1 只需接界面与通知。劣：仍无"真名实姓"的审批人（记凭证指纹），需要向使用者说明这一边界。
 
 **推荐：C**；若倾向"不见真实场景不动工"则 A；不推荐 B。
+
+**实施落地（2026-10-12，决策 C）**：引擎层最小闭环已完成——scheduler 解析期校验（`approval: true | {message}`，形状漂移即炸；与 Agent 字段互斥；声明并入节点配置指纹，改措辞必漂锁）、pipeline 挂起与决策状态机（`awaiting_approval`/`approvals` 台账进 `to_dict`；闸门等待期 `resume` 被拒；approve→RUNNING / reject→CANCELLED 含原因）、admin API `POST /tasks/<id>/approve|reject`（未在等待中→409，决策进不了审计）、审计落库 + `task.approved/rejected` 事件、pack 清册豁免（闸门不是 agent）。`tests/test_approval_gate.py` 覆盖解析/清册/真 orchestrator 执行/条件闸门/HTTP+审计五层判据。**P1 余量**：通知渠道、控制台界面、多级审批、超时策略、真名实姓的审批人（当前记客户端指纹）。
