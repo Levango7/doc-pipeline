@@ -132,6 +132,8 @@ class CheckpointManager:
                 config=data.get("config", {}),
                 status=TaskStatus.PAUSED,
                 current_step=len(data.get("steps", [])),
+                # token 身份：断点读回不丢归属（旧断点无此键 → 空串=无身份世界）
+                owner=str(data.get("owner", "") or ""),
             )
             task.result = data.get("_result", {})
 

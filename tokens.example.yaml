@@ -1,0 +1,30 @@
+# Token 身份配置模板（spec §5.4）——复制为 tokens.yaml 后按需修改。
+#
+# 生效方式（三选一，优先级从高到低）：
+#   LOOM_TOKENS_FILE=/path/to/tokens.yaml   # 显式路径
+#   <仓库根>/tokens.yaml                     # 默认位置
+#   （都不存在 = 无身份世界：行为与既往一致——单 ADMIN_API_KEY 或本机信任模式）
+#
+# 设计要点：
+#   - 密钥不进文件：token_env 指向环境变量，或 token_sha256 存 SHA-256；
+#   - 一旦本文件生效，**回环访问同样要求凭证**（启用身份就别留免检口子）；
+#   - 缺环境变量的条目不可用且启动告警（该凭证一律 401，不会静默放行）；
+#   - ADMIN_API_KEY 继续有效，解析为 admin：旧部署零改动；
+#   - 任务/成本按 Principal 隔离；越权访问与"不存在"同形（404，不泄露存在性）。
+
+tokens:
+  # 普通租户用户：只见自己提交的任务（含其成本与产物）
+  - id: alice
+    tenant: acme
+    token_env: LOOM_TOKEN_ALICE
+    # admin: false        # 缺省即 false
+
+  # 或直接存哈希（不落明文；生成：python -c "import hashlib;print(hashlib.sha256(b'你的token').hexdigest())"）
+  - id: bob
+    tenant: acme
+    token_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+
+  # 运维位：跨租户全可见（view + 所有操作）
+  - id: ops
+    admin: true
+    token_env: LOOM_TOKEN_OPS

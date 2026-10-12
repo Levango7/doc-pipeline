@@ -149,7 +149,8 @@ def submit_trigger_run(orch: Any, trigger: Trigger, fire_time: datetime) -> str:
         plan.raw.setdefault("pipeline", {})["output"] = trigger.output
     input_file = input_file_for(trigger)
     task = orch.run_plan(plan, input_file=str(input_file),
-                         task_id=new_task_id(), wait=False)
+                         task_id=new_task_id(), wait=False,
+                         owner=f"trigger:{trigger.name}")
     return str(task.id)
 
 

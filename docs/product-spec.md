@@ -163,7 +163,7 @@
 
 | 功能 | 现状 | v1 目标 | 验收判据 |
 |---|---|---|---|
-| 身份与租户 | **无**：共享 `ADMIN_API_KEY`；全仓 `tenant/principal/user_id` 0 命中〔静态〕 | token → 任务/成本/产物三类数据的作用域隔离 | 两个 token 互不可见对方任务（真 HTTP 断言，非 mock） |
+| 身份与租户 | **已达标（2026-10-12，P1-A）**：`tokens.yaml` 多凭证 → Principal（密钥只经 env/hash 注入；admin 位与普通租户可分）；`ADMIN_API_KEY` 兼容为 admin（旧部署零改动）；启用身份后回环同样要求凭证；任务与成本按 Principal 隔离，越权与不存在同形（404，不泄露存在性）；触发类提交记 `trigger:/webhook:/mcp` 归属；缺密钥条目不可用且启动告警。判据 `tests/test_identity_tokens.py` 28 条（含真 HTTP 双 token 互不可见 + 六类越权操作） | token → 任务/成本/产物三类数据的作用域隔离 | **两个 token 互不可见对方任务（真 HTTP 断言，非 mock）〔2026-10-12 达标〕** |
 | 状态后端 | 全 SQLite/JSON 单机文件；pub/sub 是进程内回调〔静态〕 | 后端抽象（SQLite / Postgres），队列与总线可换 | 两实例共享一库并发跑通（P1 判据） |
 | 成本归因 | 定价表 + 按供应商/Agent 维度已有 | 增加按 **pack / token** 归因 | `GET /api/cost` 能按 pack 出账 |
 | 审计 | **入站调用与配置变更均已留痕**（2026-10-08：webhook 全部调用成败落 JSONL；`/api/config` 每次变更落 `audit/config.jsonl`——key/新旧值/客户端/凭证指纹，敏感值只记脱敏形状，`GET /api/config/audit` 可查回） | 入站调用与配置变更留痕 | 每次 `/api/config` 变更有审计记录（`tests/test_config_audit.py` 九条钉住，含脱敏与写盘失败不静默） |

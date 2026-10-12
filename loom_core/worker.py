@@ -152,7 +152,8 @@ class TaskWorker:
         plan.raw.setdefault("pipeline", {})["output"] = output
 
         task = self.orchestrator.run_plan(plan, input_file=item.get("input_file", ""),
-                                          task_id=task_id, wait=True)
+                                          task_id=task_id, wait=True,
+                                          owner=str(item.get("principal") or ""))
         # _finalize_plan_task 已经写过终态；这里只兜住它没跑到的分支
         self.queue.finish(task_id, task.status.value,
                           result=dict(task.result) if task.result else None,

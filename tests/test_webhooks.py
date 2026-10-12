@@ -48,9 +48,9 @@ class FakeOrch:
         self.calls: list[dict] = []
         self._task_id = task_id
 
-    def run_plan(self, plan, input_file=None, task_id=None, wait=True):
+    def run_plan(self, plan, input_file=None, task_id=None, wait=True, owner=""):
         self.calls.append({"plan": plan, "input_file": input_file,
-                           "task_id": task_id, "wait": wait})
+                           "task_id": task_id, "wait": wait, "owner": owner})
         return SimpleNamespace(id=self._task_id)
 
 
@@ -203,6 +203,7 @@ class TestHandleInbound:
         assert payload["task_id"] == "cafecafecafecafe"
         call = orch.calls[0]
         assert call["wait"] is False                      # 入站不阻塞 HTTP 线程
+        assert call["owner"] == "webhook:deploy", "入站任务的归属必须记 webhook:<名>"
         text = Path(call["input_file"]).read_text(encoding="utf-8")
         assert "## topic" in text and "季度营收" in text and "- a.pdf" in text
         rec = _audit_lines(state_dir)[-1]

@@ -134,14 +134,26 @@ class CostTracker:
         with self._lock:
             self._budget = max_cost
 
-    def total_cost(self) -> float:
+    def total_cost(self, task_ids: set[str] | None = None) -> float:
         """已花费总额（实例锁保证与 record 写入互斥，读值原子）
+
+        `task_ids` 非 None 时只统计这些任务（token 身份的作用域过滤，spec §5.4）。
 
         残余窗口：check_budget 的「读总额→比对」与并发 record 之间无在途预留，
         高并发下多个调用可同时通过检查，存在轻微超预算可能（check-then-act）。
         """
         with self._lock, self._conn() as conn:
-            row = conn.execute("SELECT COALESCE(SUM(cost), 0) FROM cost_log").fetchone()
+            if task_ids is None:
+                row = conn.execute("SELECT COALESCE(SUM(cost), 0) FROM cost_log").fetchone()
+                return row[0] if row else 0
+            if not task_ids:
+                return 0.0
+            marks = ",".join("?" for _ in task_ids)
+            # nosec B608：marks 是按集合长度生成的纯 "?" 占位符，值全部走参数
+            # 绑定（tuple(task_ids)）——无任何用户输入拼进 SQL 文本。
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(cost), 0) FROM cost_log WHERE task_id IN ({marks})",  # nosec B608
+                tuple(task_ids)).fetchone()
             return row[0] if row else 0
 
     def check_budget(self) -> bool:
@@ -183,14 +195,25 @@ class CostTracker:
         self.record(provider, prompt_tokens, completion_tokens,
                     task_id=task_id, model=model)
 
-    def stats(self, since: float = 0) -> dict:
-        """按供应商汇总统计"""
+    def stats(self, since: float = 0, task_ids: set[str] | None = None) -> dict:
+        """按供应商汇总统计（task_ids 非 None 时只统计这些任务）。"""
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT provider, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens), SUM(cost) "
-                "FROM cost_log WHERE timestamp >= ? GROUP BY provider",
-                (since,),
-            ).fetchall()
+            if task_ids is None:
+                rows = conn.execute(
+                    "SELECT provider, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens), SUM(cost) "
+                    "FROM cost_log WHERE timestamp >= ? GROUP BY provider",
+                    (since,),
+                ).fetchall()
+            else:
+                if not task_ids:
+                    return {}
+                marks = ",".join("?" for _ in task_ids)
+                # nosec B608：同 total_cost——marks 纯占位符，值全部参数绑定。
+                rows = conn.execute(
+                    "SELECT provider, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens), SUM(cost) "
+                    f"FROM cost_log WHERE timestamp >= ? AND task_id IN ({marks}) GROUP BY provider",  # nosec B608
+                    (since, *task_ids),
+                ).fetchall()
             result = {}
             for provider, calls, pt, ct, cost in rows:
                 result[provider] = {
@@ -219,16 +242,20 @@ class CostTracker:
                 },
             }
 
-    def summary(self) -> dict:
-        """总览"""
-        total = self.total_cost()
-        return {
+    def summary(self, task_ids: set[str] | None = None) -> dict:
+        """总览（task_ids 非 None 时按任务集合过滤——token 身份的成本作用域）。"""
+        total = self.total_cost(task_ids)
+        data: dict = {
             "total_cost": round(total, 6),
             "budget": self._budget,
             "budget_remaining": round(self._budget - total, 6) if self._budget > 0 else None,
             "budget_exceeded": total >= self._budget if self._budget > 0 else False,
-            "by_provider": self.stats(),
+            "by_provider": self.stats(task_ids=task_ids),
         }
+        if task_ids is not None:
+            data["scope"] = "principal"
+            data["task_count"] = len(task_ids)
+        return data
 
     def cleanup(self, max_age_days: int = 90):
         """清理过期记录"""

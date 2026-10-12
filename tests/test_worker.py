@@ -29,9 +29,10 @@ class _FakeOrchestrator:
         self._error = error
         self._raises = raises
 
-    def run_plan(self, plan, input_file="", task_id=None, wait=True):
+    def run_plan(self, plan, input_file="", task_id=None, wait=True, owner=""):
         self.calls.append({"plan": plan.pipeline_name, "input_file": input_file,
-                           "task_id": task_id, "output": plan.raw.get("pipeline", {}).get("output")})
+                           "task_id": task_id, "output": plan.raw.get("pipeline", {}).get("output"),
+                           "owner": owner})
         if self._raises:
             raise self._raises
         return SimpleNamespace(status=self._status, result={"writer": {"content": "正文"}},
@@ -132,7 +133,8 @@ class TestRunOnce:
 
         assert worker.run_once() is not None
         assert orch.calls == [{"plan": "test_pipeline", "input_file": "input.md",
-                               "task_id": "t-e2e", "output": str(tmp_path / "out.md")}]
+                               "task_id": "t-e2e", "output": str(tmp_path / "out.md"),
+                               "owner": ""}]  # 队列条目无 principal（无身份世界）→ owner 空串
         row = q.get("t-e2e")
         assert row["status"] == "done"
         assert row["result"], "结果没写回队列，API 侧就查不到产出"

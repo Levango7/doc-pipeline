@@ -146,6 +146,10 @@ class PipelineTask:
     finished_at: float = 0
     error: str = ""
     checkpoint_file: str | None = None  # 断点文件路径
+    #: 任务归属（token 身份的 Principal.id；空串 = 无身份世界，如本机信任模式）。
+    #: 作用域隔离由接口层（Admin API）按它过滤；引擎自身保持中立，
+    #: CLI/MCP 单机场景不传即空。触发类提交记 "trigger:<名>"/"webhook:<名>"/"mcp"。
+    owner: str = ""
     # DAG 执行相关
     dag_nodes: dict[str, TaskNode] = field(default_factory=dict)  # name -> TaskNode
     execution_order: list[list[str]] = field(default_factory=list)  # 拓扑层级
@@ -179,6 +183,7 @@ class PipelineTask:
                 }
                 for s in self.steps
             ],
+            "owner": self.owner,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "duration_sec": round(self.finished_at - self.started_at, 2) if self.finished_at else None,
@@ -487,7 +492,7 @@ class PipelineOrchestrator:
 
     def run(self, task_id: str | None = None, pipeline_name: str = "",
             input_file: str = "", config: dict | None = None,
-            wait: bool = True, resume: bool = False) -> PipelineTask:
+            wait: bool = True, resume: bool = False, owner: str = "") -> PipelineTask:
         """执行流水线（支持 DAG 并行）
 
         .. deprecated::
@@ -503,9 +508,11 @@ class PipelineOrchestrator:
             if task:
                 self._logger.log("info", "从断点恢复", task_id=task_id)
             else:
-                task = PipelineTask(task_id, pipeline_name, input_file, config or {})
+                task = PipelineTask(task_id, pipeline_name, input_file, config or {},
+                                owner=owner)
         else:
-            task = PipelineTask(task_id, pipeline_name, input_file, config or {})
+            task = PipelineTask(task_id, pipeline_name, input_file, config or {},
+                                owner=owner)
 
         task.checkpoint_file = str(self.checkpoint_dir / f"{task_id}.json")
 
@@ -1032,7 +1039,7 @@ class PipelineOrchestrator:
 
     def run_plan(self, plan: ExecutionPlan, input_file: str = "",
                 task_id: str | None = None, wait: bool = True,
-                resume: bool = False) -> PipelineTask:
+                resume: bool = False, owner: str = "") -> PipelineTask:
         """按 Scheduler 生成的 ExecutionPlan 执行流水线
 
         resume=True 时从 task_id 对应的断点恢复：已完成节点直接复用产物注入
@@ -1055,6 +1062,7 @@ class PipelineOrchestrator:
             input_file=input_file,
             config=plan.raw.get("pipeline", {}),
             status=TaskStatus.RUNNING,
+            owner=owner,
         )
         task.checkpoint_file = str(self.checkpoint_dir / f"{task_id}.json")
         if resume_snaps:
@@ -1133,7 +1141,7 @@ class PipelineOrchestrator:
 
     async def run_plan_async(self, plan: ExecutionPlan, input_file: str = "",
                              task_id: str | None = None,
-                             resume: bool = False) -> PipelineTask:
+                             resume: bool = False, owner: str = "") -> PipelineTask:
         """async 版 run_plan：在已有事件循环中直接 await，消除 asyncio.run 嵌套开销。
 
         与 run_plan(wait=True) 的区别：
@@ -1157,6 +1165,7 @@ class PipelineOrchestrator:
             input_file=input_file,
             config=plan.raw.get("pipeline", {}),
             status=TaskStatus.RUNNING,
+            owner=owner,
         )
         task.checkpoint_file = str(self.checkpoint_dir / f"{task_id}.json")
         if resume_snaps:
@@ -1626,12 +1635,14 @@ class PipelineOrchestrator:
 
     def start_admin_api(self, host: str = "127.0.0.1", port: int = 8910,
                          serve_static: bool = False,
-                         dashboard_dir: str | None = None) -> bool:
+                         dashboard_dir: str | None = None,
+                         tokens_file: str | None = None) -> bool:
         """启动管理 API"""
         from .admin_api import AdminAPI
         self._admin_api = AdminAPI(host=host, port=port,  # type: ignore[assignment]
                                    serve_static=serve_static,
-                                   dashboard_dir=dashboard_dir)
+                                   dashboard_dir=dashboard_dir,
+                                   tokens_file=tokens_file)
         return self._admin_api.start(self)  # type: ignore[no-any-return,attr-defined]
 
     def stop_admin_api(self):

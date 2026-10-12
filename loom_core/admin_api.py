@@ -61,6 +61,7 @@ from . import scheduler as _scheduler_mod
 from .artifacts import task_output
 from .ids import new_task_id
 from .scheduler import resolve_pipeline_name
+from .tokens import LOCAL_PRINCIPAL, Principal, TokenConfigError, TokenStore, parse_bearer, token_from_query
 
 _logger = logging.getLogger(__name__)
 
@@ -421,28 +422,65 @@ class AdminHandler(BaseHTTPRequestHandler):
     # 必须要求 ADMIN_API_KEY（否则空串可静默绕过启动安全门与运行时鉴权）
     _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
-    def _check_auth(self) -> bool:
-        """校验 API key。
+    #: token 身份（spec §5.4）：TokenStore | None。
+    #: None / 未启用 = "无身份世界"——行为与既往完全一致（单 key 或本机信任）。
+    tokens: TokenStore | None = None
+    #: 本请求解析出的 Principal（_resolve_principal 填充；鉴权通过后必有值）
+    principal: Principal | None = None
 
-        - 配置了 api_key：所有受保护端点必须携带有效凭证（Bearer 头或 ?token=）
-        - 未配置 api_key 且服务绑定回环地址：放行（本机信任模式，与 docs/api.md 一致）
-        - 未配置 api_key 且绑定非回环地址：拒绝（AdminAPI.start 已在此组合下拒绝启动，
-          此处为兜底防线）
-        /health 与静态资源已在路由层豁免。
+    def _resolve_principal(self) -> Principal | None:
+        """凭证 → Principal（鉴权矩阵，spec §5.4）。
+
+        优先序与兼容承诺：
+          1. Bearer/?token= 命中 `ADMIN_API_KEY` → admin Principal（旧部署零改动）；
+          2. tokens.yaml 启用（TokenStore.enabled）→ 命中任一 token 得对应
+             Principal；**未命中/无凭证一律 None（回环也不例外）**——启用身份
+             却对回环免检等于没启用；
+          3. 未启用 tokens.yaml：有 api_key 时同 1（无凭证 None）；无 api_key 且
+             回环 → LOCAL_PRINCIPAL（本机信任模式，与既往一致）。
         """
-        if not self.api_key:
-            return getattr(self, "server_host", "127.0.0.1") in self._LOOPBACK_HOSTS
-        auth = self.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[len("Bearer "):].strip()
-            return hmac.compare_digest(token, self.api_key)
-        # 兼容 ?token=xxx
-        if "?" in self.path:
-            q = self.path.split("?", 1)[1]
-            for kv in q.split("&"):
-                if kv.startswith("token="):
-                    return hmac.compare_digest(kv[6:], self.api_key)
-        return False
+        token = parse_bearer(self.headers.get("Authorization", "")) or token_from_query(self.path)
+        if self.api_key and token and hmac.compare_digest(token, self.api_key):
+            return Principal(id="admin", admin=True, source="admin_key")
+        store = getattr(self, "tokens", None)
+        if store is not None and store.enabled:
+            return store.resolve(token) if token else None
+        if self.api_key:
+            return None
+        if getattr(self, "server_host", "127.0.0.1") in self._LOOPBACK_HOSTS:
+            return LOCAL_PRINCIPAL
+        return None
+
+    def _check_auth(self) -> bool:
+        """校验凭证并缓存本请求的 Principal（_resolve_principal 的薄封装）。
+
+        无凭证失败时 principal=None（调用方给 401）；/health 与静态资源已在
+        路由层豁免。
+        """
+        self.principal = self._resolve_principal()
+        return self.principal is not None
+
+    # ── 作用域（token 身份，spec §5.4）──
+
+    def _principal(self) -> Principal:
+        """当前请求的 Principal（鉴权通过后必有；兜底给 LOCAL 防漏网）。"""
+        return self.principal or LOCAL_PRINCIPAL
+
+    def _scoped_task(self, task_id: str):
+        """按作用域取任务；不可见（不存在或属他人）返回 None。
+
+        **越权统一 404 而不是 403**：403 会泄露"这个任务存在、只是不给你"——
+        跨租户场景里存在性本身就是信息。非 admin 且 owner 不匹配 → 视同不存在。
+        """
+        task = self.orch.get_task(task_id) if self.orch else None
+        if task is None:
+            return None
+        p = self._principal()
+        if p.admin:
+            return task
+        if str(getattr(task, "owner", "") or "") == p.id:
+            return task
+        return None
 
     def log_message(self, fmt, *args):
         """访问日志拼装点：requestline 中的 ?token= 凭证打码后再输出"""
@@ -756,6 +794,12 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
         tasks = self.orch.list_tasks()
+        p = self._principal()
+        if not p.admin:
+            # 作用域：非 admin 只见自己名下的任务（owner 空串的任务——无身份
+            # 世界/历史遗留——同样不展示给具名 Principal）
+            tasks = [t for t in tasks
+                     if str(getattr(t, "owner", "") or "") == p.id]
         tasks_data = [
             {
                 "id": t.id,
@@ -772,7 +816,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_get_task(self, task_id: str):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
-        task = self.orch.get_task(task_id)
+        task = self._scoped_task(task_id)
         if not task:
             return self._json({"error": "task not found"}, 404)
         result = dict(getattr(task, "result", {}))
@@ -934,7 +978,8 @@ class AdminHandler(BaseHTTPRequestHandler):
 
         try:
             task = self.orch.run_plan(plan, input_file=str(input_file),
-                                      task_id=task_id, wait=wait)
+                                      task_id=task_id, wait=wait,
+                                      owner=self._principal().id)
         except Exception as e:
             self._detach_stream_callback(task_id, callback)
             with contextlib.suppress(OSError):
@@ -968,7 +1013,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_cancel_task(self, task_id: str):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
-        if self.orch.get_task(task_id) is None:
+        if self._scoped_task(task_id) is None:
             return self._json({"error": "task not found"}, 404)
         ok = self.orch.cancel(task_id)
         self._json({"cancelled": ok, "task_id": task_id})
@@ -977,6 +1022,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         """重跑流水线（复用上一次 plan + 输入）"""
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
+        if self._scoped_task(task_id) is None:
+            return self._json({"error": "task not found"}, 404)
         try:
             new_task = self.orch.rerun(task_id=task_id)
             self._json({
@@ -990,7 +1037,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_pause_task(self, task_id: str):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
-        if self.orch.get_task(task_id) is None:
+        if self._scoped_task(task_id) is None:
             return self._json({"error": "task not found"}, 404)
         ok = self.orch.pause(task_id)
         self._json({"paused": ok, "task_id": task_id})
@@ -998,7 +1045,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     def _handle_resume_task(self, task_id: str):
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
-        if self.orch.get_task(task_id) is None:
+        if self._scoped_task(task_id) is None:
             return self._json({"error": "task not found"}, 404)
         ok = self.orch.resume(task_id)
         self._json({"resumed": ok, "task_id": task_id})
@@ -1011,7 +1058,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         """
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
-        if self.orch.get_task(task_id) is None:
+        if self._scoped_task(task_id) is None:
             return self._json({"error": "task not found"}, 404)
         try:
             payload = json.loads(body.decode("utf-8")) if body else {}
@@ -1030,7 +1077,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         """
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
-        if self.orch.get_task(task_id) is None:
+        if self._scoped_task(task_id) is None:
             return self._json({"error": "task not found"}, 404)
         try:
             payload = json.loads(body.decode("utf-8")) if body else {}
@@ -1330,10 +1377,16 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 500)
 
     def _handle_cost_stats(self):
-        """LLM 成本统计"""
+        """LLM 成本统计（非 admin 只统计自己名下任务的成本，spec §5.4）。"""
         try:
             from loom_core.cost_tracker import get_cost_tracker
-            self._json(get_cost_tracker().summary())
+            tracker = get_cost_tracker()
+            p = self._principal()
+            if p.admin or not self.orch:
+                return self._json(tracker.summary())
+            own_ids = {t.id for t in self.orch.list_tasks()
+                       if str(getattr(t, "owner", "") or "") == p.id}
+            self._json(tracker.summary(task_ids=own_ids))
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
@@ -1739,13 +1792,17 @@ class AdminAPI:
 
     def __init__(self, host: str = "127.0.0.1", port: int = 8910,
                  serve_static: bool = False, dashboard_dir: str | None = None,
-                 api_key: str | None = None, webhooks_path: str | None = None):
+                 api_key: str | None = None, webhooks_path: str | None = None,
+                 tokens_file: str | None = None):
         self.host = host
         self.port = port
         self.serve_static = serve_static
         self.dashboard_dir = dashboard_dir
         # 从环境变量或参数获取 API key
         self.api_key = api_key or os.environ.get("ADMIN_API_KEY", "")
+        # token 身份配置（None = LOOM_TOKENS_FILE 或仓库根 tokens.yaml；
+        # 文件不存在 = 无身份世界，行为与既往一致）
+        self.tokens_file = tokens_file
         # 入站 webhook 配置路径（None = 用 LOOM_WEBHOOKS_FILE——旧名回退可读——或仓库根默认）
         self.webhooks_path = webhooks_path
         self._server: HTTPServer | None = None
@@ -1761,6 +1818,20 @@ class AdminAPI:
                     "公网/容器部署必须设置 ADMIN_API_KEY，或将 host 改为 127.0.0.1（仅本机）。"
                 )
                 return False
+            # token 身份：装载 tokens.yaml（结构性错误 = 拒绝启动——身份配置
+            # 写错还带病运行，等于隔离静默失效）
+            try:
+                AdminHandler.tokens = TokenStore.load(
+                    Path(self.tokens_file) if self.tokens_file else None)
+            except TokenConfigError as e:
+                _logger.error("[AdminAPI] 拒绝启动：token 配置非法：%s", e)
+                return False
+            if AdminHandler.tokens.enabled:
+                n = len(AdminHandler.tokens.entries)
+                _logger.info(
+                    "[AdminAPI] token 身份已启用：%d 个凭证（%s）——回环访问同样要求凭证",
+                    n, AdminHandler.tokens.source)
+
             AdminHandler.orch = orch
             AdminHandler.api_key = self.api_key
             AdminHandler.server_host = self.host
