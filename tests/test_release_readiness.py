@@ -42,6 +42,42 @@ class TestDependencyClosure:
         assert not unclaimed, f"未声明的第三方 import：{unclaimed}"
 
 
+class TestNestedPackagePaths:
+    """verify_dist 对嵌套包（packs.docgen）必须按斜杠路径查。
+
+    2026-10-12 v3.10.0 首发实证：把点号名当路径前缀（`n.startswith("packs.docgen/")`）
+    在 wheel 条目上永远零命中——wheel 本身合规却被门禁误拦为「包清单漂移」；
+    同一处错误还让依赖闭合扫描对嵌套包静默空转（REPO/"packs.docgen" 扫 0 个文件）。
+    判据直测两个提取出的出口函数（与门禁同一实现，防两套口径漂移）。
+    """
+
+    def _mod(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "verify_dist", PROJECT / "scripts" / "verify_dist.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_pkg_rel_path_maps_dots_to_slashes(self):
+        mod = self._mod()
+        assert mod.pkg_rel_path("packs.docgen") == "packs/docgen"
+        assert mod.pkg_rel_path("packs.docgen.agents") == "packs/docgen/agents"
+        assert mod.pkg_rel_path("agents") == "agents"
+
+    def test_missing_init_accepts_slash_paths_for_nested(self):
+        mod = self._mod()
+        names = {mod.pkg_rel_path(p) + "/__init__.py" for p in mod.PACKAGES}
+        assert mod.packages_missing_init(names) == []
+
+    def test_missing_init_flags_absent_package(self):
+        mod = self._mod()
+        names = {mod.pkg_rel_path(p) + "/__init__.py"
+                 for p in mod.PACKAGES if p != "packs.docgen"}
+        assert mod.packages_missing_init(names) == ["packs.docgen"]
+
+
 class TestPipelineDataInDist:
     """流水线数据必须进发行物：核心散装走 data-files，docgen pack 走 package-data。"""
 
