@@ -35,6 +35,25 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Changed（2026-10-12·续41，生态轴 0→1：首个真第三方插件例证）
+
+- **`Levango7/loom-plugin-sqlite`**（外部仓、外部发行）：只读 SQLite 取数 Agent
+  （`sqlite_query`）——补“本地数据库 → 报告”取数面；只读双保险（`mode=ro` +
+  authorizer）、单语句 SELECT/WITH 白名单、截断/空集/错误全部如实语义。
+- **本仓零改动闭环**（spec §3 P0 判据 2 达标、§2.1 第三方实测 0→1）：
+  纯净 venv 装 **PyPI 正式版**宿主（3.10.0 与 3.11.0 各一遍）→
+  `loom plugin list` 列出 `sqlite_query [entry_point:sqlite_query]` →
+  报表管线真跑落盘 → 审批版管线（approval 闸门）停住/放行/驳回双向实测；
+  外部仓 CI（GitHub runner，双宿主版本矩阵）全绿（run 38271327226 / 38271446597）。
+- **过渡期三坑成范式**（外部仓 README 留档，第三方作者直接照抄）：
+  ①宿主 import 根名 3.11.0 起 `pipeline_core → loom_core` → 插件 try/except 双名；
+  ②entry 组名 3.10.x 只认 `doc_pipeline.agents`（新组 3.11.0 才生效）→ 双组声明，
+  宿主按注册名去重不重复；③纯取数管线的输入文件仍需首行可提取主题（引擎契约），
+  给一行说明文字即可。
+- 附带发现（宿主侧潜在改进项，未改）：嵌入方裸构造 `PipelineOrchestrator()` 时
+  `agents_dir` 默认相对 cwd——在宿主之外的目录嵌入时应用
+  `agents_dir=str(loom_core.paths.agents_dir())`（CLI 入口内部已如此；已写进外部仓脚本注释）。
+
 ## [3.11.0] - 2026-10-12
 
 命名收官版：import 根包 `pipeline_core` → `loom_core`、领域包 `docpipeline` → `loom_doc`，
