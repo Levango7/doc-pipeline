@@ -1,7 +1,7 @@
 # 外部插件作者模板（examples/plugin-hello）
 
 这里是**第三方插件机制的参照实现**：一个最小的独立 pip 包，通过
-`doc_pipeline.agents` entry_points 提供 Agent——装好即被本仓零改动地
+`loom.agents` entry_points 提供 Agent——装好即被本仓零改动地
 发现 / 注册 / 执行。
 
 > 2026-10-11 单发行物整合：原与 hello 并列的五支实用插件
@@ -13,7 +13,7 @@
 ## 契约（与内置 `agents/*.py` 同构）
 
 - entry point 的**值必须是模块路径**（`包.模块`），group 固定
-  `doc_pipeline.agents`；
+  `loom.agents`；
 - 模块顶层声明 `AGENT_NAME`（`AGENT_VERSION` / `AGENT_DESC` / topics 可选），
   并至少定义一个 `BaseAgent` 子类；
 - 加载器按 `__file__` 做与内置件同一套 AST 安全检查——不碰黑名单里的调用

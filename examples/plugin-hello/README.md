@@ -1,11 +1,11 @@
 # doc-pipeline-plugin-hello —— 外部插件示例
 
-演示 `doc_pipeline.agents` entry_points 接入：**装好即被发现 / 注册 / 执行，
+演示 `loom.agents` entry_points 接入：**装好即被发现 / 注册 / 执行，
 本仓零改动**（product-spec §2.1 验收线第 2 条）。
 
 ## 契约（与内置 `agents/*.py` 同构）
 
-- entry point 的**值必须是模块路径**（`包.模块`），group 固定 `doc_pipeline.agents`；
+- entry point 的**值必须是模块路径**（`包.模块`），group 固定 `loom.agents`；
 - 模块顶层声明 `AGENT_NAME`（`AGENT_VERSION` / `AGENT_DESC` / topics 可选），
   并至少定义一个 `BaseAgent` 子类；
 - 加载器按 `__file__` 做与内置件同一套 AST 安全检查——不碰黑名单里的调用就

@@ -10,7 +10,7 @@ Measured sources (all via pipeline_core.paths, which honours LOOM_ROOT
 and still resolves after a wheel install):
   1. pipelines/*.yaml -- every non-underscore pipeline counts as one pack;
   2. agents/*.py      -- built-in Agent modules;
-  3. entry_points group doc_pipeline.packs -- packs from external pip packages.
+  3. entry_points group loom.packs -- packs from external pip packages.
 """
 from __future__ import annotations
 
@@ -21,7 +21,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-PACK_ENTRY_POINT_GROUP = "doc_pipeline.packs"
+PACK_ENTRY_POINT_GROUP = "loom.packs"
+#: 旧 group 名（命名收官前的外部契约）——过渡期仍被发现，并按名字记一次迁移提示
+LEGACY_PACK_ENTRY_POINT_GROUPS = ("doc_pipeline.packs",)
 
 
 def _call_depth_cap() -> int:
@@ -202,12 +204,24 @@ def discover() -> list[PackInfo]:
                 continue
             packs.append(PackInfo(name=path.stem, source="builtin",
                                   agent_names=_yaml_agent_names(path)))
+    names = (PACK_ENTRY_POINT_GROUP, *LEGACY_PACK_ENTRY_POINT_GROUPS)
+    eps_all: list = []
+    seen_names: set[str] = set()
     try:
-        eps = list(entry_points(group=PACK_ENTRY_POINT_GROUP))
+        for group in names:
+            for ep in entry_points(group=group):
+                if ep.name in seen_names:
+                    continue  # 新 group 优先；旧 group 同名不重复
+                seen_names.add(ep.name)
+                eps_all.append(ep)
+                if group != PACK_ENTRY_POINT_GROUP:
+                    logger.warning(
+                        "pack %s 用的 entry_points group %r 已更名：请改用 %r"
+                        "（旧名过渡期仍被发现）", ep.name, group, PACK_ENTRY_POINT_GROUP)
     except Exception as e:  # noqa: BLE001  metadata read failure must not kill self-check
         logger.warning("pack entry_points read failed: %s", e)
-        eps = []
-    for ep in sorted(eps, key=lambda e: e.name):
+        eps_all = []
+    for ep in sorted(eps_all, key=lambda e: e.name):
         packs.append(PackInfo(name=ep.name, source="entry_point"))
     return packs
 

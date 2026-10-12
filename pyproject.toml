@@ -28,14 +28,14 @@ benchmark = ["numpy>=1.24.0"]
 # 于是 `pip install .` 与 `pip install -r requirements.txt` 会装出能力不同的两份东西。
 # 版本下限取自本机实测可用版本（本机 python-docx 1.2.0 / reportlab 5.0.0 /
 # PyMuPDF 1.27.2.3 / openpyxl 3.1.5 / python-pptx 1.0.2 / paddleocr 3.7.0 + paddlex 3.7.2），不是猜的。
-render = [                      # docpipeline/renderer.py：Markdown → docx / pdf / xlsx / pptx
+render = [                      # loom_doc/renderer.py：Markdown → docx / pdf / xlsx / pptx
     "python-docx>=1.2.0",
     "reportlab>=5.0.0",
     "openpyxl>=3.1.0",          # xlsx 结构化子集：表格 → 工作表
     "python-pptx>=1.0.0",       # pptx 结构化子集：标题 → 幻灯片，表格落真表
 ]
-ingest = ["pymupdf>=1.24.0"]    # docpipeline/ingest.py：PDF 按字号推断标题层级
-ocr = [                         # docpipeline/ingest.py：扫描件/图片 PP-StructureV3 路线
+ingest = ["pymupdf>=1.24.0"]    # loom_doc/ingest.py：PDF 按字号推断标题层级
+ocr = [                         # loom_doc/ingest.py：扫描件/图片 PP-StructureV3 路线
     "paddleocr>=3.0",           # PPStructureV3 是 3.x 的 API，2.x 装了也没有这个符号
     "paddlex[ocr]>=3.0",        # 实测本机只装 paddleocr 时 PPStructureV3 实例化即抛错
 ]
@@ -67,8 +67,11 @@ doc-pipeline = "run:main"      # 旧入口别名，过渡期保留
 
 [tool.setuptools]
 packages = [
-    "pipeline_core", "docpipeline", "agents", "scripts", "artesian",
+    "pipeline_core", "loom_doc", "agents", "scripts", "artesian",
     "packs", "packs.docgen", "packs.docgen.agents",
+    # 兼容 shim（spec §7.1 命名收官）：旧名 docpipeline 以转发别名保留，
+    # 装进 wheel 才能让旧 import 在安装态也成立（MAOP 等既有消费者零改动）
+    "docpipeline",
 ]
 py-modules = ["run"]
 
@@ -116,7 +119,7 @@ markers = [
 # 覆盖率只计产品源码：tests/scripts/benchmark 不入门禁
 # （--cov=. 会把 tests/ 自身的近 100% 计入，虚高到 ~79%，无门禁价值）
 relative_files = true
-include = ["pipeline_core/*", "docpipeline/*", "agents/*", "packs/*", "run.py"]
+include = ["pipeline_core/*", "loom_doc/*", "agents/*", "packs/*", "run.py"]
 omit = ["tests/*", "scripts/*", "benchmark.py"]
 
 [tool.coverage.report]

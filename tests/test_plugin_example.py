@@ -39,7 +39,7 @@ class TestExamplePackageShape:
 
         from pipeline_core.base_agent import BaseAgent
 
-        mod_path = PLUGIN_DIR / "doc_pipeline_plugin_hello" / "char_stats.py"
+        mod_path = PLUGIN_DIR / "loom_plugin_hello" / "char_stats.py"
         spec = importlib.util.spec_from_file_location("_plugin_example_probe", mod_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -52,7 +52,7 @@ class TestExamplePackageShape:
     def test_passes_ast_safety_scan(self):
         from pipeline_core.agent_loader import _check_safety
 
-        assert _check_safety(PLUGIN_DIR / "doc_pipeline_plugin_hello" / "char_stats.py") == []
+        assert _check_safety(PLUGIN_DIR / "loom_plugin_hello" / "char_stats.py") == []
 
 
 class TestRealPipInstallDiscovery:

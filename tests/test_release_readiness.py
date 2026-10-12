@@ -83,9 +83,9 @@ class TestPluginPackagesMetadata:
         for key in ("license", "readme", "dependencies", "classifiers"):
             assert key in proj, f"{pkg_dir.name}: pyproject 缺 {key}"
 
-        # 依赖宿主：插件 import pipeline_core，宿主是 doc-pipeline
-        assert any(d.startswith("doc-pipeline") for d in proj["dependencies"]), (
-            f"{pkg_dir.name}: 未声明对宿主 doc-pipeline 的依赖")
+        # 依赖宿主：插件 import pipeline_core，宿主发行名 2026-10-11 起为 nexusloom
+        assert any(d.startswith("nexusloom") for d in proj["dependencies"]), (
+            f"{pkg_dir.name}: 未声明对宿主 nexusloom 的依赖")
 
         # classifiers 必须是合法 trove 条目（PyPI 上传期硬校验；写错整个包发不出）
         valid_prefixes = (

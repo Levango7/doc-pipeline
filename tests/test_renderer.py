@@ -1,4 +1,4 @@
-"""渲染层测试 — docpipeline/renderer.py + agents/renderer_agent.py
+"""渲染层测试 — loom_doc/renderer.py + agents/renderer_agent.py
 
 覆盖：
 - Markdown 解析（标题层级 / 列表 / 围栏代码 / 引用 / 分隔线）
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from docpipeline import renderer
+from loom_doc import renderer
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
