@@ -3,7 +3,7 @@
 两条发现路径并存（product-spec §2.1 验收线第 2 条：外部 pip 包提供 Agent、
 本仓零改动即被发现/注册/执行）：
 1. 本仓 `agents/*.py`（glob，传统路径）；
-2. **entry_points 插件**：group `doc_pipeline.agents`，entry point 的**值须是
+2. **entry_points 插件**：group `loom.agents`，entry point 的**值须是
    模块路径**（与内置 agents/*.py 同构：模块级 `AGENT_NAME` + 一个 BaseAgent
    子类）。同名时本仓文件优先——插件不能悄悄顶掉内置 Agent。
 
@@ -29,7 +29,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: 第三方 Agent 插件的 entry_points group（值 = 模块路径，如 "my_pkg.my_agent"）
-ENTRY_POINT_GROUP = "doc_pipeline.agents"
+ENTRY_POINT_GROUP = "loom.agents"
+#: 旧 group 名（命名收官前的外部契约）——过渡期仍被发现，并按名字记一次迁移提示
+LEGACY_ENTRY_POINT_GROUPS = ("doc_pipeline.agents",)
 
 # 危险调用黑名单（含模块属性调用，如 os.remove / socket.socket / ctypes.CDLL）
 _DANGEROUS_CALLS = {
@@ -185,18 +187,29 @@ class AgentLoader:
             sys.path.insert(0, project_root)
 
     def _plugin_entry_points(self) -> dict:
-        """entry_points(group=ENTRY_POINT_GROUP) 的插件（名字 → EntryPoint）。
+        """entry_points 插件（名字 → EntryPoint）：新 group 优先，旧 group 过渡期回退。
 
         独立成方法便于测试打桩；元数据读取失败不拖垮内置发现（记 error 后返回 {}，
-        内置 agents/ 照常可用）。
+        内置 agents/ 照常可用）。旧 group（spec §7.1 命名收官前的契约）命中的
+        每个包记一条迁移提示——插件作者该把 group 改成 ENTRY_POINT_GROUP。
         """
+        names = (ENTRY_POINT_GROUP, *LEGACY_ENTRY_POINT_GROUPS)
+        found: dict = {}
         try:
-            eps = entry_points(group=ENTRY_POINT_GROUP)
+            for group in names:
+                for ep in entry_points(group=group):
+                    if ep.name in found:
+                        continue  # 新 group 优先；旧 group 同名不覆盖
+                    found[ep.name] = ep
+                    if group != ENTRY_POINT_GROUP:
+                        logger.warning(
+                            "插件 %s 用的 entry_points group %r 已更名：请改用 %r"
+                            "（旧名过渡期仍被发现）", ep.name, group, ENTRY_POINT_GROUP)
         except Exception as e:
             if self._logger:
                 self._logger.log("error", "entry_points 读取失败", error=str(e))
             return {}
-        return {ep.name: ep for ep in eps}
+        return found
 
     def discover(self) -> list[str]:
         """核心 agents/*.py + 物理 pack 的 agents/ + entry_points 插件；同名时先发现者优先。"""

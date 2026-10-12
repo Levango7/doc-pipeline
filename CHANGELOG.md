@@ -35,6 +35,33 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Changed（2026-10-12·续39，命名收官·第一段：领域包 loom_doc + 插件 group loom.*）
+
+- **`docpipeline` → `loom_doc`**（spec §7.1 命名系统收尾第一段）：git mv 保历史
+  全迁（renderer / ingest / document_enhancer / degradation 等 5 文件）；旧名保留
+  为**兼容 shim**——meta-path 别名把 `docpipeline.X` 映射到 `loom_doc.X` 的**同一
+  模块对象**（identity 保真：isinstance/patch/注册表照常工作；转发文件方案会造出
+  两份模块，本仓在打桩入口上栽过），首导旧根名记一次 DeprecationWarning。
+  **`docpipeline/__init__.py` 文件保留**：MAOP 的 `_resolve_doc_pipeline_root()`
+  正是用它判项目根，属对外契约。shim 进 wheel（packages）、发布门禁
+  （verify_dist PACKAGES）与 CI 三检范围。
+- **entry_points group → `loom.agents` / `loom.packs`**：loader 与 pack_manifest
+  先读新 group、旧 group（`doc_pipeline.*`）过渡期回退可读（同名新组优先），
+  旧 group 命中记一条迁移提示；`examples/plugin-hello` 模板与全部文档切到新名。
+- **原 §7.1 目标名 `loom_pack_docgen` 修正**：该名系 pack 拆分（2026-10-12）前的
+  写法；拆分后该层被核心 agents（renderer/ingest/knowledge_base）与 pack
+  （writer/quality_gate）双方共用，非 pack 私有——按实际命名为 `loom_doc`
+  （spec §7.1 已记）。
+- **MAOP 兼容评估（"lockstep" 的零改动方案）**：其运行时只做两件事——探
+  `docpipeline/__init__.py` 判根 + 两条 import（`PipelineOrchestrator`、
+  `event_hook`）——shim 全覆盖，它侧零改动；其 4 条源码级静态检查读的是旧路径
+  （10-11 改名后早已红），不因本批恶化（§9.1 记账延续）。
+- **判据** `tests/test_naming_compat.py` 8 条：shim identity（子进程实证）/
+  warn-once / MAOP 探径文件存在 / 反向守卫（仓内源码不得 import 旧名）/
+  group 双读（新组优先 + 旧组迁移提示）。
+- 另修 `test_release_readiness` 的宿主依赖口径（判据还在等 `doc-pipeline`
+  前缀，宿主发行名 2026-10-11 起已是 `nexusloom`）。
+
 ## [3.10.0] - 2026-10-12
 
 两个特性批合流：CLI 动词收敛（续37）与审批闸门（续38，spec §9 决策 C）。

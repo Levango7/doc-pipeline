@@ -14,7 +14,7 @@
 from pathlib import Path
 from typing import Any
 
-from docpipeline import renderer
+from loom_doc import renderer
 from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "renderer"

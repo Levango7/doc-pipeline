@@ -149,10 +149,10 @@ def test_ci_step_carries_the_output_fidelity_checks():
 
     那份 21,926 字节的素材直粘文档就是从这一步以 `OUTPUT FIDELITY OK` 的名义过的，
     所以这一步不能只依赖 quality_gate：判据若从 ci.yml 里消失（或被注释掉），
-    等于门禁单方面失效，这里要红。字符串取自 docpipeline.degradation，
+    等于门禁单方面失效，这里要红。字符串取自 loom_doc.degradation，
     不在测试里重抄一份字面量。
     """
-    from docpipeline import degradation
+    from loom_doc import degradation
 
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert degradation.EMPTY_RESULT_DOC in text, \

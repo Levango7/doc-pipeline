@@ -1,18 +1,18 @@
 """分层护栏：依赖方向必须单向。
 
 Phase 1 把文档领域能力（renderer / ingest / document_enhancer）从
-`pipeline_core` 拆到了顶层包 `docpipeline`。拆包本身不构成分层——
-只要有人回手写一句 `from docpipeline import renderer` 放进引擎里，
+`pipeline_core` 拆到了顶层包 `loom_doc`。拆包本身不构成分层——
+只要有人回手写一句 `from loom_doc import renderer` 放进引擎里，
 "领域无关的工作流引擎"就又变回"文档流水线脚本集合"，
 而且这种回退在测试全绿的情况下完全看不出来（两个包都装在同一棵树里）。
 
 本文件用 AST 静态扫描源码（不 import、不执行被扫代码），
 把依赖方向钉成门禁：
 
-    pipeline_core  -/->  docpipeline     禁止（引擎不得认识具体领域）
+    pipeline_core  -/->  loom_doc     禁止（引擎不得认识具体领域）
     pipeline_core  -/->  agents          禁止（引擎不得认识具体插件）
-    docpipeline    -/->  agents          禁止（上层不得反向依赖插件层）
-    docpipeline    ->   pipeline_core    允许
+    loom_doc    -/->  agents          禁止（上层不得反向依赖插件层）
+    loom_doc    ->   pipeline_core    允许
 
 同时带了判据自身的正例测试：扫描器如果压根命中不了，
 "0 违规"就只是空转，而不是结论。
@@ -25,10 +25,10 @@ import pytest
 
 PROJECT = Path(__file__).resolve().parent.parent
 ENGINE = PROJECT / "pipeline_core"
-DOC = PROJECT / "docpipeline"
+DOC = PROJECT / "loom_doc"
 
-# docpipeline 的非标准库依赖登记（逐条认领，新增必须显式加到这里）
-# 同包自引用由 _scan 过滤，不会出现在结果里，因此登记集不含 "docpipeline"。
+# loom_doc 的非标准库依赖登记（逐条认领，新增必须显式加到这里）
+# 同包自引用由 _scan 过滤，不会出现在结果里，因此登记集不含 "loom_doc"。
 FIRST_PARTY = {"pipeline_core", "scripts", "artesian"}
 DECLARED_OPTIONAL = {"docx", "reportlab", "pymupdf", "openpyxl", "pptx"}   # requirements.txt 里声明
 RUNTIME_PROBED = {"paddleocr", "mineru"}                 # 重型 OCR，有意不进 requirements
@@ -97,8 +97,8 @@ def _flagged(pkg_dir: Path, forbidden: set[str]) -> list[str]:
 
 class TestDependencyDirection:
     def test_engine_does_not_import_document_layer(self):
-        assert _flagged(ENGINE, {"docpipeline"}) == [], (
-            "pipeline_core 不得 import docpipeline：引擎一旦认识文档层，"
+        assert _flagged(ENGINE, {"loom_doc"}) == [], (
+            "pipeline_core 不得 import loom_doc：引擎一旦认识文档层，"
             "就无法承载非文档类工作流。请把该能力做成 Agent 或下沉为引擎原语。"
         )
 
@@ -110,7 +110,7 @@ class TestDependencyDirection:
 
     def test_document_layer_does_not_import_agents(self):
         assert _flagged(DOC, {"agents"}) == [], (
-            "docpipeline 不得 import agents：插件层可以调用领域层，反过来会成环。"
+            "loom_doc 不得 import agents：插件层可以调用领域层，反过来会成环。"
         )
 
     def test_engine_does_not_import_packs(self):
@@ -135,14 +135,14 @@ class TestDependencyDirection:
         引擎/插件层才可能有意义地依赖它。
         """
         foundation = PROJECT / "artesian"
-        forbidden = {"pipeline_core", "docpipeline", "agents", "scripts"}
+        forbidden = {"pipeline_core", "loom_doc", "agents", "scripts"}
         assert _flagged(foundation, forbidden) == [], (
-            "artesian 底座不得 import 主仓包（pipeline_core/docpipeline/agents/scripts）——"
+            "artesian 底座不得 import 主仓包（pipeline_core/loom_doc/agents/scripts）——"
             "并入后依赖方向仍须单向：底座在最底层"
         )
 
     def test_document_layer_external_deps_are_registered(self):
-        """docpipeline 用到的非标准库 import 必须逐条登记在册。
+        """loom_doc 用到的非标准库 import 必须逐条登记在册。
 
         这条的价值不在"通过"，而在新增依赖时必须有人显式认领：
         少一句登记，就多一个装完环境才能发现 ImportError 的运行时坑。
@@ -153,7 +153,7 @@ class TestDependencyDirection:
             if imported not in _stdlib_names() and imported != "__future__"
         }
         assert found == FIRST_PARTY | DECLARED_OPTIONAL | RUNTIME_PROBED, (
-            f"docpipeline 依赖集变了：实际 {sorted(found)}；"
+            f"loom_doc 依赖集变了：实际 {sorted(found)}；"
             f"登记的是 {sorted(FIRST_PARTY | DECLARED_OPTIONAL | RUNTIME_PROBED)}"
         )
 
@@ -214,7 +214,7 @@ class TestDependencyDirection:
             for rel, imported in _scan(DOC)
             if imported == "scripts" and not rel.endswith("document_enhancer.py")
         ]
-        assert offenders == [], f"docpipeline 新增了对 scripts/ 的引用: {offenders}"
+        assert offenders == [], f"loom_doc 新增了对 scripts/ 的引用: {offenders}"
 
 
 class TestScannerActuallyWorks:
@@ -223,9 +223,9 @@ class TestScannerActuallyWorks:
     @pytest.mark.parametrize(
         ("src", "expected"),
         [
-            ("from docpipeline import renderer\n", {"docpipeline"}),
-            ("import docpipeline.ingest\n", {"docpipeline"}),
-            ('importlib.import_module("docpipeline.renderer")\n', {"docpipeline"}),
+            ("from loom_doc import renderer\n", {"loom_doc"}),
+            ("import loom_doc.ingest\n", {"loom_doc"}),
+            ('importlib.import_module("loom_doc.renderer")\n', {"loom_doc"}),
             ('__import__("packs.docgen.agents.writer")\n', {"packs"}),
             ("from . import artifacts\n", set()),
             ("from pathlib import Path\n", {"pathlib"}),
@@ -242,15 +242,15 @@ class TestSplitIsReal:
 
     @pytest.mark.parametrize("name", ["renderer.py", "ingest.py", "document_enhancer.py"])
     def test_moved_out_of_engine(self, name):
-        assert not (ENGINE / name).exists(), f"pipeline_core/{name} 应已移到 docpipeline/"
-        assert (DOC / name).exists(), f"docpipeline/{name} 缺失"
+        assert not (ENGINE / name).exists(), f"pipeline_core/{name} 应已移到 loom_doc/"
+        assert (DOC / name).exists(), f"loom_doc/{name} 缺失"
 
     def test_package_is_declared(self):
         """没写进 [tool.setuptools] packages 的顶层包，装完就 ImportError。"""
         import tomllib
         data = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
         pkgs = data["tool"]["setuptools"]["packages"]
-        assert "docpipeline" in pkgs, f"pyproject 未打包 docpipeline: {pkgs!r}"
+        assert "loom_doc" in pkgs, f"pyproject 未打包 loom_doc: {pkgs!r}"
         # pack-docgen 拆出后 packs 树也必须真的被打包
         assert "packs" in pkgs and "packs.docgen" in pkgs, (
             f"pyproject 未打包 packs 树: {pkgs!r}")

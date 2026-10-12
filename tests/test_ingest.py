@@ -1,4 +1,4 @@
-"""摄入层测试 — docpipeline/ingest.py + agents/ingest_agent.py
+"""摄入层测试 — loom_doc/ingest.py + agents/ingest_agent.py
 
 覆盖：
 - PDF 提取（用 PyMuPDF 动态生成样本，不依赖仓库里的产物文件）
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from docpipeline import ingest
+from loom_doc import ingest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))

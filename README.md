@@ -16,7 +16,7 @@
 | **实验性** | 需求分析 | `--pipeline docreq` | requirements_analyzer 输出结构化 DocumentSpec |
 | **通用** | 任意 JSON 接口 → 报告 | `--pipeline api-report` | 无领域节点：`http_request` 取接口 → `transform` 挑字段渲染 → 落盘 |
 | **通用** | 接口列表 → **逐项摘要** | `--pipeline api-digest` | 同一个 Agent 按 `foreach` 逐项跑 N 次，聚合产物再落盘（列表长度超 `max_items` 直接报错） |
-| **实验性** | 文档增强（库） | `docpipeline.document_enhancer` | 逐章节 LLM 深化 + 搜索补充；CLI 入口已随动词收敛摘除（库仍可用，见 `docs/agents.md`） |
+| **实验性** | 文档增强（库） | `loom_doc.document_enhancer` | 逐章节 LLM 深化 + 搜索补充；CLI 入口已随动词收敛摘除（库仍可用，见 `docs/agents.md`） |
 | **实验性** | MCP Server | `--mcp` | JSON-RPC 2.0 over stdio，供外部 Agent 调度 |
 
 ### 输出格式
@@ -230,11 +230,11 @@ python run.py test_input.md --dashboard
 | `pipeline_core/mcp_server.py` | MCP Server（JSON-RPC 2.0 over stdio，5 tools） |
 | `pipeline_core/openapi_spec.py` | OpenAPI 3.0 规范生成 |
 | `pipeline_core/agent_loader.py` | Agent 安全加载（AST 检查 + 白名单沙箱） |
-| `docpipeline/renderer.py` | 渲染层：Markdown → docx（OOXML）/ pdf（ReportLab），双后端可选依赖 |
+| `loom_doc/renderer.py` | 渲染层：Markdown → docx（OOXML）/ pdf（ReportLab），双后端可选依赖 |
 | `artesian`（独立库，自本仓 `pipeline_core/` 迁出） | `fast_json`（orjson 优先、stdlib 回退）+ HTML 解析内核兼容层（modest/lexbor 按可用性选，降级显式记录）+ 嵌入层（hash 内置 / local 模型 / API，auto 自动回落）+ 知识库（切块 → 向量化 → SQLite 持久化 → 向量检索）+ 统一搜索引擎接口（10 引擎 + mock 测试桩 + 自带 LRU+TTL 缓存）+ URL 安全校验（SSRF：仅 http/https、拒私网/保留/链路本地、逐跳重定向复验、DNS 结果 TTL 缓存） |
 | `pipeline_core/state_paths.py` | 运行态路径解析（`LOOM_STATE_DIR` / `LOOM_VERSIONS_DIR`），测试与真实运行不再共用一份幂等键历史 |
-| `docpipeline/ingest.py` | 摄入层：PDF/图片/文本 → 结构化 Markdown（PDF 按字号推断标题层级） |
-| `docpipeline/document_enhancer.py` | 文档增强：对已有 Markdown 逐章节 LLM 深化 + ASCII 图修复 + 导出 |
+| `loom_doc/ingest.py` | 摄入层：PDF/图片/文本 → 结构化 Markdown（PDF 按字号推断标题层级） |
+| `loom_doc/document_enhancer.py` | 文档增强：对已有 Markdown 逐章节 LLM 深化 + ASCII 图修复 + 导出 |
 | `agents/` | 14 个核心 Agent 实现（researcher/fetcher/safe_writer/requirements_analyzer/renderer/ingest/knowledge_base/http_request/transform + keyword_extract/readability/link_check/fact_coverage/tldr） |
 | `packs/docgen/` | 物理 pack（spec §5.2）：5 个文档件（writer/quality_gate/checker/layout/fact_checker）+ docgen 系 6 条流水线 + 2 个质量档案 + 2 个 prompt 模板，`pack.yaml` 为清册；引擎经 `pipeline_core.pack_manifest` 多目录发现，删掉本目录引擎照常工作 |
 
@@ -758,12 +758,12 @@ Webhook 使用独立事件循环异步发送（aiohttp 连接池），不阻塞�
 ### 外部插件（entry_points）
 
 除了本仓 `agents/*.py`，外部 pip 包可以通过 entry_points **零改动**接入 Agent
-（group `doc_pipeline.agents`；entry point 的**值须是模块路径**，与内置
+（group `loom.agents`；entry point 的**值须是模块路径**，与内置
 `agents/*.py` 同构：模块级 `AGENT_NAME` + 一个 BaseAgent 子类）：
 
 ```toml
 # 插件包的 pyproject.toml
-[project.entry-points."doc_pipeline.agents"]
+[project.entry-points."loom.agents"]
 my_agent = "my_pkg.my_agent"
 ```
 
@@ -848,7 +848,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2668 个测试本机全绿**（`2668 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
+**2675 个测试本机全绿**（`2675 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -886,6 +886,8 @@ CLI 动词收敛与命名尾款那批净加 41 条判据（动词翻译/摘除/�
 env 双读与 MCP/观测标识 15，另改写 7 条对应旧 flag 的存量用例）；
 §9 两决策落地那批净加 22 条判据（审批闸门五层：解析/清册/执行/条件闸门/HTTP+审计 19 条 +
 checkpoint save/load 同源 3 条）；
+命名收官那批净加 8 条判据（loom_doc shim identity/warn-once/反向守卫 +
+entry_points group 双读）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有
@@ -995,7 +997,7 @@ nexusloom/
 │   ├── agent_loader.py  # Agent 安全加载（沙箱）
 │   ├── streaming.py     # SSE 流式输出
 │   └── ...              # 更多模块
-├── docpipeline/         # 文档领域层（只依赖 pipeline_core，方向单向）
+├── loom_doc/         # 文档领域层（只依赖 pipeline_core，方向单向）
 │   ├── renderer.py      # Markdown → docx / pdf
 │   ├── ingest.py        # PDF / 图片 / 文本 → 结构化 Markdown
 │   └── document_enhancer.py # 已有文档逐章节 LLM 增强

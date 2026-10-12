@@ -78,9 +78,9 @@ class TestPluginHelloTemplate:
         pkg = EXAMPLES / "plugin-hello"
         data = tomllib.loads((pkg / "pyproject.toml").read_text(encoding="utf-8"))
         groups = data["project"]["entry-points"]
-        assert "doc_pipeline.agents" in groups
-        assert groups["doc_pipeline.agents"]["char_stats"] == \
-            "doc_pipeline_plugin_hello.char_stats"
+        assert "loom.agents" in groups
+        assert groups["loom.agents"]["char_stats"] == \
+            "loom_plugin_hello.char_stats"
 
     def test_examples_dir_has_no_ghost_dirs(self):
         """并入后 examples/ 只留模板——五个已删目录不许回魂。"""
