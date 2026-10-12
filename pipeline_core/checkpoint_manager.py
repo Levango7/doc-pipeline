@@ -69,7 +69,12 @@ class CheckpointManager:
             }
         if agent_snapshots:
             data["agent_snapshots"] = agent_snapshots
-        final_path = Path(task.checkpoint_file)
+        # 落点必须与 load()/remove() 同源（本 manager 的目录）。
+        # 此前 save 用 task.checkpoint_file（orchestrator 侧字段，会被
+        # config 的 checkpoint.dir 覆盖成另一个位置），而 load 用本目录——
+        # 两处不同源时"保存成功但 resume 读不到"，且随 cwd 漂移（相对路径）。
+        # 保存成功后把 task.checkpoint_file 回写成真实落点，展示字段不再说谎。
+        final_path = self.checkpoint_dir / f"{task.id}.json"
         final_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(
             dir=str(final_path.parent), prefix=final_path.name + ".", suffix=".tmp"
@@ -80,6 +85,7 @@ class CheckpointManager:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, str(final_path))
+            task.checkpoint_file = str(final_path)
         except Exception as e:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
