@@ -429,6 +429,36 @@ agents:
 落盘），判据与回归见 `tests/test_foreach.py`（含离线跑通整条 Scheduler → DAGExecutor 链的
 真跑用例）。
 
+### 审批闸门（`approval`）
+
+流水线里声明"跑到这里停下来等人批准"的节点（spec §9 决策 C 最小闭环）：
+
+```yaml
+agents:
+  - name: release_gate
+    approval:
+      message: "确认对外发布"        # 审批人该看到的话（声明进锁指纹，改了要 loom lock）
+    dependencies: ["writer"]
+  - name: publish
+    dependencies: ["release_gate"]   # 放行后才跑；驳回则整任务终止
+```
+
+语义：
+
+- 执行器推进到闸门所在层级前把任务置为 `paused`（复用暂停边界的等待与 checkpoint；
+  `GET /tasks/<id>` 的 `awaiting_approval` 字段里有节点名与 message）；
+- `POST /tasks/<id>/approve`（body 可选 `note`）放行：闸门节点记 success，结果形如
+  `{"status": "approved", "note": ...}`——下游可用 `when` 读 `upstream.<gate>.status`；
+- `POST /tasks/<id>/reject`（body 可选 `reason`）驳回=**终止**：任务转 `cancelled`，
+  原因进任务 error；
+- **审批等待中的任务拒绝 `resume`**（直通等于绕过审批，只认 approve/reject）；
+- 决策落审计 `audit/approvals.jsonl`（任务/节点/决定/note/时间/审批人标识）；
+- `when` 不成立的闸门不挂起，按条件跳过（与普通条件节点同语义）。
+
+边界（P1 余量，刻意不做）：不提供"驳回到另一分支"、无通知渠道、无控制台界面、
+无多级审批与超时策略；"审批人"当前记客户端地址 + 凭证指纹（真名实姓等 P1 身份系统）。
+判据见 `tests/test_approval_gate.py`（解析/清册/执行/条件闸门/HTTP 与审计五层）。
+
 ### 通用 Agent（`http_request` / `transform`）
 
 引擎不止能写文档：这两个 Agent 不带任何领域语义，配起来就是一条"取数据 → 变形 → 落盘"
@@ -567,7 +597,9 @@ python run.py input.md -c config.production.json -o output/doc.md
 | **快捷操作** | | |
 | `/cancel` | POST | 取消任务（body 传 task_id） |
 | `/pause` | POST | 暂停任务 |
-| `/resume` | POST | 恢复暂停的任务 |
+| `/resume` | POST | 恢复暂停的任务（审批等待中的任务会被拒——那种 PAUSED 只认 approve/reject） |
+| `/approve` | POST | 审批放行（审批闸门等待中的任务；body 可选 `note`） |
+| `/reject` | POST | 审批驳回=终止（body 可选 `reason`，进任务 error 与审计） |
 | `/replay` | POST | 重放死信（body 传 dlq_id） |
 | `/rerun` | POST | 重跑流水线（body 传 task_id） |
 | **健康与指标** | | |
@@ -816,7 +848,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2646 个测试本机全绿**（`2646 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
+**2668 个测试本机全绿**（`2668 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -852,6 +884,8 @@ pack-docgen 物理拆分那批净加 4 条判据（引擎不 import packs / pack
 §9 收口那批为口径批（README 索引 + spec 决策备选附录），存量判据改口径不加条数；
 CLI 动词收敛与命名尾款那批净加 41 条判据（动词翻译/摘除/门面/真 CLI 冒烟 26 +
 env 双读与 MCP/观测标识 15，另改写 7 条对应旧 flag 的存量用例）；
+§9 两决策落地那批净加 22 条判据（审批闸门五层：解析/清册/执行/条件闸门/HTTP+审计 19 条 +
+checkpoint save/load 同源 3 条）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有

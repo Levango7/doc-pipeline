@@ -56,7 +56,9 @@ curl -X POST http://127.0.0.1:8910/api/cache/clear \
 | POST | `/tasks/{task_id}/cancel` | 取消任务 |
 | POST | `/tasks/{task_id}/rerun` | 重跑流水线（复用 last plan） |
 | POST | `/tasks/{task_id}/pause` | 暂停任务（断点保留） |
-| POST | `/tasks/{task_id}/resume` | 恢复任务 |
+| POST | `/tasks/{task_id}/resume` | 恢复任务（审批等待中的任务会被拒——只认 approve/reject） |
+| POST | `/tasks/{task_id}/approve` | 审批放行（审批闸门等待中的任务；body 可选 `{"note": "..."}`） |
+| POST | `/tasks/{task_id}/reject` | 审批驳回=终止（body 可选 `{"reason": "..."}`，进任务 error 与 `audit/approvals.jsonl`） |
 
 提交任务请求体（schema `TaskSubmit`）：
 
@@ -121,7 +123,9 @@ curl -X POST http://127.0.0.1:8910/api/cache/clear \
 | POST | `/api/versions/rollback` | 回滚到指定版本，JSON 体：`{"file": <path>, "version": <int>}`，需 `X-Confirm: yes` |
 
 注：`cancel/pause/resume/rerun` 类操作对不存在的任务返回 **404**；任务存在但状态不符时
-仍为 200 + `<action>: false`。
+仍为 200 + `<action>: false`。`approve/reject` 例外：任务存在但**不在审批等待中**时返回
+**409** + `{"error": "..."}`——审批是决策动作，"没等在闸门上的批准"必须被拒而不是记 false
+（否则审计里会出现无中生有的决策）。
 
 ---
 

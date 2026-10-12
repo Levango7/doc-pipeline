@@ -170,7 +170,7 @@
 
 ### 5.5 CI 与门禁（跨层，先于一切功能）
 
-按 FP-2 修三处静默判绿；**性能门禁 `perf-regression` 当前不在 required 清单内**〔实测 2026-10-12：required = `test (3.11/3.12/3.13/3.14)` + `docker`，`strict=true`，`enforce_admins=true`（2026-10-08 已翻 true；本文旧句写 false，属过期口径）；`perf-regression` 在 PR 与 main 两个事件上都跑且近期 42 次连续绿（PR 18 + main 24），是否纳入 required 是 §9.2 待决项〕。
+按 FP-2 修三处静默判绿；**性能门禁 `perf-regression` 已纳入 required**（2026-10-12，§9.2 决策 A 执行）〔实测读回：required = `test (3.11/3.12/3.13/3.14)` + `docker` + `perf-regression` 共 6 项，`strict=true`，`enforce_admins=true`（2026-10-08 已翻 true；本文旧句写 false，属过期口径）〕。依据=近 42 次连续绿（PR 18 + main 24）+ 波动带机制（区分 runner 整体慢与代码真慢）+ 22 秒级耗时；抖动处置=重跑该 job 或 `workflow_dispatch` 刷基线。
 
 ---
 
@@ -317,7 +317,7 @@
 ## 9. 未决项
 
 1. ~~是否授权改 MAOP 仓~~ **已定：不改**（§7.3 第 6 步）。迁移用 `DOC_PIPELINE_ROOT` 环境变量指向新路径；MAOP 那 5 处硬编码测试会红，属它自己的账，本项目只记账不代改。
-2. **`perf-regression` 是否纳入 required**（待拍板；候选方案见下「决策备选·2」）。`enforce_admins` 子项已闭：2026-10-08 已翻 true，2026-10-12 实测确认为 true（§5.5 口径已更新）；`perf-regression` 近期 42 次连续绿（PR 18 + main 24）。
+2. ~~`perf-regression` 是否纳入 required~~ **已拍板并执行（2026-10-12）：走 A（纳入）**——分支保护实测读回为 6 项（`test 3.11–3.14` + `docker` + `perf-regression`，`strict=true`）；依据=近 42 次连续绿（PR 18 + main 24）+ 波动带机制 + 22 秒级耗时；抖动处置路径=环境性红重跑该 job（基线在缓存）或 `workflow_dispatch` 刷基线（§5.5 已同步）。`enforce_admins` 子项早已闭合（2026-10-08 翻 true，2026-10-12 实测确认）。
 3. ~~人审/approval 节点进 P0 还是 P1~~ **已拍板并实施（2026-10-12）：走 C（机制先行最小闭环）**——声明式 `approval` 节点（挂起复用 PAUSED 边界 + checkpoint）、`POST /tasks/<id>/approve|reject`（reject=终止含原因，不做分支）、审计落库（复用 audit 通道）均已落地（`feat/approval-gate`，`tests/test_approval_gate.py` 五层判据）；通知/控制台/多级审批/超时策略留 P1，见「决策备选·3」实施落地附注。
 4. ~~Chassis / Tessera 的 PyPI 占用复查~~ **已查**：两者裸名均已被占（§7.1 注）。当前定名 Loom / 发行名 `nexusloom`（实测空闲）。
 5. ~~FP-2 的真实验证只能在 CI 上做~~ **已关**（2026-10-12）：CI 全绿已在 ubuntu runner 上多轮重取（test 3.11–3.14 + docker + perf-regression；`--check` 退出码与 pip-audit 进程健康均为硬依赖），§3 P0 判据第 4 条以此为准。
