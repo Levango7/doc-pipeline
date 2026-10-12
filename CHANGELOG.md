@@ -35,6 +35,14 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-10-12
+
+两个特性批合流：CLI 动词收敛（续37）与审批闸门（续38，spec §9 决策 C）。
+流水线自此有「取数 → 核查 → 待批 → 交付」的人工干预点；CLI 收敛为五动词
+`run/plan/lock/pack/plugin`；env 前缀迁移 `LOOM_*`（旧名 `DOC_PIPELINE_*`
+过渡期回退可读）。spec §9 至此零未决项。附带修复勘察时挖出的 checkpoint
+save/load 落点不同源真 bug。
+
 ### Changed（2026-10-12·续38，§9 两项拍板落地：A=perf-regression 进 required + C=审批闸门机制批）
 
 - **决策 A 执行**（perf-regression 进 required）：分支保护 required 由 5 项扩为
