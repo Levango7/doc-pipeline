@@ -103,7 +103,7 @@ class VersionManager:
     """
 
     def __init__(self, versions_dir: str = "", max_versions: int = 50):
-        # 空串 → 按 DOC_PIPELINE_VERSIONS_DIR / 默认 "versions" 解析（见 state_paths）
+        # 空串 → 按 LOOM_VERSIONS_DIR（旧名回退可读）/ 默认 "versions" 解析（见 state_paths）
         self._root = Path(versions_dir or state_paths.versions_root())
         self._root.mkdir(parents=True, exist_ok=True)
         self._max_versions = max_versions

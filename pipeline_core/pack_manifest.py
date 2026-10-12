@@ -6,7 +6,7 @@ required_dirs). Swapping in any other set of packs turned the check red for no
 real fault. This module collapses it to one rule: **the engine may never name
 individual pack files; it may only ask the manifest**.
 
-Measured sources (all via pipeline_core.paths, which honours DOC_PIPELINE_ROOT
+Measured sources (all via pipeline_core.paths, which honours LOOM_ROOT
 and still resolves after a wheel install):
   1. pipelines/*.yaml -- every non-underscore pipeline counts as one pack;
   2. agents/*.py      -- built-in Agent modules;

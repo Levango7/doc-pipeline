@@ -69,10 +69,10 @@ class TestRealPipInstallDiscovery:
         return venv_dir / ("Scripts" if os.name == "nt" else "bin") / "python"
 
     def test_installed_plugin_is_discovered_registered_and_executable(self, tmp_path):
-        if os.environ.get("DOC_PIPELINE_SKIP_PLUGIN_E2E"):
+        if os.environ.get("LOOM_SKIP_PLUGIN_E2E"):
             import pytest
 
-            pytest.skip("显式跳过（DOC_PIPELINE_SKIP_PLUGIN_E2E）")
+            pytest.skip("显式跳过（LOOM_SKIP_PLUGIN_E2E）")
         venv_dir = tmp_path / "venv"
         r = subprocess.run(
             [sys.executable, "-m", "venv", "--system-site-packages", str(venv_dir)],

@@ -2,6 +2,14 @@
 """
 run.py - Agent 工作流引擎入口 v3.1
 ===============================
+动词（spec §5.3）：`run / plan / lock / pack / plugin`——
+  loom run [input]     执行流水线（缺省动词：`loom input.md` 即 run）
+  loom plan [name]     只预览执行计划，不执行
+  loom lock [name]     生成/刷新流水线锁文件后退出
+  loom pack list|check pack 清册 / 启动自检
+  loom plugin list     列出全部 Agent / 插件（含来源）
+其余服务/运维开关（--check/--worker/--mcp/--admin/--triggers/--recover）保持为 flag。
+
 核心特性：
   - 支持声明式流水线配置 (YAML) via Scheduler + run_plan
   - DAG 并行执行 + 自动重做循环 + 熔断器 + 指数退避重试
@@ -466,7 +474,7 @@ def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
             pipeline_name=args_args.pipeline,
             input_file=args_args.input,
             config=run_config,
-            wait=not args_args.dry_run,
+            wait=True,
             resume=args_args.resume,
         )
     else:
@@ -481,13 +489,9 @@ def _run_single_task(args_args: argparse.Namespace, orch: PipelineOrchestrator,
             plan=plan,
             input_file=args_args.input,
             task_id=task_id,
-            wait=not args_args.dry_run,
+            wait=True,
             resume=args_args.resume,
         )
-
-    if args_args.dry_run:
-        print(f"[run] 计划执行（dry-run），任务ID: {task_id}")
-        return
 
     if not _poll_task_progress(orch, args_args, task, task_id):
         return None
@@ -505,26 +509,81 @@ def _run_daemon(orch: PipelineOrchestrator) -> None:
             time.sleep(10)
 
 
+# ─── CLI 动词收敛（spec §7.3 第 7 步 / §5.3 CLI 行）─────────────
+#: 五个动词：run / plan / lock / pack / plugin
+VERBS = ("run", "plan", "lock", "pack", "plugin")
+
+_PACK_ACTIONS = {"list": "pack_list", "check": "pack_check"}
+
+
+def _split_verb(argv: list[str]) -> tuple[str | None, str | None, list[str]]:
+    """拆分动词前缀，返回 (verb, action, rest)。
+
+    action ∈ {None, "plan", "lock", "pack_list", "pack_check", "plugin_list"}。
+    首个 token 不在动词表里 → (None, None, argv)：**裸输入 = 隐式 run**，
+    既有 `python run.py input.md …` 的调用形态全部照旧。
+
+    `loom plan docgen` / `loom lock docgen` 里紧随动词的裸词 = 流水线名，
+    翻译为 `--pipeline <name>`（与 flag 形态等价）。
+    """
+    if not argv or argv[0] not in VERBS:
+        return None, None, argv
+    verb, rest = argv[0], argv[1:]
+    if verb == "pack":
+        sub = rest[0] if rest and not rest[0].startswith("-") else ""
+        action = _PACK_ACTIONS.get(sub)
+        if action is None:
+            print("用法: loom pack list|check", file=sys.stderr)
+            raise SystemExit(2)
+        return verb, action, rest[1:]
+    if verb == "plugin":
+        sub = rest[0] if rest and not rest[0].startswith("-") else ""
+        if sub != "list":
+            print("用法: loom plugin list", file=sys.stderr)
+            raise SystemExit(2)
+        return verb, "plugin_list", rest[1:]
+    if verb in ("plan", "lock"):
+        if rest and not rest[0].startswith("-"):
+            return verb, verb, ["--pipeline", rest[0], *rest[1:]]
+        return verb, verb, rest
+    return verb, None, rest
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """构建 CLI 参数解析器（含输入校验规则）"""
     parser = argparse.ArgumentParser(
         description=f"Agent 工作流引擎 v{__version__} - 声明式 DAG + 自动重做",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+动词（spec §5.3，缺省动词 = run，裸输入等价 `loom run <input>`）:
+  loom run [input]      执行流水线（本例最常见形态）
+  loom plan [name]      只预览执行计划，不执行
+  loom lock [name]      生成/刷新流水线锁文件后退出（维护动作，不执行）
+  loom pack list        列出 pack 清册（物理 pack + 散装流水线）
+  loom pack check       运行启动自检（等价 --check）
+  loom plugin list      列出全部 Agent / 插件（含来源标记）
+
 示例:
-  # 运行完整流水线 (自动发现 pipeline YAML)
-  python run.py docs/README.md
+  # 运行完整流水线 (自动发现 pipeline YAML；动词可省)
+  loom docs/README.md
+  loom run docs/README.md
 
   # 指定 pipeline 配置文件
-  python run.py docs/README.md --pipeline-file pipelines/docgen.yaml
+  loom run docs/README.md --pipeline-file pipelines/docgen.yaml
 
   # 从断点续传
-  python run.py docs/README.md --task-id mytask --resume
+  loom run docs/README.md --task-id mytask --resume
+
+  # 改过流水线配置后重写锁（不执行）
+  loom lock docgen
 
   # 旧模式（已冻结，仅兜底：按 Agent 注册元数据执行，不经 Scheduler/YAML）
-  python run.py docs/README.md --legacy
+  loom run docs/README.md --legacy
         """
     )
+    # 动词层在解析后注入这三个内部开关（无对应 flag：旧 --plan/--dry-run/
+    # --write-lock/--list-agents 已在动词收敛批次摘除）
+    parser.set_defaults(plan=False, write_lock=False, list_agents=False)
 
     parser.add_argument("input", nargs="?", default=None, help="输入文件")
     parser.add_argument("--task-id", "-t", default=None, help="任务ID（默认自动生成）")
@@ -535,9 +594,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pipeline-file", "-f", default=None, help="pipeline YAML 配置路径")
     parser.add_argument("--queries", "-q", nargs="*", help="检索词（多个）")
     parser.add_argument("--agent", "-a", action="append", help="指定运行的 Agent")
-    parser.add_argument("--list-agents", "-l", action="store_true", help="列出所有 Agent")
-    parser.add_argument("--plan", action="store_true", help="仅预览执行计划")
-    parser.add_argument("--dry-run", "-n", action="store_true", help="仅计划，不执行")
     parser.add_argument("--resume", action="store_true", help="从断点续传")
     parser.add_argument("--timeout", default=600, type=int, help="超时（秒）")
     parser.add_argument("--output", "-o", default=None, help="输出文件")
@@ -547,8 +603,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--legacy", action="store_true",
                         help="（已冻结，仅兜底）旧模式：直接按 Agent 注册元数据执行，"
                              "不经过 Scheduler/YAML。生产请使用默认 DAG 模式")
-    parser.add_argument("--write-lock", action="store_true",
-                        help="加载流水线后重新生成 pipelines/<name>.lock（覆盖），然后继续执行")
     parser.add_argument("--admin", action="store_true", help="启动管理 API 服务")
     parser.add_argument("--dashboard", action="store_true", help="启动管理 API + 仪表盘（隐含 --admin）")
     parser.add_argument("--daemon", action="store_true", help="守护进程模式：流水线执行完后保持 Admin API 常驻")
@@ -558,9 +612,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--export", choices=["html", "word", "png"], help="导出格式（html/word/png）")
     parser.add_argument("--export-output", default=None, help="导出文件路径")
     parser.add_argument("--fix-ascii", action="store_true", help="将文档中的 ASCII 图转换为 Mermaid 图")
-    parser.add_argument("--enhance", action="store_true", help="增强已有文档（逐章节 LLM 深化 + 搜索补充）")
-    parser.add_argument("--enhance-output", default=None, help="增强输出目录")
-    parser.add_argument("--no-search", action="store_true", help="禁用搜索补充（仅 LLM 增强）")
     parser.add_argument("--mcp", action="store_true", help="启动 MCP server（stdio JSON-RPC，供 AI agent 调度）")
     parser.add_argument("--recover", action="store_true", help="恢复中断的任务（重启后把 running 改回 pending 并重新执行）")
     parser.add_argument("--worker", action="store_true",
@@ -583,8 +634,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main():
+    verb, verb_action, argv = _split_verb(sys.argv[1:])
     parser = build_arg_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    # verb -> 内部开关（等价旧 flag 的既有执行路径；旧 flag 已随收敛批次摘除）
+    if verb_action == "plan":
+        args.plan = True
+    elif verb_action == "lock":
+        args.write_lock = True
+    elif verb_action == "plugin_list":
+        args.list_agents = True
+    elif verb_action == "pack_check":
+        args.check = True
 
     # --json-output 的契约是"stdout 上只有一行 JSON 供 wrapper 解析"。实测这里
     # 之前会先印 11 行人类可读的过程输出（banner 之外的 [run] 提示、任务头等），
@@ -607,11 +668,13 @@ def main():
             f"--lease-stale={args.lease_stale}",
         ]))
 
-    # 无输入文件时：仅 --check/--mcp/--recover/--triggers* 及服务模式（admin/dashboard/daemon）可用
+    # 无输入文件时：仅 --check/--mcp/--recover/--triggers*、服务模式与
+    # plan/lock/pack/plugin 动词可用
     if args.input is None and not args.check and not args.mcp and not args.recover \
             and not args.triggers and not args.triggers_dry_run \
-            and not args.admin and not args.dashboard and not args.daemon:
-        parser.error('需要指定输入文件，或使用 --check 运行启动自检')
+            and not args.admin and not args.dashboard and not args.daemon \
+            and verb_action not in ("plan", "lock", "pack_list", "plugin_list"):
+        parser.error('input required (or use verbs loom plan/lock/pack/plugin, or flags like --check)')
 
     print_banner()
 
@@ -621,6 +684,19 @@ def main():
         report = run_startup_check(run_health_check=args.health_check)
         print(report.summary())
         sys.exit(1 if report.has_errors else 0)
+
+    # ─── pack list（loom pack list）──────────────
+    if verb_action == "pack_list":
+        from pipeline_core import pack_manifest as pack_mf
+        infos = pack_mf.discover()
+        print(f"[pack] {len(infos)} packs")
+        for info in infos:
+            if info.is_physical:
+                pipes = ", ".join(info.declared_pipelines) or "-"
+                print(f"  {info.name:14s} [{info.source}]  agents={len(info.agent_names)}  pipelines: {pipes}")
+            else:
+                print(f"  {info.name:14s} [{info.source}]  agents={len(info.agent_names)}")
+        return
 
     # ─── MCP server 模式 ──────────────────────
     if args.mcp:
@@ -693,32 +769,17 @@ def main():
     except Exception:
         pass  # 自检失败不阻断启动
 
-    # ─── 文档增强模式 ──────────────────────────
-    if args.enhance:
-        from docpipeline.document_enhancer import DocumentEnhancer
-        output_dir = args.enhance_output or "output"
-        with_search = not args.no_search
-        print(f"\n[enhance] 开始增强文档: {args.input}")
-        print(f"[enhance] 搜索补充: {'启用' if with_search else '禁用'}")
-        enhancer = DocumentEnhancer()
-        result = enhancer.enhance(
-            args.input,
-            output_dir=output_dir,
-            with_search=with_search,
-        )
-        print(f"\n{'='*60}")
-        print(f"文档增强完成 | 状态: {result['status']}")
-        print(f"耗时: {result['duration']:.1f}s")
-        stats = result.get("stats", {})
-        print(f"章节: {stats.get('sections', 0)} | 增强: {stats.get('enhanced', 0)} | 搜索: {stats.get('searched', 0)} | ASCII修复: {stats.get('ascii_fixed', 0)}")
-        print(f"输出: {result.get('output_path', '')}")
-        print(f"{'='*60}")
-        output = result.get("output_path", "")
-        if output and args.fix_ascii:
-            _run_ascii_fix(output)
-        if output and args.export:
-            _run_export(output, args.export, args.export_output)
-        return
+    # ─── 锁文件维护（loom lock [name]）：写完即退出，不执行流水线 ───
+    # 旧 --write-lock 是"重写锁并继续执行"；收敛后 lock 是纯维护动词，
+    # 重写与执行分开（示例：loom lock docgen && loom run input.md）。
+    if verb_action == "lock":
+        project_root = Path(__file__).parent
+        orch = _get_orchestrator(project_root)
+        config = _load_config(args, project_root)
+        orch.register_agents(agent_names=args.agent or None, config=config)
+        _plan, lock_loaded = _resolve_pipeline_plan(args, orch, config)
+        orch.shutdown()
+        sys.exit(0 if lock_loaded else 1)
 
     # ─── 正常流水线执行 ──────────────────────
     project_root = Path(__file__).parent
@@ -744,8 +805,9 @@ def main():
         print("[run] 没有加载任何 Agent，请检查 agents 目录")
         return
 
-    # 纯服务模式：无输入文件，仅常驻 Admin API（任务经 POST /api/tasks 提交）
-    service_only = args.input is None
+    # 纯服务模式：无输入文件，仅常驻 Admin API（任务经 POST /api/tasks 提交）。
+    # plan 动词无输入但只是预览，不得落进服务模式（否则 loom plan 会启 API 常驻）。
+    service_only = args.input is None and not args.plan
     finished_task = None
     if not service_only:
         finished_task = _run_single_task(args, orch, config)

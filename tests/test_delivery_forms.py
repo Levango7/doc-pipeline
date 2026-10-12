@@ -99,7 +99,7 @@ class TestDeliveryLedger:
     def test_record_get_roundtrip(self, tmp_path, monkeypatch):
         from pipeline_core.deliveries import DeliveryLedger
 
-        monkeypatch.setenv("DOC_PIPELINE_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("LOOM_STATE_DIR", str(tmp_path / "state"))
         led = DeliveryLedger()
         rec = {"run_id": "r-1", "pipeline": "p", "status": "done",
                "finished_at": 10.0, "duration_sec": 1.5,
@@ -113,7 +113,7 @@ class TestDeliveryLedger:
     def test_record_is_idempotent_replace(self, tmp_path, monkeypatch):
         from pipeline_core.deliveries import DeliveryLedger
 
-        monkeypatch.setenv("DOC_PIPELINE_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("LOOM_STATE_DIR", str(tmp_path / "state"))
         led = DeliveryLedger()
         led.record({"run_id": "r-1", "pipeline": "p", "status": "running"})
         led.record({"run_id": "r-1", "pipeline": "p", "status": "done"})
@@ -123,7 +123,7 @@ class TestDeliveryLedger:
     def test_record_requires_run_id(self, tmp_path, monkeypatch):
         from pipeline_core.deliveries import DeliveryLedger
 
-        monkeypatch.setenv("DOC_PIPELINE_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("LOOM_STATE_DIR", str(tmp_path / "state"))
         with pytest.raises(ValueError):
             DeliveryLedger().record({"pipeline": "p"})
 

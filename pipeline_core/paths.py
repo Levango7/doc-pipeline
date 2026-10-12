@@ -10,7 +10,9 @@
 
 product-spec P0 判据 1（干净 venv 装完 `--check` 不红）钉住这个方向。
 现在统一从这里解析，并按顺序尝试：
-  1. 环境变量 `DOC_PIPELINE_ROOT`——部署时显式指定（MAOP 侧已在用的约定）；
+  1. 环境变量 `LOOM_ROOT`（旧名 `DOC_PIPELINE_ROOT` 过渡期仍可读）——
+     部署时显式指定（MAOP 侧按 spec §7.3 约定用的就是旧名，双读规则见
+     `pipeline_core.envs`）；
   2. 安装位置：`pitlines` 作为包数据被打进 wheel 时，它在
      site-packages/pipeline_core/../pipelines（即 `pipeline_core` 的邻目录）。
 
@@ -18,19 +20,22 @@ product-spec P0 判据 1（干净 venv 装完 `--check` 不红）钉住这个方
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
-#: 部署期显式指定项目根（MAOP 的 doc_pipeline_adapter 已经先问这个变量）
-ROOT_ENV = "DOC_PIPELINE_ROOT"
+from .envs import LEGACY_PREFIX, PREFIX, read
+
+#: 部署期显式指定项目根（双读：LOOM_ROOT 优先，DOC_PIPELINE_ROOT 回退——
+#: MAOP 的 doc_pipeline_adapter 用的正是旧名，双读规则见 pipeline_core.envs）
+ROOT_ENV = f"{PREFIX}ROOT"
+LEGACY_ROOT_ENV = f"{LEGACY_PREFIX}ROOT"
 
 _PROJECT_ROOT = Path(__file__).parent.parent.absolute()
 
 
 def project_root() -> Path:
     """项目根：env 优先，否则源码/安装树根。"""
-    env = (os.environ.get(ROOT_ENV) or "").strip()
+    env = (read("ROOT") or "").strip()
     return Path(env) if env else _PROJECT_ROOT
 
 
@@ -57,14 +62,14 @@ def pipelines_dir() -> Path:
     """流水线目录（YAML + .lock + quality/ + prompts/）。
 
     解析顺序（安装态落点是实测出来的，2026-10-10）：
-      1. env `DOC_PIPELINE_ROOT`（部署/MAOP 侧已在用的约定）；
+      1. env `LOOM_ROOT`（旧名 `DOC_PIPELINE_ROOT` 回退可读）；
       2. 源码树：`pipeline_core` 的邻目录（开发时就是仓库根）；
       3. 安装态 `sys.prefix/pipelines`：`[tool.setuptools.data-files]` 的真
          落点——wheel 把 data-files 装到 venv 根，不是 site-packages。
     都不命中时退回源码树路径，让调用方自己决定怎么报（宁可报"没有"，
     也不要静默指到一个不存在的目录）。
     """
-    env = (os.environ.get(ROOT_ENV) or "").strip()
+    env = (read("ROOT") or "").strip()
     if env:
         return Path(env) / "pipelines"
     for cand in (_PROJECT_ROOT / "pipelines", _sys_prefix() / "pipelines"):
@@ -85,4 +90,4 @@ def scripts_dir() -> Path:
 
 def versions_root_env() -> str:
     """版本库根（沿用 state_paths 的同名语义，未设时返回相对路径）。"""
-    return os.environ.get("DOC_PIPELINE_VERSIONS_DIR", "versions")
+    return read("VERSIONS_DIR", "versions") or "versions"

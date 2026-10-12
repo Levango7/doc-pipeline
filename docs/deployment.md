@@ -136,7 +136,7 @@ docker run -d --name doc-pipeline \
 |------|------|------|
 | 断点与报告 | `checkpoints/` | 每日增量备份，保留 30 天 |
 | 文档版本 | `versions/` | 含 diff 和回滚能力，建议与代码库同级备份 |
-| 总线 / 任务数据库 | `bus_data/*.db` | SQLite（WAL 模式）。备份前**必须先停实例**，或先执行 `PRAGMA wal_checkpoint(TRUNCATE)`，并把 `*.db-wal` / `*.db-shm` 一并拷走——实例还在写的时候拷文件会得到半状态，而 WAL 侧文件缺失会让副本打开时报损坏。运行态位置可用 `DOC_PIPELINE_STATE_DIR` 重定向（默认锚在检出目录） |
+| 总线 / 任务数据库 | `bus_data/*.db` | SQLite（WAL 模式）。备份前**必须先停实例**，或先执行 `PRAGMA wal_checkpoint(TRUNCATE)`，并把 `*.db-wal` / `*.db-shm` 一并拷走——实例还在写的时候拷文件会得到半状态，而 WAL 侧文件缺失会让副本打开时报损坏。运行态位置可用 `LOOM_STATE_DIR` 重定向（默认锚在检出目录） |
 | 产出文档 | `output/` + `backups/` | SafeWriter 原子写入 + 自动备份（默认 7 天 / 20 份，可在 config 调整） |
 
 `config.production.json` 中可调项：`safe_writer.backup_ttl_days`、`safe_writer.max_backups`。

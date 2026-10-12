@@ -117,21 +117,21 @@ class TestMetricsRegistry:
         m.counter("requests")
         m.counter("requests")
         output = m.to_prometheus()
-        assert "docpipeline_requests 2" in output
+        assert "loom_requests 2" in output
 
     def test_gauge_set(self):
         m = MetricsRegistry()
         m.gauge("cpu", 42.5)
         output = m.to_prometheus()
-        assert "docpipeline_cpu 42.5" in output
+        assert "loom_cpu 42.5" in output
 
     def test_histogram_observe(self):
         m = MetricsRegistry()
         for v in [1.0, 2.0, 3.0]:
             m.observe("latency", v)
         output = m.to_prometheus()
-        assert "docpipeline_latency_count 3" in output
-        assert "docpipeline_latency_sum 6.0" in output
+        assert "loom_latency_count 3" in output
+        assert "loom_latency_sum 6.0" in output
 
     def test_histogram_buckets(self):
         m = MetricsRegistry()
@@ -144,7 +144,7 @@ class TestMetricsRegistry:
         m = MetricsRegistry()
         m.counter("hits")
         output = m.to_prometheus()
-        assert "# TYPE docpipeline_hits counter" in output
+        assert "# TYPE loom_hits counter" in output
 
 
 class TestSingletons:

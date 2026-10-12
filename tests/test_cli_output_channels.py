@@ -54,8 +54,8 @@ pipeline:
 def _run(args: list[str], tmp_path: Path) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     # 状态目录隔离：幂等库按检出绝对路径共享，跑在仓库 bus_data/ 上会与真实运行串台
-    env["DOC_PIPELINE_STATE_DIR"] = str(tmp_path / "state")
-    env["DOC_PIPELINE_VERSIONS_DIR"] = str(tmp_path / "versions")
+    env["LOOM_STATE_DIR"] = str(tmp_path / "state")
+    env["LOOM_VERSIONS_DIR"] = str(tmp_path / "versions")
     return subprocess.run([sys.executable, "run.py", *args],
                           capture_output=True, text=True, timeout=180,
                           cwd=str(ROOT), env=env)

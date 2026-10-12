@@ -709,15 +709,15 @@ class TestAlertsAndLogs:
         log_dir.mkdir()
         now = time.time()
         # 逆序遍历顺序：今日 → 昨日 → 前日
-        fresh = log_dir / "docpipeline_20260829.jsonl"
+        fresh = log_dir / "loom_20260829.jsonl"
         fresh.write_text(
             json.dumps({"timestamp": now, "level": "info", "msg": "fresh"}) + "\n",
             encoding="utf-8")
-        stale = log_dir / "docpipeline_20260828.jsonl"
+        stale = log_dir / "loom_20260828.jsonl"
         stale.write_text(
             json.dumps({"timestamp": now, "level": "info", "msg": "stale"}) + "\n",
             encoding="utf-8")
-        older = log_dir / "docpipeline_20260827.jsonl"
+        older = log_dir / "loom_20260827.jsonl"
         older.write_text(
             json.dumps({"timestamp": now, "level": "info", "msg": "older"}) + "\n",
             encoding="utf-8")

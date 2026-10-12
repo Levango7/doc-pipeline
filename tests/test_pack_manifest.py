@@ -96,7 +96,7 @@ class TestAgentCounting:
         (pipelines / "typo.yaml").write_text(yaml_text, encoding="utf-8")
         agents = tmp_path / "agents"
         agents.mkdir()
-        monkeypatch.setenv("DOC_PIPELINE_ROOT", str(tmp_path))
+        monkeypatch.setenv("LOOM_ROOT", str(tmp_path))
         _available, missing = pm.agent_inventory()
         assert missing == ["no_such_agent"], (
             f"typo'd agent name was not caught: {missing}")
