@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pipeline_core.agent_loader import AgentLoader, SecurityError, _check_safety
+from loom_core.agent_loader import AgentLoader, SecurityError, _check_safety
 
 
 class TestSafetyCheck:
@@ -68,7 +68,7 @@ class TestAgentLoaderTrusted:
         """信任由 Agent 模块自证（SANDBOX_TRUSTED = True），core 不存名单。"""
         from pathlib import Path
 
-        from pipeline_core.agent_loader import declares_sandbox_trust
+        from loom_core.agent_loader import declares_sandbox_trust
         root = Path(__file__).parent.parent
         sources = {
             "researcher": root / "agents" / "researcher.py",
@@ -84,13 +84,13 @@ class TestAgentLoaderTrusted:
             assert declares_sandbox_trust(path), name
 
     def test_core_keeps_no_roster(self):
-        from pipeline_core.agent_loader import AgentLoader
+        from loom_core.agent_loader import AgentLoader
         assert not hasattr(AgentLoader, "_TRUSTED_AGENTS"), (
             "内置 Agent 名单又回到引擎里了")
 
     def test_declaration_must_be_literal_true(self, tmp_path):
         """`SANDBOX_TRUSTED = False` 或运行时赋值都不算声明。"""
-        from pipeline_core.agent_loader import declares_sandbox_trust
+        from loom_core.agent_loader import declares_sandbox_trust
         f = tmp_path / "maybe.py"
         f.write_text("SANDBOX_TRUSTED = False\n", encoding="utf-8")
         assert declares_sandbox_trust(f) is False
@@ -99,7 +99,7 @@ class TestAgentLoaderTrusted:
         assert declares_sandbox_trust(f) is False
 
     def test_untrusted_agent_still_goes_through_ast_check(self, tmp_path):
-        from pipeline_core.agent_loader import _check_safety, declares_sandbox_trust
+        from loom_core.agent_loader import _check_safety, declares_sandbox_trust
         f = tmp_path / "evil.py"
         f.write_text("import subprocess\nsubprocess.run('ls')\n",
                      encoding="utf-8")
@@ -115,7 +115,7 @@ class TestResearcherConfigUpdate:
     def test_on_config_update_resets_search_manager(self):
         """researcher.on_config_update 应重置 _search_manager"""
         from agents.researcher import ResearcherAgent
-        from pipeline_core.base_agent import AgentMeta
+        from loom_core.base_agent import AgentMeta
 
         AgentMeta(name="researcher", version="2.0", description="test", priority=10)
         agent = ResearcherAgent.__new__(ResearcherAgent)

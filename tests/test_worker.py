@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline_core.pipeline import TaskStatus
-from pipeline_core.task_queue import TaskQueue
-from pipeline_core.worker import TaskWorker
+from loom_core.pipeline import TaskStatus
+from loom_core.task_queue import TaskQueue
+from loom_core.worker import TaskWorker
 
 PROJECT = Path(__file__).resolve().parent.parent
 

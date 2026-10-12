@@ -1,7 +1,7 @@
 """分层护栏：依赖方向必须单向。
 
 Phase 1 把文档领域能力（renderer / ingest / document_enhancer）从
-`pipeline_core` 拆到了顶层包 `loom_doc`。拆包本身不构成分层——
+`loom_core` 拆到了顶层包 `loom_doc`。拆包本身不构成分层——
 只要有人回手写一句 `from loom_doc import renderer` 放进引擎里，
 "领域无关的工作流引擎"就又变回"文档流水线脚本集合"，
 而且这种回退在测试全绿的情况下完全看不出来（两个包都装在同一棵树里）。
@@ -9,10 +9,10 @@ Phase 1 把文档领域能力（renderer / ingest / document_enhancer）从
 本文件用 AST 静态扫描源码（不 import、不执行被扫代码），
 把依赖方向钉成门禁：
 
-    pipeline_core  -/->  loom_doc     禁止（引擎不得认识具体领域）
-    pipeline_core  -/->  agents          禁止（引擎不得认识具体插件）
+    loom_core  -/->  loom_doc     禁止（引擎不得认识具体领域）
+    loom_core  -/->  agents          禁止（引擎不得认识具体插件）
     loom_doc    -/->  agents          禁止（上层不得反向依赖插件层）
-    loom_doc    ->   pipeline_core    允许
+    loom_doc    ->   loom_core    允许
 
 同时带了判据自身的正例测试：扫描器如果压根命中不了，
 "0 违规"就只是空转，而不是结论。
@@ -24,12 +24,12 @@ from pathlib import Path
 import pytest
 
 PROJECT = Path(__file__).resolve().parent.parent
-ENGINE = PROJECT / "pipeline_core"
+ENGINE = PROJECT / "loom_core"
 DOC = PROJECT / "loom_doc"
 
 # loom_doc 的非标准库依赖登记（逐条认领，新增必须显式加到这里）
 # 同包自引用由 _scan 过滤，不会出现在结果里，因此登记集不含 "loom_doc"。
-FIRST_PARTY = {"pipeline_core", "scripts", "artesian"}
+FIRST_PARTY = {"loom_core", "scripts", "artesian"}
 DECLARED_OPTIONAL = {"docx", "reportlab", "pymupdf", "openpyxl", "pptx"}   # requirements.txt 里声明
 RUNTIME_PROBED = {"paddleocr", "mineru"}                 # 重型 OCR，有意不进 requirements
 IMPORT_TO_DIST = {"docx": "python-docx", "reportlab": "reportlab",
@@ -98,13 +98,13 @@ def _flagged(pkg_dir: Path, forbidden: set[str]) -> list[str]:
 class TestDependencyDirection:
     def test_engine_does_not_import_document_layer(self):
         assert _flagged(ENGINE, {"loom_doc"}) == [], (
-            "pipeline_core 不得 import loom_doc：引擎一旦认识文档层，"
+            "loom_core 不得 import loom_doc：引擎一旦认识文档层，"
             "就无法承载非文档类工作流。请把该能力做成 Agent 或下沉为引擎原语。"
         )
 
     def test_engine_does_not_import_agents(self):
         assert _flagged(ENGINE, {"agents"}) == [], (
-            "pipeline_core 不得 import agents：Agent 由 agent_loader 按目录发现，"
+            "loom_core 不得 import agents：Agent 由 agent_loader 按目录发现，"
             "硬编码引用会让新增 Agent 必须改引擎。"
         )
 
@@ -116,7 +116,7 @@ class TestDependencyDirection:
     def test_engine_does_not_import_packs(self):
         """引擎不得 import packs：pack 经 pack_manifest 按目录发现，硬编码引用会让拆包失效。"""
         assert _flagged(ENGINE, {"packs"}) == [], (
-            "pipeline_core 不得 import packs：pack 由 manifest 按目录发现"
+            "loom_core 不得 import packs：pack 由 manifest 按目录发现"
             "（pack_manifest/paths），硬编码引用等于把 pack 焊回引擎。"
         )
 
@@ -135,9 +135,9 @@ class TestDependencyDirection:
         引擎/插件层才可能有意义地依赖它。
         """
         foundation = PROJECT / "artesian"
-        forbidden = {"pipeline_core", "loom_doc", "agents", "scripts"}
+        forbidden = {"loom_core", "loom_doc", "agents", "scripts"}
         assert _flagged(foundation, forbidden) == [], (
-            "artesian 底座不得 import 主仓包（pipeline_core/loom_doc/agents/scripts）——"
+            "artesian 底座不得 import 主仓包（loom_core/loom_doc/agents/scripts）——"
             "并入后依赖方向仍须单向：底座在最底层"
         )
 
@@ -206,7 +206,7 @@ class TestDependencyDirection:
     def test_scripts_coupling_stays_in_one_place(self):
         """已知的历史耦合：只有 document_enhancer 可以碰 scripts/。
 
-        不是许可，是钉住现状——`pipeline_core` 之外新增对 scripts 的引用
+        不是许可，是钉住现状——`loom_core` 之外新增对 scripts 的引用
         说明有东西又被写在了仓库脚本里而不是包里。
         """
         offenders = [
@@ -242,7 +242,7 @@ class TestSplitIsReal:
 
     @pytest.mark.parametrize("name", ["renderer.py", "ingest.py", "document_enhancer.py"])
     def test_moved_out_of_engine(self, name):
-        assert not (ENGINE / name).exists(), f"pipeline_core/{name} 应已移到 loom_doc/"
+        assert not (ENGINE / name).exists(), f"loom_core/{name} 应已移到 loom_doc/"
         assert (DOC / name).exists(), f"loom_doc/{name} 缺失"
 
     def test_package_is_declared(self):
@@ -256,10 +256,10 @@ class TestSplitIsReal:
             f"pyproject 未打包 packs 树: {pkgs!r}")
 
     def test_engine_no_longer_reexports_document_api(self):
-        import pipeline_core
+        import loom_core
 
         for gone in ("DocumentEnhancer", "renderer", "ingest"):
-            assert not hasattr(pipeline_core, gone), f"pipeline_core 仍在导出 {gone}"
+            assert not hasattr(loom_core, gone), f"loom_core 仍在导出 {gone}"
 
 
 def _stdlib_names() -> set[str]:

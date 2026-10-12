@@ -2,7 +2,7 @@
 import threading
 import time
 
-from pipeline_core.message_bus_v3 import Message, MessageBus, MessageType
+from loom_core.message_bus_v3 import Message, MessageBus, MessageType
 
 
 class TestMessageBusBasics:

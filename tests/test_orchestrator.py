@@ -133,7 +133,7 @@ class TestRateLimitIntegration:
 
     def test_unconfigured_agent_not_limited(self):
         """未配置 rate_limit 的 agent 不受限流影响"""
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         o = PipelineOrchestrator()
         for i in range(10):
@@ -142,7 +142,7 @@ class TestRateLimitIntegration:
 
     def test_configured_agent_throttled(self):
         """rate=5 burst=5 的 agent 第 6 次应阻塞（burst 耗尽）"""
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         o = PipelineOrchestrator()
         # 耗尽令牌桶（非阻塞 acquire）
@@ -157,7 +157,7 @@ class TestRateLimitIntegration:
 
     def test_rate_limit_in_execute_skipped_when_not_configured(self):
         """_execute_node 中未配置限流时不报错（回归保护）"""
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         o = PipelineOrchestrator()
         node = SimpleNamespace(
@@ -194,7 +194,7 @@ class TestRateLimitIntegration:
         """scheduler 从 YAML 解析 rate_limit → AgentConfig"""
         import yaml
 
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
 
         raw = {
             "pipeline": {"name": "test"},

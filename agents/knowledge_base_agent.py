@@ -19,8 +19,8 @@ from pathlib import Path
 
 from artesian import embeddings as emb_core
 from artesian.knowledge_base import KnowledgeBase
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 from loom_doc import ingest as ingest_core
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "knowledge_base"
 # 随产品发布的内置 Agent：显式声明信任，加载器据此跳过 AST 沙箱检查
@@ -28,7 +28,7 @@ AGENT_NAME = "knowledge_base"
 SANDBOX_TRUSTED = True
 
 # 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
-# （类型名表见 pipeline_core/config_schema.py）
+# （类型名表见 loom_core/config_schema.py）
 CONFIG_SCHEMA = {
     "action": ('str', ''),
     "db_path": ('str', 'knowledge_base.db'),
@@ -42,7 +42,7 @@ AGENT_PRIORITY = 15
 INPUT_TOPICS = ["knowledge_base.input", "kb.index", "kb.search", "kb.input",
                 "ingest.done"]
 OUTPUT_TOPICS = ["kb.done", "kb.failed", "kb.results", "kb.indexed"]
-# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：检索命中经 dependencies_results 交给 writer，避免与 researcher.results 同名合并
+# 产物契约（引擎按此声明组装下游载荷，见 loom_core/artifacts.py）：检索命中经 dependencies_results 交给 writer，避免与 researcher.results 同名合并
 PRODUCES: dict = {}
 CONSUMES: list = []
 DEPENDENCIES: list[str] = []

@@ -9,7 +9,7 @@ VersionManager - 文档版本管理
   - 线程安全
 
 用法：
-    from pipeline_core.version_manager import VersionManager
+    from loom_core.version_manager import VersionManager
 
     vm = VersionManager(versions_dir="versions")
     ver = vm.commit("output/doc.md", content, task_id="abc", quality_score=82.5)

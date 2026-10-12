@@ -1,4 +1,4 @@
-"""定时触发（pipeline_core/triggers.py）测试。
+"""定时触发（loom_core/triggers.py）测试。
 
 时钟与 sleep 全程注入——"不等真实时间的调度器测试"的前提；提交路径用
 stub orchestrator 断言 run_plan 入参，证明定时任务与手动 run 走同一入口。
@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline_core.cron import parse_cron
-from pipeline_core.triggers import (
+from loom_core.cron import parse_cron
+from loom_core.triggers import (
     Trigger,
     TriggerConfigError,
     _Runtime,

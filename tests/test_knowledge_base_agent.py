@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from agents.knowledge_base_agent import KnowledgeBaseAgent
-from pipeline_core.registry import AgentMeta
+from loom_core.registry import AgentMeta
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -67,7 +67,7 @@ def _make_agent(tmp_path, config=None):
 
 
 def _msg(**payload):
-    from pipeline_core.base_agent import Message
+    from loom_core.base_agent import Message
     payload.setdefault("task_id", "t1")
     return Message(topic="kb.input", from_agent="test", payload=payload)
 
@@ -357,7 +357,7 @@ class TestLifecycle:
     def test_is_trusted_agent(self):
         from pathlib import Path
 
-        from pipeline_core.agent_loader import declares_sandbox_trust
+        from loom_core.agent_loader import declares_sandbox_trust
         p = Path(__file__).parent.parent / "agents" / "knowledge_base_agent.py"
         assert declares_sandbox_trust(p)
 

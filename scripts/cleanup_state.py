@@ -1,6 +1,6 @@
 """运行态卫生清理（默认 dry-run，`--apply` 才动盘）。
 
-背景（实测）：在分层隔离（`pipeline_core/state_paths.py`）落地之前，测试直接
+背景（实测）：在分层隔离（`loom_core/state_paths.py`）落地之前，测试直接
 把运行态写进 checkout 的 `bus_data/` 与 `versions/`。留下的后果是可测的：
 
   - `bus_data/message_bus.db` 21k 条消息 / 1.3k 条幂等键，绝大多数属于
@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pipeline_core import state_paths  # noqa: E402
+from loom_core import state_paths  # noqa: E402
 
 # 夹具任务命名空间：测试与本地冒烟里出现过的 task_id 前缀/形态。
 TEST_TASK_RE = re.compile(

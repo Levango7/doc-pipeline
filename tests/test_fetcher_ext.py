@@ -27,7 +27,7 @@ from agents.fetcher import (
     _DownloadAbort,
     _DownloadRetry,
 )
-from pipeline_core.base_agent import AgentMeta, Message
+from loom_core.base_agent import AgentMeta, Message
 
 # 测试域名 → 公网 IP 的确定性映射（url_guard SSRF 校验用，不真实出网）
 _DNS_MAP = {

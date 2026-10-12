@@ -1,8 +1,8 @@
 """tests/test_checker.py — CheckerAgent markdown 规则检查。"""
 
 
+from loom_core.base_agent import AgentMeta, Message
 from packs.docgen.agents.checker import CheckerAgent
-from pipeline_core.base_agent import AgentMeta, Message
 
 
 def _make_agent():

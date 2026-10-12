@@ -1,87 +1,69 @@
+"""兼容 shim：旧包名 `pipeline_core` → 新包名 `loom_core`（spec §7.1 命名收官·第二段）。
+
+旧名以**转发别名**保留：`import pipeline_core` 与 `import loom_core` 得到
+**同一个模块对象**（`pipeline_core.scheduler is loom_core.scheduler`），类与函数
+身份一致，isinstance / patch / 注册表 / 事件钩子全部照常工作；首次导入旧根名记
+一条 DeprecationWarning，请新代码直接用 `loom_core`。
+
+**这个文件本身是对外契约**：MAOP 的 `doc_pipeline_adapter._resolve_doc_pipeline_root()`
+正是用 `pipeline_core/__init__.py` 的存在性判定项目根，其两条运行时 import
+（`PipelineOrchestrator` / `event_hook`）也经本 shim 命中同一模块对象——
+**它侧零改动**。
+
+实现说明（两件套，与 `docpipeline` shim 同款）：
+  1. 根名替换：`sys.modules["pipeline_core"] = loom_core`——importlib 官方支持
+     模块在执行期替换自身（`_bootstrap._load` 会在 exec 后取回替换对象）；
+  2. 子模块别名：meta-path finder 把 `pipeline_core.X` 映射到 `loom_core.X` 的
+     **同一模块对象**（先于路径查找器生效）。
+
+为什么不用"转发文件"（每个子模块一个 `from loom_core.x import *`）：那会制造
+两份模块对象——`pipeline_core.pipeline.TaskStatus` 与 `loom_core.pipeline.TaskStatus`
+不再 `is` 同一物，枚举比较 / isinstance / 测试 patch 全部碎掉。
 """
-pipeline_core v3 - 工作流引擎层（领域无关）
-=========================================
-DAG 编排、消息总线、重试/熔断/限流、检查点与 Agent 加载。
-文档领域能力（渲染/摄入/增强）在 `loom_doc/`，本包不得反向依赖它
-（依赖方向由 tests/test_layering.py 把关）。
-取数层（JSON 序列化、HTML 解析内核、嵌入、知识库、搜索引擎）在独立库
-`artesian`，登记为该测试里的 LOCAL_LIBRARY 一类。
+from __future__ import annotations
 
-核心特性：
-  - 消息总线支持异步广播和死信队列 (v3)
-  - Registry 支持健康检查和自动恢复
-  - BaseAgent 支持结构化日志和性能统计
-  - PipelineOrchestrator 支持 DAG 并行、断点续传、自动重做
-  - Per-agent 熔断器 + 令牌桶限流
-  - QualityGate 多维度评分 + 自动反馈循环
-  - 临时文件自动清理
-"""
+import importlib
+import importlib.abc
+import importlib.util
+import sys
+import warnings
 
-# 版本必须在子模块导入之前绑定：`.mcp_server` 用 `from . import __version__`
-# 取它，而本包在第 31 行就导入该子模块 —— 定义放在下面时那次导入发生在
-# 包初始化中途，ImportError 被 except 吞掉，MCP 的 serverInfo.version 因此
-# 长期报 "unknown"（而本模块第 18 行的示例文档写的是真实版本号）。
-__version__ = "3.10.0"
+_OLD = "pipeline_core"
+_NEW = "loom_core"
 
-from .agent_loader import AgentLoader
-from .alert_manager import alert, clear_alerts, get_alerts
-from .base_agent import AgentLogger, BaseAgent
-from .bootstrap import StartupReport, quick_check, run_startup_check
-from .cache_manager import CacheManager, all_stats, clear_all_caches, get_cache
-from .checkpoint_manager import CheckpointManager
-from .circuit_breaker import CircuitBreakerRegistry, backoff_with_jitter
-from .config import ConfigCenter
-from .cost_tracker import CostTracker, calc_cost, estimate_tokens, get_cost_tracker
-from .dag_executor import DAGExecutor
-from .event_hook import EventHookManager, emit_event, get_hook_manager
-from .executor_factory import SmartExecutor, create_executor, is_process_executor
-from .llm_router import LLMRouter, get_router, reset_router
-from .mcp_server import MCPServer, run_mcp_server
-from .message_bus_v3 import (
-    Message,
-    MessageBus,
-    MessageMetrics,
-    MessageType,
-)
-from .message_store import MessagePriority, PersistentStore
-from .openapi_spec import generate_spec
-from .pipeline import NodeConfig, PipelineOrchestrator, PipelineTask, StepResult, TaskStatus
-from .quality_feedback import QualityFeedback, get_quality_feedback, record_quality
-from .registry import AgentMeta, AgentPriority, AgentStats, AgentStatus, Registry
-from .scheduler import AgentConfig, ExecutionNode, ExecutionPlan, Scheduler
-from .streaming import (
-    StreamCallback,
-    StreamEvent,
-    StreamMetrics,
-    get_callback,
-    register_callback,
-    unregister_callback,
-)
-from .task_queue import TaskQueue
-from .version_manager import VersionEntry, VersionManager, get_version_manager
+#: 旧根名已警告过（同进程只提示一次）
+_warned = False
 
-__all__ = [
-    "ConfigCenter",
-    "MessageBus", "Message", "MessageType", "MessagePriority", "MessageMetrics",
-    "PersistentStore",
-    "Registry", "AgentMeta", "AgentStatus", "AgentStats", "AgentPriority",
-    "BaseAgent", "AgentLogger",
-    "PipelineOrchestrator", "PipelineTask", "TaskStatus", "StepResult", "NodeConfig",
-    "Scheduler", "ExecutionPlan", "ExecutionNode", "AgentConfig",
-    "AgentLoader", "DAGExecutor", "CheckpointManager",
-    "LLMRouter", "get_router", "reset_router",
-    "CacheManager", "get_cache", "clear_all_caches", "all_stats",
-    "StreamEvent", "StreamCallback", "StreamMetrics",
-    "register_callback", "get_callback", "unregister_callback",
-    "create_executor", "is_process_executor", "SmartExecutor",
-    "run_startup_check", "quick_check", "StartupReport",
-    "EventHookManager", "get_hook_manager", "emit_event",
-    "VersionManager", "VersionEntry", "get_version_manager",
-    "MCPServer", "run_mcp_server",
-    "TaskQueue",
-    "CostTracker", "get_cost_tracker", "estimate_tokens", "calc_cost",
-    "alert", "clear_alerts", "get_alerts",
-    "CircuitBreakerRegistry", "backoff_with_jitter",
-    "generate_spec",
-    "QualityFeedback", "get_quality_feedback", "record_quality",
-]
+
+class _AliasLoader(importlib.abc.Loader):
+    def __init__(self, new_name: str) -> None:
+        self._new_name = new_name
+
+    def create_module(self, spec):  # type: ignore[no-untyped-def]
+        # 返回**已导入的目标模块本身**：身份保真是本 shim 的核心契约
+        return importlib.import_module(self._new_name)
+
+    def exec_module(self, module) -> None:  # type: ignore[no-untyped-def]
+        # 目标模块已在 create_module 里执行过；不要重复执行
+        pass
+
+
+class _AliasFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):  # type: ignore[no-untyped-def]
+        if fullname == _OLD or fullname.startswith(_OLD + "."):
+            new_name = _NEW + fullname[len(_OLD):]
+            return importlib.util.spec_from_loader(fullname, _AliasLoader(new_name))
+        return None
+
+
+if not any(isinstance(f, _AliasFinder) for f in sys.meta_path):
+    sys.meta_path.insert(0, _AliasFinder())
+
+if not _warned:
+    _warned = True
+    warnings.warn(
+        f"import {_OLD} 已更名（spec §7.1）：请改用 {_NEW}；旧名以转发别名保留",
+        DeprecationWarning, stacklevel=2)
+
+# 根名替换必须在最后一行：importlib 取回替换后的对象
+sys.modules[_OLD] = importlib.import_module(_NEW)

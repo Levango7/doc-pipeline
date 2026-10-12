@@ -38,7 +38,7 @@ _logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_NAME = "webhooks.yaml"
 #: 覆盖配置文件路径（双读：LOOM_WEBHOOKS_FILE 优先，旧名回退可读，
-#: 规则见 pipeline_core.envs；调用方用 webhooks_file_env() 取值）
+#: 规则见 loom_core.envs；调用方用 webhooks_file_env() 取值）
 CONFIG_PATH_ENV = "LOOM_WEBHOOKS_FILE"
 LEGACY_CONFIG_PATH_ENV = "DOC_PIPELINE_WEBHOOKS_FILE"
 
@@ -133,7 +133,7 @@ def load_webhooks(path: str | Path,
 
 
 def _audit_path() -> Path:
-    """本通道的审计文件路径（实现收口在 pipeline_core.audit）。"""
+    """本通道的审计文件路径（实现收口在 loom_core.audit）。"""
     return audit.audit_path("webhooks")
 
 

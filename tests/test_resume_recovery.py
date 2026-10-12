@@ -14,12 +14,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import pipeline_core.checkpoint_manager as ckpt_module
-from pipeline_core.checkpoint_manager import CheckpointManager
-from pipeline_core.dag_executor import DAGExecutor
-from pipeline_core.executor_factory import create_executor
-from pipeline_core.pipeline import PipelineTask, TaskNode, TaskStatus
-from pipeline_core.registry import AgentStatus
+import loom_core.checkpoint_manager as ckpt_module
+from loom_core.checkpoint_manager import CheckpointManager
+from loom_core.dag_executor import DAGExecutor
+from loom_core.executor_factory import create_executor
+from loom_core.pipeline import PipelineTask, TaskNode, TaskStatus
+from loom_core.registry import AgentStatus
 
 PROJECT = Path(__file__).parent.parent
 INPUT_FILE = str(PROJECT / "test_input.md")

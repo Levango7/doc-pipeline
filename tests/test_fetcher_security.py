@@ -8,7 +8,7 @@ import pytest
 
 import agents.fetcher as fetcher_mod
 from agents.fetcher import AGENT_DESC, AGENT_PRIORITY, AGENT_VERSION, FetcherAgent
-from pipeline_core.base_agent import AgentMeta
+from loom_core.base_agent import AgentMeta
 
 PUBLIC_HOST = "public.example.com"
 PUBLIC_IP = "93.184.216.34"

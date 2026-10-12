@@ -23,7 +23,7 @@ PROJECT = Path(__file__).resolve().parent.parent
 @pytest.fixture(scope="module")
 def orch():
     """真编排器：注册内置 Agent（含 renderer html 后端）。"""
-    from pipeline_core.pipeline import PipelineOrchestrator
+    from loom_core.pipeline import PipelineOrchestrator
 
     o = PipelineOrchestrator(
         agents_dir=str(PROJECT / "agents"),
@@ -35,7 +35,7 @@ def orch():
 
 def _plan(yaml_text: str, tmp_path: Path, name: str):
     """写临时流水线 YAML 并解析（临时流水线无 lock，verify_lock=False）。"""
-    from pipeline_core.scheduler import Scheduler
+    from loom_core.scheduler import Scheduler
 
     out = tmp_path / name
     out.mkdir(parents=True, exist_ok=True)
@@ -97,7 +97,7 @@ class TestDeliveryLedger:
     """账本三件事：写入→读回一致、缺记录返回 None、重复写覆盖（幂等收尾）。"""
 
     def test_record_get_roundtrip(self, tmp_path, monkeypatch):
-        from pipeline_core.deliveries import DeliveryLedger
+        from loom_core.deliveries import DeliveryLedger
 
         monkeypatch.setenv("LOOM_STATE_DIR", str(tmp_path / "state"))
         led = DeliveryLedger()
@@ -111,7 +111,7 @@ class TestDeliveryLedger:
         assert [r["run_id"] for r in led.list()] == ["r-1"]
 
     def test_record_is_idempotent_replace(self, tmp_path, monkeypatch):
-        from pipeline_core.deliveries import DeliveryLedger
+        from loom_core.deliveries import DeliveryLedger
 
         monkeypatch.setenv("LOOM_STATE_DIR", str(tmp_path / "state"))
         led = DeliveryLedger()
@@ -121,7 +121,7 @@ class TestDeliveryLedger:
         assert len(led.list()) == 1, "重复收尾不该多行"
 
     def test_record_requires_run_id(self, tmp_path, monkeypatch):
-        from pipeline_core.deliveries import DeliveryLedger
+        from loom_core.deliveries import DeliveryLedger
 
         monkeypatch.setenv("LOOM_STATE_DIR", str(tmp_path / "state"))
         with pytest.raises(ValueError):
@@ -132,7 +132,7 @@ class TestHtmlExport:
     """引擎交付原语：单页转换 + 站点构建（纯标准库、离线）。"""
 
     def test_markdown_to_html_string_basics(self):
-        from pipeline_core.html_export import markdown_to_html_string
+        from loom_core.html_export import markdown_to_html_string
 
         page = markdown_to_html_string(
             "# 标题\n\n正文\n\n```sql\nSELECT 1;\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |",
@@ -143,7 +143,7 @@ class TestHtmlExport:
         assert "<table>" in page and "<td>1</td>" in page
 
     def test_build_site_index_links_and_backlinks(self, tmp_path):
-        from pipeline_core.html_export import build_site
+        from loom_core.html_export import build_site
 
         info = build_site(
             [{"title": "报告 甲", "markdown": "# 甲\n内容甲"},
@@ -175,7 +175,7 @@ class TestRendererHtml:
     def test_agent_declares_html_format(self):
         """流水线声明 formats: ["html"] 时 agent 真用 html 后端（不被静默过滤）。"""
         from agents.renderer_agent import RendererAgent
-        from pipeline_core.registry import AgentMeta
+        from loom_core.registry import AgentMeta
 
         class _Bus:
             def publish(self, *a):
@@ -223,7 +223,7 @@ class TestDeliverEndToEnd:
         assert node_map["transform"]["agent"] == "transform"
 
         # 3) 账本与 JSON 同形状（同一记录的两个出口）
-        from pipeline_core.deliveries import DeliveryLedger
+        from loom_core.deliveries import DeliveryLedger
         row = DeliveryLedger().get(task_id)
         assert row is not None, "账本没有这轮运行的记录"
         assert row["nodes"] == record["nodes"]
@@ -249,7 +249,7 @@ class TestDeliverEndToEnd:
                              task_id=task_id, wait=True)
         assert task.status.value == "failed", "前提：这条流水线应当失败"
 
-        from pipeline_core.deliveries import DeliveryLedger
+        from loom_core.deliveries import DeliveryLedger
         row = DeliveryLedger().get(task_id)
         assert row is not None, "失败运行也必须进账本（账本的意义就是失败可查）"
         assert row["status"] == "failed"

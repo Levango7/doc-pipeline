@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 import run as run_mod
-from pipeline_core.scheduler import LockfileMismatchError, Scheduler
+from loom_core.scheduler import LockfileMismatchError, Scheduler
 
 PROJECT = Path(__file__).parent.parent
 
@@ -128,7 +128,7 @@ class TestParseAutoVerify:
     def test_parse_without_lock_stays_compatible(self, sched, tmp_path, caplog):
         _write_yaml(tmp_path, RAW)
         import logging
-        with caplog.at_level(logging.DEBUG, logger="pipeline_core.scheduler"):
+        with caplog.at_level(logging.DEBUG, logger="loom_core.scheduler"):
             plan = sched.parse("lockdemo")
         assert plan.pipeline_name == "lockdemo"
         assert plan.node_count == 2
@@ -176,7 +176,7 @@ class TestWriteLockWiring:
         shutil.copy(PROJECT / "packs" / "docgen" / "pipelines" / "_quality-tail.yaml",
                     tmp_path / "_quality-tail.yaml")
 
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
         stale_sched = Scheduler()
         stale_plan = stale_sched.parse_file(str(target), verify_lock=False)
         stale_sched.generate_lockfile(stale_plan)

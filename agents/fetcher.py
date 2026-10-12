@@ -22,7 +22,7 @@ from urllib.parse import urljoin, urlparse
 
 from artesian import selectolax_compat
 from artesian.url_guard import validate_public_http_url
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 
 # Async I/O 支持（可选）
 try:
@@ -38,7 +38,7 @@ AGENT_NAME = "fetcher"
 SANDBOX_TRUSTED = True
 
 # 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
-# （类型名表见 pipeline_core/config_schema.py）
+# （类型名表见 loom_core/config_schema.py）
 CONFIG_SCHEMA = {
     "max_downloads": ('int', 15),
     "temp_dir": ('str', 'tmp_fetcher'),
@@ -50,7 +50,7 @@ AGENT_AUTHOR = "doc-pipeline"
 AGENT_PRIORITY = 20
 INPUT_TOPICS = ["fetcher.input", "researcher.done"]
 OUTPUT_TOPICS = ["fetcher.done", "fetcher.progress"]
-# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：把每条检索结果抓成完整文章
+# 产物契约（引擎按此声明组装下游载荷，见 loom_core/artifacts.py）：把每条检索结果抓成完整文章
 PRODUCES = {"articles": "list"}
 CONSUMES = ["results"]
 DEPENDENCIES = ["researcher"]

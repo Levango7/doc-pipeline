@@ -162,7 +162,7 @@ class TestHandle:
             assert len(result["spec"]["ambiguities"]) <= 1
 
     def test_llm_failure_falls_back_to_rules(self, agent):
-        with patch("pipeline_core.llm_router.get_router") as mock_gr:
+        with patch("loom_core.llm_router.get_router") as mock_gr:
             mock_router = MagicMock()
             mock_router.get_active_providers.return_value = [MagicMock()]
             mock_router.chat.side_effect = RuntimeError("LLM down")
@@ -178,7 +178,7 @@ class TestHandle:
             '"sources": [], "template": "", "language": "zh", '
             '"confidence": 0.9, "ambiguities": []}'
         )
-        with patch("pipeline_core.llm_router.get_router") as mock_gr:
+        with patch("loom_core.llm_router.get_router") as mock_gr:
             mock_router = MagicMock()
             mock_router.get_active_providers.return_value = [MagicMock()]
             mock_router.chat.return_value = (llm_json, "test-provider")
@@ -195,7 +195,7 @@ class TestHandle:
             '{"doc_type": "科幻小说", "scope": [], "audience": "外星人", '
             '"depth": "超深", "confidence": "很高", "ambiguities": []}'
         )
-        with patch("pipeline_core.llm_router.get_router") as mock_gr:
+        with patch("loom_core.llm_router.get_router") as mock_gr:
             mock_router = MagicMock()
             mock_router.get_active_providers.return_value = [MagicMock()]
             mock_router.chat.return_value = (llm_json, "test-provider")
@@ -208,7 +208,7 @@ class TestHandle:
 
     def test_llm_disabled_skips_llm_path(self, agent):
         agent._llm_enabled = False
-        with patch("pipeline_core.llm_router.get_router") as mock_gr:
+        with patch("loom_core.llm_router.get_router") as mock_gr:
             result = agent.handle(self._msg({"input": "API 网关对比综述"}))
         mock_gr.assert_not_called()
         assert result["status"] == "ok"
@@ -220,7 +220,7 @@ class TestHandle:
         payload 读，就会被静默忽略、直接走 LLM 路径（实例默认 True）。
         """
         agent._llm_enabled = True  # 实例默认允许 LLM
-        with patch("pipeline_core.llm_router.get_router") as mock_gr:
+        with patch("loom_core.llm_router.get_router") as mock_gr:
             result = agent.handle(self._msg({
                 "input": "Nginx 手册",
                 "config": {"llm_enabled": False},
@@ -245,7 +245,7 @@ class TestHandle:
 class TestAnalyzeHelper:
 
     def test_analyze_falls_back_without_llm(self):
-        with patch("pipeline_core.llm_router.get_router") as mock_gr:
+        with patch("loom_core.llm_router.get_router") as mock_gr:
             mock_gr.side_effect = RuntimeError("no llm")
             spec = analyze("Elasticsearch 深度调优报告",
                            {"requirements_analyzer": {"llm_enabled": True}})

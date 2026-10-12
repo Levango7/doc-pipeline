@@ -1,7 +1,7 @@
 """QualityFeedback — 质量闭环学习测试"""
 import pytest
 
-from pipeline_core.quality_feedback import QualityFeedback
+from loom_core.quality_feedback import QualityFeedback
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ class TestConnectionLifecycle:
     def test_all_connections_closed_after_ops(self, tmp_path, monkeypatch):
         import sqlite3
 
-        import pipeline_core.quality_feedback as qf_mod
+        import loom_core.quality_feedback as qf_mod
 
         created = []
         real_connect = sqlite3.connect

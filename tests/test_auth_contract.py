@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core.admin_api import AdminAPI, AdminHandler
+from loom_core.admin_api import AdminAPI, AdminHandler
 
 
 @pytest.fixture
@@ -165,28 +165,28 @@ class TaskNotFoundSemantics:
 class TestOpenAPISecurityContract:
 
     def test_global_security_declared(self):
-        from pipeline_core.openapi_spec import generate_spec
+        from loom_core.openapi_spec import generate_spec
         spec = generate_spec()
         assert spec.get("security") == [{"BearerAuth": []}]
 
     def test_stream_no_longer_marked_public(self):
         """/stream 需鉴权，spec 不得再标 security: []（此前与实现相反）"""
-        from pipeline_core.openapi_spec import generate_spec
+        from loom_core.openapi_spec import generate_spec
         spec = generate_spec()
         assert "security" not in spec["paths"]["/stream"]["get"]
 
     def test_health_marked_public(self):
-        from pipeline_core.openapi_spec import generate_spec
+        from loom_core.openapi_spec import generate_spec
         spec = generate_spec()
         assert spec["paths"]["/health"]["get"].get("security") == []
 
     def test_version_matches_package(self):
-        import pipeline_core
-        from pipeline_core.openapi_spec import generate_spec
-        assert generate_spec()["info"]["version"] == pipeline_core.__version__
+        import loom_core
+        from loom_core.openapi_spec import generate_spec
+        assert generate_spec()["info"]["version"] == loom_core.__version__
 
     def test_new_endpoints_documented(self):
-        from pipeline_core.openapi_spec import generate_spec
+        from loom_core.openapi_spec import generate_spec
         paths = generate_spec()["paths"]
         for p in ("/api/dashboard", "/api/pipeline", "/stream/metrics",
                   "/api/versions", "/api/versions/diff",
@@ -199,7 +199,7 @@ class TestMCPGetPipelineInfo:
     def test_get_pipeline_info_succeeds(self):
         """此前读 plan.execution_order/dag_nodes 必抛 AttributeError → -32603；
         改为读 plan.levels 后必须成功返回"""
-        from pipeline_core.mcp_server import MCPServer
+        from loom_core.mcp_server import MCPServer
         server = MCPServer(orch=None)
         resp = server._tool_get_pipeline_info(req_id=1, args={"name": "docgen"})
         assert "error" not in resp, resp

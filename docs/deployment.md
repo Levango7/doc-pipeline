@@ -88,7 +88,7 @@ python run.py --mcp
 > **依赖来源（2026-10-07 起）**：取数底座 `artesian` 走 requirements.txt 里的
 > `artesian @ git+https://github.com/Levango7/artesian.git@<sha>` 直接引用安装，
 > 因此镜像构建（第 20 行 `pip install -r requirements.txt`）会自动带上它。
-> 该依赖是**导入期**的（`pipeline_core/__init__.py` → `llm_router` → `artesian.fast_json`），
+> 该依赖是**导入期**的（`loom_core/__init__.py` → `llm_router` → `artesian.fast_json`），
 > 装不齐就在容器启动时立刻炸，不会拖到某个功能才被发觉。
 
 ```bash

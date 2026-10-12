@@ -1,6 +1,6 @@
 # pack-docgen —— 文档生成领域件包（spec §5.2 pack 机制 v1）
 #
-# 引擎不 import 本包；本包经 pipeline_core.pack_manifest 被发现与装配：
+# 引擎不 import 本包；本包经 loom_core.pack_manifest 被发现与装配：
 #   - agents/     由 AgentLoader 多目录发现（与 agents/ 内置件同路径注册）
 #   - pipelines/  由 installed_pipelines / 流水线解析union进候选
 #   - quality/    由 quality_gate.load_profile 按名解析

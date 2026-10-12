@@ -14,9 +14,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pipeline_core import artifacts
-from pipeline_core.dag_executor import DAGExecutor
-from pipeline_core.registry import AgentMeta
+from loom_core import artifacts
+from loom_core.dag_executor import DAGExecutor
+from loom_core.registry import AgentMeta
 
 
 def _ex_with(metas: dict[str, AgentMeta]) -> DAGExecutor:
@@ -273,13 +273,13 @@ class TestCoreStaysDomainNeutral:
                 and id(n) not in doc_nodes]
 
     @pytest.mark.parametrize("mod_name", [
-        "pipeline_core.dag_executor", "pipeline_core.artifacts",
-        "pipeline_core.registry", "pipeline_core.message_bus_v3",
-        "pipeline_core.pipeline", "pipeline_core.agent_loader",
+        "loom_core.dag_executor", "loom_core.artifacts",
+        "loom_core.registry", "loom_core.message_bus_v3",
+        "loom_core.pipeline", "loom_core.agent_loader",
         # 接口层也纳入：外壳内置 "docgen" 等于在通用引擎里塞了一个具体产品
-        "pipeline_core.admin_api", "pipeline_core.mcp_server",
-        "pipeline_core.openapi_spec", "pipeline_core.config",
-        "pipeline_core.scheduler",
+        "loom_core.admin_api", "loom_core.mcp_server",
+        "loom_core.openapi_spec", "loom_core.config",
+        "loom_core.scheduler",
     ])
     def test_no_agent_names_in_orchestration_core(self, mod_name):
         import importlib
@@ -294,7 +294,7 @@ class TestCoreStaysDomainNeutral:
 
     def test_scheduler_no_longer_holds_agent_roster(self):
         """AGENT_SCHEMAS 已下沉为各 Agent 的 CONFIG_SCHEMA（P1-2）。"""
-        from pipeline_core import scheduler
+        from loom_core import scheduler
         assert not hasattr(scheduler, "AGENT_SCHEMAS"), "配置表又回到 core 了"
         strings = self._code_strings(scheduler)
         hits = sorted({n for n in self.DOMAIN_NAMES if n in strings})
@@ -302,14 +302,14 @@ class TestCoreStaysDomainNeutral:
 
     def test_schema_is_read_without_executing_agent_code(self, tmp_path):
         """AST 读取：Agent 模块里抛异常/有副作用也不该影响解析期校验。"""
-        from pipeline_core.config_schema import parse_config_schema
+        from loom_core.config_schema import parse_config_schema
         src = ("CONFIG_SCHEMA = {'threshold': (['int', 'float'], 70)}\n"
                "raise RuntimeError('import 时不该执行我')\n")
         assert parse_config_schema(src, origin="fake.py") == {
             "threshold": (["int", "float"], 70)}
 
     def test_schema_declaration_is_validated(self):
-        from pipeline_core.config_schema import parse_config_schema
+        from loom_core.config_schema import parse_config_schema
         with pytest.raises(ValueError, match="不支持的类型名"):
             parse_config_schema("CONFIG_SCHEMA = {'x': ('integer', 1)}", origin="a.py")
         with pytest.raises(ValueError, match="二元组"):
@@ -317,7 +317,7 @@ class TestCoreStaysDomainNeutral:
 
     def test_bool_is_not_accepted_where_int_expected(self):
         """isinstance(True, int) 为真，配错成 bool 必须被拦下。"""
-        from pipeline_core.config_schema import type_ok
+        from loom_core.config_schema import type_ok
         assert type_ok(3, "int") is True
         assert type_ok(True, "int") is False
         assert type_ok(True, "bool") is True
@@ -325,7 +325,7 @@ class TestCoreStaysDomainNeutral:
 
     def test_injected_defaults_are_not_shared_objects(self, tmp_path):
         """默认值必须是每节点独立副本，否则同池实例会互相改配置。"""
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
         sched = Scheduler()
         raw = {
             "name": "schemademo",

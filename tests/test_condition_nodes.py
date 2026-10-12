@@ -1,6 +1,6 @@
 """tests/test_condition_nodes.py — 条件节点（when）的接线行为。
 
-`pipeline_core/conditions.py` 已经表驱动测过语言本身；这里测的是"语言接进引擎之后
+`loom_core/conditions.py` 已经表驱动测过语言本身；这里测的是"语言接进引擎之后
 到底改变了什么"，四个必须钉住的点：
 
 1. 条件不成立 → 节点标 skipped + skip_reason="condition"，**不投递消息**；
@@ -13,18 +13,18 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pipeline_core.conditions import ConditionError
-from pipeline_core.dag_executor import DAGExecutor
-from pipeline_core.naming import agent_of
-from pipeline_core.pipeline import PipelineTask, StepResult, TaskNode, TaskStatus
-from pipeline_core.registry import AgentMeta
-from pipeline_core.scheduler import (
+from loom_core.conditions import ConditionError
+from loom_core.dag_executor import DAGExecutor
+from loom_core.naming import agent_of
+from loom_core.pipeline import PipelineTask, StepResult, TaskNode, TaskStatus
+from loom_core.registry import AgentMeta
+from loom_core.scheduler import (
     AgentConfig,
     ExecutionNode,
     ExecutionPlan,
     Scheduler,
 )
-from pipeline_core.scheduler import (
+from loom_core.scheduler import (
     ConditionError as _CE,  # noqa: F401  确认异常从 scheduler 可达（解析期用它报错）
 )
 
@@ -183,7 +183,7 @@ class TestEvaluationErrorsFailLoud:
 
     def _aliased_ctx(self, upstream_names):
         """上游串成一条链（都带别名），取回下游节点 when 的求值上下文。"""
-        from pipeline_core.naming import agent_of
+        from loom_core.naming import agent_of
 
         chain: list[ExecutionNode] = []
         prev = None
@@ -295,7 +295,7 @@ class TestSchedulerPlanning:
 
 class TestDeliveryContractWithConditions:
     def test_sink_skipped_by_condition_is_not_a_failure(self, tmp_path, monkeypatch):
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         orch = PipelineOrchestrator(agents_dir=str(PROJECT / "agents"),
                                     checkpoint_dir=str(tmp_path / "ck"))
@@ -321,7 +321,7 @@ class TestDeliveryContractWithConditions:
         orch.shutdown()
 
     def test_sink_skipped_by_failure_is_still_a_failure(self, tmp_path):
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         orch = PipelineOrchestrator(agents_dir=str(PROJECT / "agents"),
                                     checkpoint_dir=str(tmp_path / "ck2"))

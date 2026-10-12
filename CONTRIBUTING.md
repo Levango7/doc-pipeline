@@ -24,7 +24,7 @@ python -m pytest tests/ -q -m "not e2e"
 ### 覆盖率门禁
 
 - 当前门禁：`fail_under = 83`（pyproject.toml）
-- 源码口径：仅计 `pipeline_core/*`、`agents/*`、`run.py`（排除 `tests/` 虚高）
+- 源码口径：仅计 `loom_core/*`、`agents/*`、`run.py`（排除 `tests/` 虚高）
 - 覆盖率跌破门禁即红——**不要为了凑覆盖率写无断言的测试**
 
 ### 测试命令
@@ -117,7 +117,7 @@ python -m pytest tests/ -q -m "not e2e" --cov --cov-report=term-missing
 ### 发版流程
 
 1. 更新 `CHANGELOG.md`（新增版本段落）
-2. 版本号双处同步：`pyproject.toml` + `pipeline_core/__init__.py`
+2. 版本号双处同步：`pyproject.toml` + `loom_core/__init__.py`
 3. 打 tag：`git tag vX.Y.Z && git push origin vX.Y.Z`
 4. Release workflow 自动提取 CHANGELOG 段落作为发布说明
 

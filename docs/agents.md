@@ -1,17 +1,17 @@
 # Agent 开发指南
 
 本文说明如何为 doc-pipeline 编写自定义 Agent。所有内容以当前代码为准：
-契约定义见 `pipeline_core/base_agent.py`，加载与沙箱见 `pipeline_core/agent_loader.py`。
+契约定义见 `loom_core/base_agent.py`，加载与沙箱见 `loom_core/agent_loader.py`。
 
 **新代码放哪一层**（依赖方向单向，由 `tests/test_layering.py` 当门禁）：
 
 | 位置 | 放什么 | 约束 |
 |------|--------|------|
-| `agents/` | 一个可被流水线订阅的能力（Agent） | 由加载器按目录发现，不得被 `pipeline_core` 硬编码 import |
-| `loom_doc/` | 文档领域的纯函数/类：渲染、摄入、增强 | 只能依赖 `pipeline_core`；Agent 薄壳调用它 |
-| `pipeline_core/` | 换一种任务类型仍然成立的引擎原语 | 不得 import `loom_doc` / `agents`，不得出现领域名词 |
+| `agents/` | 一个可被流水线订阅的能力（Agent） | 由加载器按目录发现，不得被 `loom_core` 硬编码 import |
+| `loom_doc/` | 文档领域的纯函数/类：渲染、摄入、增强 | 只能依赖 `loom_core`；Agent 薄壳调用它 |
+| `loom_core/` | 换一种任务类型仍然成立的引擎原语 | 不得 import `loom_doc` / `agents`，不得出现领域名词 |
 
-判据：如果去掉"文档"这个场景，这段代码还有用，它属于 `pipeline_core`；
+判据：如果去掉"文档"这个场景，这段代码还有用，它属于 `loom_core`；
 否则它是领域层或 Agent。
 
 ---
@@ -34,7 +34,7 @@
 | `CACHE_TTL` | int | 缓存 TTL 秒数 |
 | `RESPAWN` | bool | 异常退出后是否自动重生 |
 | `SUPPORTS_REGENERATION` / `REGENERATION_TARGET` / `REGENERATION_RECHECK` | — | 质量重做循环：声明支持就必须给出 `REGENERATION_TARGET`，引擎不再猜默认值 |
-| `PRODUCES` | dict[str, str] | 对外产物与合并策略：`{"content": "last"}`（机制见 `pipeline_core/artifacts.py`） |
+| `PRODUCES` | dict[str, str] | 对外产物与合并策略：`{"content": "last"}`（机制见 `loom_core/artifacts.py`） |
 | `CONSUMES` | list[str] | 期望的上游产物名（声明意图，供校验与阅读） |
 | `CONFIG_SCHEMA` | dict[str, tuple] | 配置项契约：`{"threshold": (["int", "float"], 70)}`，类型名是**字符串** |
 | `LEGACY_AUTO` | bool | 默认 `True`：是否参与 `--legacy` 的自动图。legacy 按设计不读 YAML、没有 per-node config，凡是"没配置就跑不出东西"的件（出网要 `url`、转换要 `template`）都必须置 `False`，否则它被拉进每一趟 legacy 跑并必然业务失败 |
@@ -63,7 +63,7 @@
 
 ## 2. BaseAgent 必须实现的方法
 
-继承 `pipeline_core.base_agent.BaseAgent` 并实现唯一的抽象方法：
+继承 `loom_core.base_agent.BaseAgent` 并实现唯一的抽象方法：
 
 ```python
 def handle(self, msg: Message) -> dict | None:
@@ -87,7 +87,7 @@ def handle(self, msg: Message) -> dict | None:
 
 ## 4. 消息与工具方法
 
-`handle()` 内可用的基类辅助方法（详见 `pipeline_core/base_agent.py`）：
+`handle()` 内可用的基类辅助方法（详见 `loom_core/base_agent.py`）：
 
 - `self.publish(topic, payload)` — 发布消息到总线
 - `self.send_to(to_agent, topic, payload)` — 定向发送
@@ -98,7 +98,7 @@ def handle(self, msg: Message) -> dict | None:
 
 ## 5. 安全沙箱
 
-第三方 Agent 加载时执行 AST 静态检查（`pipeline_core/agent_loader.py:_check_safety`），
+第三方 Agent 加载时执行 AST 静态检查（`loom_core/agent_loader.py:_check_safety`），
 内置白名单 Agent 跳过检查。默认 `strict_safety=True`，命中即阻断加载。
 
 **危险调用黑名单**（`_DANGEROUS_CALLS`，节选）：
@@ -144,7 +144,7 @@ def handle(self, msg: Message) -> dict | None:
 
 ```python
 """agents/echo_agent.py — 最小自定义 Agent 示例"""
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "echo"
 AGENT_VERSION = "1.0"

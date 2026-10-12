@@ -20,8 +20,8 @@ import pytest
 PROJECT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT))
 
-from pipeline_core import PipelineOrchestrator  # noqa: E402
-from pipeline_core.scheduler import Scheduler  # noqa: E402
+from loom_core import PipelineOrchestrator  # noqa: E402
+from loom_core.scheduler import Scheduler  # noqa: E402
 
 GATE_YAML = """
 name: gate_demo
@@ -114,7 +114,7 @@ class TestApprovalParsing:
 
 class TestInventory:
     def test_gate_not_counted_as_agent(self, tmp_path):
-        from pipeline_core.pack_manifest import _yaml_agent_names
+        from loom_core.pack_manifest import _yaml_agent_names
 
         f = _write_gate_yaml(tmp_path)
         names = _yaml_agent_names(f)
@@ -233,7 +233,7 @@ class TestGateExecution:
 class TestApprovalHTTPAndAudit:
     @pytest.fixture
     def handler(self):
-        from pipeline_core.admin_api import AdminHandler
+        from loom_core.admin_api import AdminHandler
 
         h = AdminHandler.__new__(AdminHandler)
         h.orch = MagicMock()
@@ -267,7 +267,7 @@ class TestApprovalHTTPAndAudit:
         handler._json.assert_called_once_with({"error": "请求体不是合法 JSON"}, 400)
 
     def test_decision_lands_in_audit_jsonl(self, gate_orch, tmp_path):
-        from pipeline_core.audit import read_audit
+        from loom_core.audit import read_audit
 
         task = _run_to_gate(gate_orch, tmp_path, task_id="gate_audit")
         gate_orch.approve(task.id, note="审计用例", by="auditor|fp")
@@ -294,8 +294,8 @@ class TestCheckpointSaveLoadSameSource:
     """
 
     def test_save_lands_in_manager_dir_and_field_follows(self, tmp_path):
-        from pipeline_core import pipeline as P
-        from pipeline_core.checkpoint_manager import CheckpointManager
+        from loom_core import pipeline as P
+        from loom_core.checkpoint_manager import CheckpointManager
 
         task = P.PipelineTask(id="same_source", pipeline_name="gate_demo",
                               input_file="in.md", config={})
@@ -307,8 +307,8 @@ class TestCheckpointSaveLoadSameSource:
             "task.checkpoint_file 未回写真实落点"
 
     def test_save_load_roundtrip(self, tmp_path):
-        from pipeline_core import pipeline as P
-        from pipeline_core.checkpoint_manager import CheckpointManager
+        from loom_core import pipeline as P
+        from loom_core.checkpoint_manager import CheckpointManager
 
         task = P.PipelineTask(id="roundtrip", pipeline_name="gate_demo",
                               input_file="in.md", config={})
@@ -320,8 +320,8 @@ class TestCheckpointSaveLoadSameSource:
         assert loaded.pipeline_name == "gate_demo"
 
     def test_remove_clears_the_same_file(self, tmp_path):
-        from pipeline_core import pipeline as P
-        from pipeline_core.checkpoint_manager import CheckpointManager
+        from loom_core import pipeline as P
+        from loom_core.checkpoint_manager import CheckpointManager
 
         task = P.PipelineTask(id="rm_case", pipeline_name="gate_demo",
                               input_file="in.md", config={})

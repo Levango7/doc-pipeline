@@ -23,7 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core import TaskStatus  # noqa: E402
+from loom_core import TaskStatus  # noqa: E402
 
 
 def _run_module():
@@ -381,7 +381,7 @@ class TestRunSingleTask:
         args = self._plan_args()
         plan = MagicMock()
         with patch.object(run, "_resolve_pipeline_plan", return_value=(plan, True)), \
-                patch("pipeline_core.scheduler.Scheduler.visualize",
+                patch("loom_core.scheduler.Scheduler.visualize",
                       return_value="PREVIEW"):
             assert run._run_single_task(args, MagicMock(), {}) is None
         assert "PREVIEW" in capsys.readouterr().out
@@ -484,7 +484,7 @@ class TestRunDaemon:
 class TestMainBranches:
     def test_check_with_errors_exits_1(self):
         with patch("sys.argv", ["run.py", "--check"]), \
-                patch("pipeline_core.bootstrap.run_startup_check") as chk:
+                patch("loom_core.bootstrap.run_startup_check") as chk:
             chk.return_value = SimpleNamespace(has_errors=True,
                                                summary=lambda: "BAD")
             with pytest.raises(SystemExit) as ei:
@@ -493,7 +493,7 @@ class TestMainBranches:
 
     def test_mcp_mode(self):
         with patch("sys.argv", ["run.py", "--mcp"]), \
-                patch("pipeline_core.mcp_server.run_mcp_server") as mcp:
+                patch("loom_core.mcp_server.run_mcp_server") as mcp:
             _run_module().main()
         mcp.assert_called_once()
 
@@ -517,7 +517,7 @@ class TestMainBranches:
         orch.run_plan.side_effect = [task, RuntimeError("bad task")]
         with patch("sys.argv", ["run.py", "--recover"]), \
                 patch.object(_run_module(), "_get_orchestrator", return_value=orch), \
-                patch("pipeline_core.scheduler.Scheduler.parse") as parse:
+                patch("loom_core.scheduler.Scheduler.parse") as parse:
             parse.return_value = MagicMock()
             _run_module().main()
         out = capsys.readouterr().out
@@ -545,7 +545,7 @@ class TestMainBranches:
                 patch.object(run, "_get_orchestrator", return_value=orch), \
                 patch.object(run, "_load_config",
                              return_value={"admin_api": {"port": "not-a-port"}}), \
-                patch("pipeline_core.bootstrap.quick_check", return_value=True), \
+                patch("loom_core.bootstrap.quick_check", return_value=True), \
                 pytest.raises(SystemExit) as ei:
             run.main()
         assert ei.value.code == 1
@@ -558,7 +558,7 @@ class TestMainBranches:
         with patch("sys.argv", ["run.py", "--admin"]), \
                 patch.object(run, "_get_orchestrator", return_value=orch), \
                 patch.object(run, "_load_config", return_value={}), \
-                patch("pipeline_core.bootstrap.quick_check", return_value=True), \
+                patch("loom_core.bootstrap.quick_check", return_value=True), \
                 pytest.raises(SystemExit) as ei:
             run.main()
         assert ei.value.code == 1
@@ -575,7 +575,7 @@ class TestMainBranches:
         with patch("sys.argv", ["run.py", str(input_file), "--legacy"]), \
                 patch.object(run, "_get_orchestrator", return_value=orch), \
                 patch.object(run, "_load_config", return_value={}), \
-                patch("pipeline_core.bootstrap.quick_check", return_value=True), \
+                patch("loom_core.bootstrap.quick_check", return_value=True), \
                 patch("builtins.print"), \
                 pytest.raises(SystemExit) as ei:
             run.main()
@@ -589,7 +589,7 @@ class TestMainBranches:
         with patch("sys.argv", ["run.py", "in.md"]), \
                 patch.object(run, "_get_orchestrator", return_value=orch), \
                 patch.object(run, "_load_config", return_value={}), \
-                patch("pipeline_core.bootstrap.quick_check", return_value=True):
+                patch("loom_core.bootstrap.quick_check", return_value=True):
             run.main()
         assert "没有加载任何 Agent" in capsys.readouterr().out
         # 注意：此分支直接 return，未调用 shutdown（既有行为）

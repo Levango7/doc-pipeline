@@ -612,7 +612,7 @@ class LLMRouter:
 
 # _load_env 的实现已迁至 artesian.env.load_env（单一事实来源，搜索层与路由层共用）。
 # 保留 _load_env 这个名字：本模块调用点、测试的 patch 目标与
-# `from pipeline_core.llm_router import _load_env` 都指向它。
+# `from loom_core.llm_router import _load_env` 都指向它。
 _load_env = load_env
 
 

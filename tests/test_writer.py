@@ -19,9 +19,9 @@ import time
 import types
 from unittest.mock import MagicMock, patch
 
+from loom_core.base_agent import AgentMeta, Message
+from loom_core.streaming import StreamCallback
 from packs.docgen.agents.writer import ContentChunk, TemplateManager, WriterAgent, _md_escape
-from pipeline_core.base_agent import AgentMeta, Message
-from pipeline_core.streaming import StreamCallback
 
 
 def _make_writer(tmp_path, **cfg) -> WriterAgent:
@@ -82,7 +82,7 @@ class TestLLMChat:
         router = MagicMock()
         router.get_active_providers.return_value = ["p1"]
         router.chat.return_value = ("router-answer", "p1")
-        with patch("pipeline_core.llm_router.get_router", return_value=router):
+        with patch("loom_core.llm_router.get_router", return_value=router):
             assert w._llm_chat([{"role": "user", "content": "hi"}]) == "router-answer"
         router.chat.assert_called_once()
 
@@ -94,7 +94,7 @@ class TestLLMChat:
         fake_resp = io.BytesIO(body)
         fake_resp.__enter__ = lambda s: s
         fake_resp.__exit__ = MagicMock(return_value=False)
-        with patch("pipeline_core.llm_router.get_router", return_value=None), \
+        with patch("loom_core.llm_router.get_router", return_value=None), \
                 patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
             assert w._llm_chat([{"role": "user", "content": "hi"}]) == "single"
         req = mock_open.call_args[0][0]
@@ -108,7 +108,7 @@ class TestLLMChat:
         fake_resp = io.BytesIO(body)
         fake_resp.__enter__ = lambda s: s
         fake_resp.__exit__ = MagicMock(return_value=False)
-        with patch("pipeline_core.llm_router.get_router", side_effect=RuntimeError("no")), \
+        with patch("loom_core.llm_router.get_router", side_effect=RuntimeError("no")), \
                 patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
             assert w._llm_chat([]) == "cf"
         req = mock_open.call_args[0][0]
@@ -892,7 +892,7 @@ class TestLoadPromptTemplate:
 class TestQualityFeedbackEnhancement:
     def test_recommendations_appended(self, tmp_path):
         w = _make_writer(tmp_path)
-        with patch("pipeline_core.quality_feedback.get_quality_feedback") as mock_gqf:
+        with patch("loom_core.quality_feedback.get_quality_feedback") as mock_gqf:
             mock_gqf.return_value.get_recommendations.return_value = ["加强引用", "改善结构"]
             out = w._enhance_system_prompt_with_feedback("原始 prompt")
         assert "质量改进提醒" in out
@@ -900,13 +900,13 @@ class TestQualityFeedbackEnhancement:
 
     def test_no_recommendations_unchanged(self, tmp_path):
         w = _make_writer(tmp_path)
-        with patch("pipeline_core.quality_feedback.get_quality_feedback") as mock_gqf:
+        with patch("loom_core.quality_feedback.get_quality_feedback") as mock_gqf:
             mock_gqf.return_value.get_recommendations.return_value = []
             assert w._enhance_system_prompt_with_feedback("原始") == "原始"
 
     def test_exception_returns_original(self, tmp_path):
         w = _make_writer(tmp_path)
-        with patch("pipeline_core.quality_feedback.get_quality_feedback",
+        with patch("loom_core.quality_feedback.get_quality_feedback",
                    side_effect=RuntimeError("db down")):
             assert w._enhance_system_prompt_with_feedback("原始") == "原始"
 
@@ -920,7 +920,7 @@ class TestGenerateTextAsync:
         async def _chat_async(messages, **kw):
             return ("router-async-content", "p")
         router.chat_async = _chat_async
-        with patch("pipeline_core.llm_router.get_router", return_value=router):
+        with patch("loom_core.llm_router.get_router", return_value=router):
             out = asyncio.run(w._generate_text_async("sp", "sys", "ctx"))
         assert out == "router-async-content"
 
@@ -930,7 +930,7 @@ class TestGenerateTextAsync:
         async def _fake(messages, **kw):
             return "  fallback-content  "
         w._llm_chat_async = _fake
-        with patch("pipeline_core.llm_router.get_router", return_value=None):
+        with patch("loom_core.llm_router.get_router", return_value=None):
             out = asyncio.run(w._generate_text_async("sp", "sys", "ctx"))
         assert out == "fallback-content"
 
@@ -940,7 +940,7 @@ class TestGenerateTextAsync:
         async def _boom(messages, **kw):
             raise RuntimeError("no llm")
         w._llm_chat_async = _boom
-        with patch("pipeline_core.llm_router.get_router", return_value=None):
+        with patch("loom_core.llm_router.get_router", return_value=None):
             assert asyncio.run(w._generate_text_async("sp", "sys", "ctx")) == ""
 
 

@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core.dag_executor import DAGExecutor  # noqa: E402
+from loom_core.dag_executor import DAGExecutor  # noqa: E402
 
 
 def _make_executor():
@@ -42,8 +42,8 @@ PLACEHOLDER = "# 自动生成文档\n\n> 生成时间: 2026-10-04\n\n未采集�
 @pytest.fixture
 def gate():
     """不跑 LLM 的 QualityGateAgent：门禁判据本身是纯规则。"""
+    from loom_core.base_agent import AgentMeta, Message
     from packs.docgen.agents.quality_gate import QualityGateAgent
-    from pipeline_core.base_agent import AgentMeta, Message
     agent = QualityGateAgent("quality_gate",
                              AgentMeta(name="quality_gate", version="2.0"),
                              {"quiet": True}, None, None)
@@ -54,7 +54,7 @@ def gate():
 
 class TestDuplicateKeyIsNotSuccess:
     def test_bus_returns_structured_error(self, tmp_path):
-        from pipeline_core.message_bus_v3 import MessageBus
+        from loom_core.message_bus_v3 import MessageBus
         bus = MessageBus(db_path=str(tmp_path / "bus.db"), enable_persistence=True)
         try:
             calls = []
@@ -145,7 +145,7 @@ class TestHardFloorIsFatal:
         return node
 
     def test_executor_raises_with_hard_floor_marker(self):
-        from pipeline_core.dag_executor import _HARD_FLOOR_PREFIX
+        from loom_core.dag_executor import _HARD_FLOOR_PREFIX
         ex = _make_executor()
         ex.bus.request.return_value = {
             "status": "fail", "hard_floor": True, "needs_regenerate": False,
@@ -183,7 +183,7 @@ class TestRegenerationTargetIsDeclared:
     """旧实现把目标写死成 writer/quality_gate，等于引擎替领域做决定。"""
 
     def test_missing_target_fails_loudly(self):
-        from pipeline_core.base_agent import AgentMeta
+        from loom_core.base_agent import AgentMeta
 
         ex = _make_executor()
         meta = AgentMeta(name="gatey", version="1.0",

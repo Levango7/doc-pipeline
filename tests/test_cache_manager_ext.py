@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-import pipeline_core.cache_manager as cm_mod
-from pipeline_core.cache_manager import CacheManager, CacheStats, get_cache
+import loom_core.cache_manager as cm_mod
+from loom_core.cache_manager import CacheManager, CacheStats, get_cache
 
 # ─── CacheStats ──────────────────────────────
 
@@ -183,7 +183,7 @@ class TestFileSizeCache:
                             cache_dir=str(tmp_path))
 
     def test_size_cached_no_repeated_glob(self, tmp_path, monkeypatch):
-        import pipeline_core.cache_manager as cm_mod
+        import loom_core.cache_manager as cm_mod
         cm = self._make(tmp_path)
         cm.set("a", 1)
         glob_calls = []

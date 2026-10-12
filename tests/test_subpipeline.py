@@ -6,8 +6,8 @@
 """
 import pytest
 
-from pipeline_core.naming import agent_of
-from pipeline_core.scheduler import ExecutionPlan, LockfileMismatchError, Scheduler
+from loom_core.naming import agent_of
+from loom_core.scheduler import ExecutionPlan, LockfileMismatchError, Scheduler
 
 PROJECT = __import__("pathlib").Path(__file__).resolve().parent.parent
 
@@ -442,7 +442,7 @@ class TestInlinedNodesKeepAgentCapabilities:
         from unittest.mock import patch
 
         sys.path.insert(0, str(PROJECT))
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         _write(tmp_path, "sub_cap", tail_agents, [[a["name"]] for a in tail_agents])
         _write(tmp_path, "cap_parent", [
@@ -476,7 +476,7 @@ class TestInlinedNodesKeepAgentCapabilities:
         from pathlib import Path
         from unittest.mock import patch
 
-        from pipeline_core.dag_executor import DAGExecutor
+        from loom_core.dag_executor import DAGExecutor
 
         seen = {}
         real = DAGExecutor._record_task_output
@@ -513,7 +513,7 @@ class TestInlinedNodesKeepAgentCapabilities:
     def test_inlined_quality_gate_still_enters_regeneration(self, tmp_path):
         from unittest.mock import patch
 
-        from pipeline_core.dag_executor import DAGExecutor
+        from loom_core.dag_executor import DAGExecutor
 
         calls = []
 
@@ -549,7 +549,7 @@ class TestInputsDriveRuntimeBranch:
         from unittest.mock import patch
 
         sys.path.insert(0, str(PROJECT))
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         _write(tmp_path, "sub_gate", [
             {"name": "checker", "dependencies": [],
@@ -606,7 +606,7 @@ class TestRuntimeIdentity:
         from unittest.mock import patch
 
         sys.path.insert(0, str(PROJECT))
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         _write(tmp_path, "sub_probe", [
             {"name": "layout", "dependencies": []},
@@ -675,7 +675,7 @@ class TestPoolMergeIsAliasAware:
     """池化结果归并必须按家族分组，否则内联节点会被混进父图同名节点。"""
 
     def _task(self):
-        from pipeline_core.pipeline import PipelineTask
+        from loom_core.pipeline import PipelineTask
 
         task = PipelineTask(id="t-merge", pipeline_name="p", input_file="", config={})
         for key, n in (("researcher_pool_0", 1), ("researcher_pool_1", 2),
@@ -684,7 +684,7 @@ class TestPoolMergeIsAliasAware:
         return task
 
     def test_parent_and_inlined_pools_merge_separately(self, tmp_path):
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         orch = PipelineOrchestrator(agents_dir=str(PROJECT / "agents"),
                                     checkpoint_dir=str(tmp_path / "ck"))
@@ -712,8 +712,8 @@ class TestAgentNameLookupsStaySafe:
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        from pipeline_core.dag_executor import DAGExecutor
-        from pipeline_core.registry import AgentMeta
+        from loom_core.dag_executor import DAGExecutor
+        from loom_core.registry import AgentMeta
 
         src = tmp_path / "in.md"
         src.write_text("# 主题\n\n为什么要内联子流水线？\n", encoding="utf-8")
@@ -776,7 +776,7 @@ class TestExpandedPlanShape:
         assert plan.node_count == 3
         # 展开后每个节点都能被 agent_of 还原成真实 Agent 名
         # （清册含物理 pack：writer 在 pack-docgen 拆出后不在核心 agents/）
-        from pipeline_core.pack_manifest import agent_inventory
+        from loom_core.pack_manifest import agent_inventory
         agents, _missing = agent_inventory()
         for lvl in plan.levels:
             for n in lvl:

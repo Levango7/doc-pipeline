@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# 共享路径（先于 pipeline_core 导入定义，供下面的状态隔离使用）
+# 共享路径（先于 loom_core 导入定义，供下面的状态隔离使用）
 HERE = Path(__file__).parent
 PROJECT = HERE.parent
 AGENTS_DIR = str(PROJECT / "agents")
@@ -25,7 +25,7 @@ OUTPUT_DIR = PROJECT / ".test_outputs"
 #      会命中历史记录 → 节点静默空转却逐个记 success；
 #   2. versions/ 积了 260+ 个指向 .pytest_tmp 的死条目，
 #      /api/versions/stats 因此慢到 4.9s（客户端 5s 超时就翻成测试失败）。
-# 这些默认值在**导入期**解析，所以环境变量必须在 import pipeline_core 之前设置。
+# 这些默认值在**导入期**解析，所以环境变量必须在 import loom_core 之前设置。
 _STATE_DIR = PROJECT / ".test_state" / f"pid{os.getpid()}"
 _STATE_DIR.mkdir(parents=True, exist_ok=True)
 os.environ["LOOM_STATE_DIR"] = str(_STATE_DIR)
@@ -33,11 +33,11 @@ os.environ["LOOM_VERSIONS_DIR"] = str(_STATE_DIR / "versions")
 
 import contextlib  # noqa: E402
 
-from pipeline_core import PipelineOrchestrator  # noqa: E402
-from pipeline_core.circuit_breaker import CircuitBreakerRegistry  # noqa: E402
-from pipeline_core.message_bus_v3 import MessageBus  # noqa: E402
-from pipeline_core.rate_limiter import RateLimiterRegistry  # noqa: E402
-from pipeline_core.scheduler import Scheduler  # noqa: E402
+from loom_core import PipelineOrchestrator  # noqa: E402
+from loom_core.circuit_breaker import CircuitBreakerRegistry  # noqa: E402
+from loom_core.message_bus_v3 import MessageBus  # noqa: E402
+from loom_core.rate_limiter import RateLimiterRegistry  # noqa: E402
+from loom_core.scheduler import Scheduler  # noqa: E402
 
 # ── 覆盖 pytest 内置 tmp_path，避免 Windows Temp 权限问题 ──
 _LOCAL_TMP = PROJECT / ".pytest_tmp"

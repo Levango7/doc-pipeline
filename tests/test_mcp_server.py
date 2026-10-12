@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pipeline_core.mcp_server import PROTOCOL_VERSION, SERVER_NAME, MCPServer
+from loom_core.mcp_server import PROTOCOL_VERSION, SERVER_NAME, MCPServer
 
 
 @pytest.fixture
@@ -39,17 +39,17 @@ class TestMCPServer:
         assert resp["result"]["protocolVersion"] == "2025-06-18"
 
     def test_generate_document_uses_new_task_id(self):
-        """task_id 统一由 pipeline_core.ids.new_task_id 生成（16 位 hex）"""
+        """task_id 统一由 loom_core.ids.new_task_id 生成（16 位 hex）"""
         from types import SimpleNamespace
 
-        from pipeline_core.ids import new_task_id
+        from loom_core.ids import new_task_id
         task = SimpleNamespace(id="tid", status=SimpleNamespace(value="running"),
                                pipeline_name="docgen", result={}, error=None)
         orch = MagicMock()
         orch.resolve_pipeline_name.return_value = ("docgen", "")
         orch.run_plan.return_value = task
         s = MCPServer(orch=orch)
-        with patch("pipeline_core.mcp_server.new_task_id",
+        with patch("loom_core.mcp_server.new_task_id",
                    side_effect=new_task_id) as mock_gen:
             s._tool_generate_document(11, {"query": "t", "pipeline": "docgen"})
             mock_gen.assert_called_once()
@@ -169,7 +169,7 @@ class TestRunWorkflowTool:
 
     def test_object_inputs_serialized_into_input_doc(self):
         s, orch = self._server()
-        with patch("pipeline_core.mcp_server.threading.Thread"):
+        with patch("loom_core.mcp_server.threading.Thread"):
             resp = s._handle_request({
                 "jsonrpc": "2.0", "id": 33, "method": "tools/call",
                 "params": {"name": "run_workflow", "arguments": {
@@ -189,7 +189,7 @@ class TestRunWorkflowTool:
 
     def test_string_inputs_passthrough(self):
         s, orch = self._server("kb-docgen")
-        with patch("pipeline_core.mcp_server.threading.Thread"):
+        with patch("loom_core.mcp_server.threading.Thread"):
             resp = s._handle_request({
                 "jsonrpc": "2.0", "id": 34, "method": "tools/call",
                 "params": {"name": "run_workflow", "arguments": {
@@ -203,7 +203,7 @@ class TestRunWorkflowTool:
         input_file.unlink(missing_ok=True)
 
     def test_render_inputs_doc_shapes(self):
-        from pipeline_core.mcp_server import _render_inputs_doc
+        from loom_core.mcp_server import _render_inputs_doc
         assert _render_inputs_doc("wf", {}) == "# wf\n"
         assert _render_inputs_doc("wf", "") == "# wf\n"
         doc = _render_inputs_doc("wf", {"n": 3, "nested": {"a": 1}, "items": [1, "x"]})
@@ -247,7 +247,7 @@ class TestMCPOverRealStdio:
         assert "Doc-Pipeline" not in "\n".join(frames), "banner 又回到 stdout 了"
 
     def test_server_info_reports_real_version(self, tmp_path):
-        from pipeline_core import __version__
+        from loom_core import __version__
         frames = self._roundtrip(tmp_path)
         info = json.loads(frames[0])["result"]["serverInfo"]
         assert info["name"] == SERVER_NAME

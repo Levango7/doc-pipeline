@@ -273,7 +273,7 @@ class DAGExecutor:
                             base_agent: str, pool_idx: int, pool_size: int) -> dict:
         """构建节点执行的消息载荷（上游产物 + 配置 + 查询词）。
 
-        上游传什么由各自 Agent 的 PRODUCES 声明决定（见 pipeline_core.artifacts），
+        上游传什么由各自 Agent 的 PRODUCES 声明决定（见 loom_core.artifacts），
         引擎不再持有 `articles` / `content` / `spec` 这类领域键名，也不再靠
         一份写死的 agent 名单决定"谁的内容更新"——顺序来自 DAG 层级。
         """

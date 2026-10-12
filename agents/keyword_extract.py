@@ -11,7 +11,7 @@ stdlib, offline, byte-for-byte reproducible.
 import re
 from collections import Counter
 
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 
 SANDBOX_TRUSTED = True
 AGENT_NAME = "keyword_extract"

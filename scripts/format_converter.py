@@ -197,7 +197,7 @@ class FormatConverter:
 
     def markdown_to_html(self, md_path: str, html_path: str = None,
                          title: str = "文档", css: str = None) -> str:
-        """Markdown → HTML（转换逻辑在 pipeline_core.html_export，此处只做文件 IO）
+        """Markdown → HTML（转换逻辑在 loom_core.html_export，此处只做文件 IO）
 
         Args:
             md_path: Markdown 文件路径
@@ -211,7 +211,7 @@ class FormatConverter:
         # 这里保留既有文件入出 API；run.py --export 与 renderer html 后端共用同一实现。
         md_content = Path(md_path).read_text(encoding="utf-8")
 
-        from pipeline_core.html_export import markdown_to_html_string
+        from loom_core.html_export import markdown_to_html_string
         html = markdown_to_html_string(md_content, title=title, css=css)
 
         if html_path:

@@ -56,7 +56,7 @@ class TestPackagingDeclaration:
 
     def test_bootstrap_does_not_name_pack_specific_files(self):
         """最核心的解绑判据：自检不许再点名某个 pack 的文件。"""
-        src = (PROJECT / "pipeline_core" / "bootstrap.py").read_text(encoding="utf-8")
+        src = (PROJECT / "loom_core" / "bootstrap.py").read_text(encoding="utf-8")
         for lineno, line in enumerate(src.splitlines(), 1):
             for forbidden in ("agents/writer.py", "agents/researcher.py",
                               "pipelines/docgen.yaml"):
@@ -123,8 +123,8 @@ class TestInstalledSelfCheck:
         neutral.mkdir()
         probe = (
             "import json\n"
-            "from pipeline_core.bootstrap import run_startup_check\n"
-            "from pipeline_core.pack_manifest import stats\n"
+            "from loom_core.bootstrap import run_startup_check\n"
+            "from loom_core.pack_manifest import stats\n"
             "report = run_startup_check()\n"
             "print('PROBE ' + json.dumps(\n"
             "    {'has_errors': report.has_errors,\n"

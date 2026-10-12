@@ -66,12 +66,12 @@ SPEC_SELF = {"/api/openapi.json"}
 
 
 def _spec_paths() -> dict:
-    from pipeline_core.openapi_spec import generate_spec
+    from loom_core.openapi_spec import generate_spec
     return generate_spec().get("paths", {})
 
 
 def _served_by_admin(route: str) -> bool:
-    src = (ROOT / "pipeline_core" / "admin_api.py").read_text(encoding="utf-8")
+    src = (ROOT / "loom_core" / "admin_api.py").read_text(encoding="utf-8")
     return f'"{route}"' in src or f"'{route}'" in src
 
 
@@ -119,7 +119,7 @@ def test_tasks_is_get_only_and_docs_do_not_teach_post_tasks():
 # ─── 3. LLM 供应商条数从代码取，不许文档写死 ─────────────────
 
 def _provider_defs_length() -> int:
-    tree = ast.parse((ROOT / "pipeline_core" / "llm_router.py").read_text(encoding="utf-8"))
+    tree = ast.parse((ROOT / "loom_core" / "llm_router.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for tgt in node.targets:
@@ -130,7 +130,7 @@ def _provider_defs_length() -> int:
 
 
 def test_llm_router_docstring_matches_provider_table():
-    src = (ROOT / "pipeline_core" / "llm_router.py").read_text(encoding="utf-8")
+    src = (ROOT / "loom_core" / "llm_router.py").read_text(encoding="utf-8")
     n = _provider_defs_length()
     docstring = ast.get_docstring(ast.parse(src)) or ""
     m = re.search(r"供应商定义表\s*(\d+)\s*家", docstring)

@@ -1,7 +1,7 @@
 """测试 BaseAgent.on_stop() 生命周期钩子 —— aiohttp session 生命周期管理"""
 
-from pipeline_core.base_agent import BaseAgent, Message
-from pipeline_core.registry import AgentMeta, Registry
+from loom_core.base_agent import BaseAgent, Message
+from loom_core.registry import AgentMeta, Registry
 
 
 class _MockAgent(BaseAgent):
@@ -91,7 +91,7 @@ class TestFetcherOnStop:
     def test_fetcher_on_stop_no_session(self, tmp_path):
         """无 session 时 on_stop 不报错"""
         from agents.fetcher import AGENT_DESC, AGENT_PRIORITY, AGENT_VERSION, FetcherAgent
-        from pipeline_core.base_agent import AgentMeta
+        from loom_core.base_agent import AgentMeta
 
         meta = AgentMeta(name="fetcher", version=AGENT_VERSION, description=AGENT_DESC,
                          priority=AGENT_PRIORITY)

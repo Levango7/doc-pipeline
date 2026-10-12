@@ -7,9 +7,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import pipeline_core.cache_manager as cm_module
-from pipeline_core.base_agent import AgentMeta, BaseAgent
-from pipeline_core.message_bus_v3 import Message, MessageType
+import loom_core.cache_manager as cm_module
+from loom_core.base_agent import AgentMeta, BaseAgent
+from loom_core.message_bus_v3 import Message, MessageType
 
 
 class _ProbeAgent(BaseAgent):

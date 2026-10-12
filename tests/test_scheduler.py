@@ -184,7 +184,7 @@ class TestSchedulerFromDict:
 
 # ─── 流水线名解析（外壳不再内置默认产品名）─────────────────
 
-from pipeline_core.scheduler import installed_pipelines, resolve_pipeline_name  # noqa: E402
+from loom_core.scheduler import installed_pipelines, resolve_pipeline_name  # noqa: E402
 
 
 class TestResolvePipelineName:
@@ -228,7 +228,7 @@ class TestYamlNameTrap:
     """
 
     def _build(self, name_value):
-        from pipeline_core.scheduler import Scheduler
+        from loom_core.scheduler import Scheduler
 
         sched = Scheduler(pipeline_dir="pipelines")
         raw = {

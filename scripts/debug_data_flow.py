@@ -5,8 +5,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from pipeline_core import PipelineOrchestrator
-from pipeline_core.scheduler import Scheduler
+from loom_core import PipelineOrchestrator
+from loom_core.scheduler import Scheduler
 
 o = PipelineOrchestrator(checkpoint_dir="checkpoints")
 o.register_agents()

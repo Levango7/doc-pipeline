@@ -715,7 +715,7 @@ def render_html(markdown: str, output_path: str | Path,
 
     与 docx/pdf/xlsx/pptx 不同：html 不依赖任何可选包，永远可用。
     """
-    from pipeline_core.html_export import markdown_to_html_string
+    from loom_core.html_export import markdown_to_html_string
 
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)

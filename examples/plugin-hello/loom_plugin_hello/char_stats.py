@@ -4,7 +4,7 @@
 本文件刻意保持"干净"——不碰加载器黑名单里的调用，因此**不需要**（也不应该）
 声明 `SANDBOX_TRUSTED`：那个声明只留给随产品发布、由本仓维护的内置件。
 """
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 
 AGENT_NAME = "char_stats"
 AGENT_VERSION = "0.1.0"

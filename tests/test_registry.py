@@ -2,7 +2,7 @@
 
 import pytest
 
-from pipeline_core.registry import AgentMeta, AgentStatus, Registry
+from loom_core.registry import AgentMeta, AgentStatus, Registry
 
 
 class _FakeAgent:

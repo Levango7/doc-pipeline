@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from pipeline_core.alert_manager import alert, clear_alerts, get_alerts
+from loom_core.alert_manager import alert, clear_alerts, get_alerts
 
 
 @pytest.fixture(autouse=True)

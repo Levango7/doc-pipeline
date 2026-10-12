@@ -6,7 +6,7 @@ layout …），但大量真实工作流只需要"把上一步的产物挑几个
 
 设计约束（三条，都是被咬过之后定的）：
 
-1. **没有表达式语言**。路径解析复用 `pipeline_core.conditions` 里 `when` 用的同一套
+1. **没有表达式语言**。路径解析复用 `loom_core.conditions` 里 `when` 用的同一套
    点号取值器，过滤条件就是同一条 `when` 语言。引擎里绝不对数据执行 `eval`/`format`
    拼接的代码字符串——那等于把工作流的输入数据升级成代码。
 2. **取不到路径就报错，不返回空**。空字符串会渲染出"看起来正常"的产物，缺字段这种
@@ -29,10 +29,10 @@ layout …），但大量真实工作流只需要"把上一步的产物挑几个
 
 import re
 
-from pipeline_core.base_agent import BaseAgent, Message
-from pipeline_core.conditions import UNRESOLVED, ConditionError, resolve
-from pipeline_core.conditions import evaluate as evaluate_condition
-from pipeline_core.conditions import validate as validate_condition
+from loom_core.base_agent import BaseAgent, Message
+from loom_core.conditions import UNRESOLVED, ConditionError, resolve
+from loom_core.conditions import evaluate as evaluate_condition
+from loom_core.conditions import validate as validate_condition
 
 AGENT_NAME = "transform"
 AGENT_VERSION = "1.0"

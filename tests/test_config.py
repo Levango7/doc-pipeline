@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline_core.config import ConfigCenter
+from loom_core.config import ConfigCenter
 
 
 @pytest.fixture()

@@ -67,11 +67,12 @@ doc-pipeline = "run:main"      # 旧入口别名，过渡期保留
 
 [tool.setuptools]
 packages = [
-    "pipeline_core", "loom_doc", "agents", "scripts", "artesian",
+    "loom_core", "loom_doc", "agents", "scripts", "artesian",
     "packs", "packs.docgen", "packs.docgen.agents",
-    # 兼容 shim（spec §7.1 命名收官）：旧名 docpipeline 以转发别名保留，
-    # 装进 wheel 才能让旧 import 在安装态也成立（MAOP 等既有消费者零改动）
-    "docpipeline",
+    # 兼容 shim（spec §7.1 命名收官）：旧名以转发别名保留，
+    # 装进 wheel 才能让旧 import 在安装态也成立（MAOP 等既有消费者零改动）。
+    # pipeline_core/__init__.py 同时是 MAOP 探根的对外契约文件。
+    "docpipeline", "pipeline_core",
 ]
 py-modules = ["run"]
 
@@ -95,7 +96,7 @@ artesian = ["py.typed"]
 ]
 
 [tool.setuptools.data-files]
-# 装到 <prefix>/pipelines。解析顺序见 pipeline_core.paths：
+# 装到 <prefix>/pipelines。解析顺序见 loom_core.paths：
 # 源码树（仓库根/pipelines）优先，其次安装态这一份，env 可覆盖。
 # 只承载核心散装流水线；docgen pack 的 YAML/quality/prompts 随
 # `packs.docgen` package-data 走（见上）。2026-10-11 pack-docgen 拆出后
@@ -119,7 +120,7 @@ markers = [
 # 覆盖率只计产品源码：tests/scripts/benchmark 不入门禁
 # （--cov=. 会把 tests/ 自身的近 100% 计入，虚高到 ~79%，无门禁价值）
 relative_files = true
-include = ["pipeline_core/*", "loom_doc/*", "agents/*", "packs/*", "run.py"]
+include = ["loom_core/*", "loom_doc/*", "agents/*", "packs/*", "run.py"]
 omit = ["tests/*", "scripts/*", "benchmark.py"]
 
 [tool.coverage.report]

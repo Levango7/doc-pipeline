@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 import requests
 
 from artesian.url_guard import validate_public_http_url
-from pipeline_core.base_agent import BaseAgent, Message
+from loom_core.base_agent import BaseAgent, Message
 
 AGENT_NAME = "http_request"
 AGENT_VERSION = "1.0"

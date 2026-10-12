@@ -18,14 +18,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core.circuit_breaker import CircuitBreakerRegistry
-from pipeline_core.dag_executor import (
+from loom_core.circuit_breaker import CircuitBreakerRegistry
+from loom_core.dag_executor import (
     DAGExecutor,
     _build_child_context,
     _execute_node_worker,
 )
-from pipeline_core.observability import get_metrics
-from pipeline_core.rate_limiter import RateLimiterRegistry
+from loom_core.observability import get_metrics
+from loom_core.rate_limiter import RateLimiterRegistry
 
 # ── 1. pickle 往返 ──────────────────────────────
 
@@ -85,7 +85,7 @@ class TestWorkerGuard:
 PROBE_AGENT = '''"""子进程上下文验证用探针 Agent（由测试动态生成）"""
 import os
 
-from pipeline_core.base_agent import BaseAgent
+from loom_core.base_agent import BaseAgent
 
 AGENT_NAME = "proc_probe"
 AGENT_VERSION = "1.0"
@@ -157,7 +157,7 @@ class TestRealSubprocessExecution:
         """
         _, stripped, input_file = probe_env
 
-        from pipeline_core.pipeline import PipelineTask, TaskNode
+        from loom_core.pipeline import PipelineTask, TaskNode
 
         task = PipelineTask(id="proc_test", pipeline_name="proc_test",
                             input_file=input_file, config={})

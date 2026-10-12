@@ -1,6 +1,6 @@
 """P0-2 临时文件清理测试：动态遍历所有已注册 agent（不再硬编码 fetcher）。"""
 
-from pipeline_core.pipeline import PipelineOrchestrator, PipelineTask
+from loom_core.pipeline import PipelineOrchestrator, PipelineTask
 
 
 class _RecordingAgent:

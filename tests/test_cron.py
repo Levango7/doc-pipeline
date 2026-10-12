@@ -1,4 +1,4 @@
-"""cron 解析与下次触发计算（pipeline_core/cron.py）测试。
+"""cron 解析与下次触发计算（loom_core/cron.py）测试。
 
 判据都写成"具体时刻"的断言——cron 的坑集中在边界（日/周 OR 语义、月/年进位、
 闰年 2 月 29、永不匹配的 2 月 30），这些必须用 datetime 逐个钉死，不靠眼力。
@@ -7,7 +7,7 @@ from datetime import datetime
 
 import pytest
 
-from pipeline_core.cron import CronError, describe, next_fire, parse_cron
+from loom_core.cron import CronError, describe, next_fire, parse_cron
 
 
 class TestParseCron:

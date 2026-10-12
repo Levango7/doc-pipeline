@@ -1,4 +1,4 @@
-"""pack manifest judging criteria -- the derived measure in pipeline_core.pack_manifest.
+"""pack manifest judging criteria -- the derived measure in loom_core.pack_manifest.
 
 The manifest is the engine's only door to "what is installed"; --check reports
 from it. Three derivations each tripped a real bug, pinned one by one:
@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from pipeline_core import pack_manifest as pm
-from pipeline_core.scheduler import installed_pipelines
+from loom_core import pack_manifest as pm
+from loom_core.scheduler import installed_pipelines
 
 PROJECT = Path(__file__).resolve().parent.parent
 
@@ -103,7 +103,7 @@ class TestAgentCounting:
 
     def test_ast_parse_is_used_not_import(self):
         """派生只读 AST，不 import agent 代码（导入会拉起重依赖、也可能有副作用）。"""
-        src = (PROJECT / "pipeline_core" / "pack_manifest.py").read_text(encoding="utf-8")
+        src = (PROJECT / "loom_core" / "pack_manifest.py").read_text(encoding="utf-8")
         assert "ast.parse" in src
 
 

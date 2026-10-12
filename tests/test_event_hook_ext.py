@@ -14,8 +14,8 @@ import types
 
 import pytest
 
-import pipeline_core.event_hook as eh
-from pipeline_core.event_hook import (
+import loom_core.event_hook as eh
+from loom_core.event_hook import (
     EventHookManager,
     Hook,
     _safe_enqueue,

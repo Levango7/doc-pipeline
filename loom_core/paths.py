@@ -12,9 +12,9 @@ product-spec P0 判据 1（干净 venv 装完 `--check` 不红）钉住这个方
 现在统一从这里解析，并按顺序尝试：
   1. 环境变量 `LOOM_ROOT`（旧名 `DOC_PIPELINE_ROOT` 过渡期仍可读）——
      部署时显式指定（MAOP 侧按 spec §7.3 约定用的就是旧名，双读规则见
-     `pipeline_core.envs`）；
+     `loom_core.envs`）；
   2. 安装位置：`pitlines` 作为包数据被打进 wheel 时，它在
-     site-packages/pipeline_core/../pipelines（即 `pipeline_core` 的邻目录）。
+     site-packages/loom_core/../pipelines（即 `loom_core` 的邻目录）。
 
 开发树下两种都命中同一处（源码目录），行为不变。
 """
@@ -26,7 +26,7 @@ from pathlib import Path
 from .envs import LEGACY_PREFIX, PREFIX, read
 
 #: 部署期显式指定项目根（双读：LOOM_ROOT 优先，DOC_PIPELINE_ROOT 回退——
-#: MAOP 的 doc_pipeline_adapter 用的正是旧名，双读规则见 pipeline_core.envs）
+#: MAOP 的 doc_pipeline_adapter 用的正是旧名，双读规则见 loom_core.envs）
 ROOT_ENV = f"{PREFIX}ROOT"
 LEGACY_ROOT_ENV = f"{LEGACY_PREFIX}ROOT"
 
@@ -63,7 +63,7 @@ def pipelines_dir() -> Path:
 
     解析顺序（安装态落点是实测出来的，2026-10-10）：
       1. env `LOOM_ROOT`（旧名 `DOC_PIPELINE_ROOT` 回退可读）；
-      2. 源码树：`pipeline_core` 的邻目录（开发时就是仓库根）；
+      2. 源码树：`loom_core` 的邻目录（开发时就是仓库根）；
       3. 安装态 `sys.prefix/pipelines`：`[tool.setuptools.data-files]` 的真
          落点——wheel 把 data-files 装到 venv 根，不是 site-packages。
     都不命中时退回源码树路径，让调用方自己决定怎么报（宁可报"没有"，

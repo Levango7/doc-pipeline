@@ -23,8 +23,8 @@ class TestFoldedInAgents:
     """内置化后的五支：与其它内置件同路径发现/注册/执行。"""
 
     def test_discovered_via_builtin_glob(self):
-        from pipeline_core.agent_loader import AgentLoader
-        from pipeline_core.registry import Registry
+        from loom_core.agent_loader import AgentLoader
+        from loom_core.registry import Registry
 
         loader = AgentLoader(Registry(), None, str(PROJECT / "agents"))
         names = loader.discover()
@@ -34,9 +34,9 @@ class TestFoldedInAgents:
     def test_registered_and_executable(self):
         from unittest.mock import MagicMock
 
-        from pipeline_core.agent_loader import AgentLoader
-        from pipeline_core.base_agent import Message
-        from pipeline_core.registry import Registry
+        from loom_core.agent_loader import AgentLoader
+        from loom_core.base_agent import Message
+        from loom_core.registry import Registry
 
         loader = AgentLoader(Registry(), MagicMock(), str(PROJECT / "agents"))
         loaded = loader.register(FOLDED_IN)
@@ -53,7 +53,7 @@ class TestFoldedInAgents:
             assert (result or {}).get("status") == "ok", f"{agent} 执行失败"
 
     def test_declares_sandbox_trusted_like_other_builtins(self):
-        from pipeline_core.agent_loader import declares_sandbox_trust
+        from loom_core.agent_loader import declares_sandbox_trust
 
         for agent in FOLDED_IN:
             assert declares_sandbox_trust(PROJECT / "agents" / f"{agent}.py"), (
@@ -61,8 +61,8 @@ class TestFoldedInAgents:
 
     def test_no_name_clash_among_agents(self):
         """内置 AGENT_NAME 两两不重（并入时最容易出的错）。"""
-        from pipeline_core.agent_loader import AgentLoader
-        from pipeline_core.registry import Registry
+        from loom_core.agent_loader import AgentLoader
+        from loom_core.registry import Registry
 
         loader = AgentLoader(Registry(), None, str(PROJECT / "agents"))
         names = loader.discover()

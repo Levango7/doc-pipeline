@@ -16,8 +16,8 @@ import json
 import logging
 from pathlib import Path
 
+from loom_core.base_agent import AgentStatus, BaseAgent, Message
 from loom_doc import ingest as ingest_core
-from pipeline_core.base_agent import AgentStatus, BaseAgent, Message
 
 logger = logging.getLogger("agent.ingest")
 
@@ -27,7 +27,7 @@ AGENT_NAME = "ingest"
 SANDBOX_TRUSTED = True
 
 # 配置契约：类型名用字符串写，好让 Scheduler 用 AST 读取而不必执行本模块
-# （类型名表见 pipeline_core/config_schema.py）
+# （类型名表见 loom_core/config_schema.py）
 CONFIG_SCHEMA = {
     "output_dir": ('str', 'output/ingested'),
     "ocr_enabled": ('bool', True),
@@ -42,7 +42,7 @@ AGENT_PRIORITY = 10
 # docgen 因此全线拿到空 results（见 tests/test_kb_pipeline_wiring.py::TestBusAddressing）。
 INPUT_TOPICS = ["ingest.input", "ingest.files"]
 OUTPUT_TOPICS = ["ingest.done", "ingest.failed"]
-# 产物契约（引擎按此声明组装下游载荷，见 pipeline_core/artifacts.py）：摄入产物由 knowledge_base 经 dependencies_results 读取
+# 产物契约（引擎按此声明组装下游载荷，见 loom_core/artifacts.py）：摄入产物由 knowledge_base 经 dependencies_results 读取
 PRODUCES: dict = {}
 CONSUMES: list = []
 DEPENDENCIES: list[str] = []

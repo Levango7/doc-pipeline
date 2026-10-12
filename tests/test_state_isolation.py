@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core import state_paths  # noqa: E402
+from loom_core import state_paths  # noqa: E402
 
 PROJECT = Path(__file__).parent.parent
 
@@ -43,10 +43,10 @@ def test_versions_root_default_and_override(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("module_name,cls_name,db", [
-    ("pipeline_core.message_store", "PersistentStore", "message_bus.db"),
-    ("pipeline_core.task_queue", "TaskQueue", "tasks.db"),
-    ("pipeline_core.cost_tracker", "CostTracker", "cost.db"),
-    ("pipeline_core.quality_feedback", "QualityFeedback", "quality.db"),
+    ("loom_core.message_store", "PersistentStore", "message_bus.db"),
+    ("loom_core.task_queue", "TaskQueue", "tasks.db"),
+    ("loom_core.cost_tracker", "CostTracker", "cost.db"),
+    ("loom_core.quality_feedback", "QualityFeedback", "quality.db"),
 ])
 def test_stores_honor_env_without_explicit_path(module_name, cls_name, db,
                                                  monkeypatch, tmp_path):
@@ -64,7 +64,7 @@ def test_stores_honor_env_without_explicit_path(module_name, cls_name, db,
 
 
 def test_version_manager_honors_env(monkeypatch, tmp_path):
-    from pipeline_core.version_manager import VersionManager
+    from loom_core.version_manager import VersionManager
     monkeypatch.setenv(state_paths.VERSIONS_DIR_ENV, str(tmp_path / "ver"))
     vm = VersionManager()
     assert str(vm._root) == str(tmp_path / "ver")

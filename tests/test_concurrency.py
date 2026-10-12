@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from pipeline_core.message_bus_v3 import MessageBus
+from loom_core.message_bus_v3 import MessageBus
 
 # ════════════════════════════════════════════════
 # P2-A: 总线 EVENT 背压
@@ -209,10 +209,10 @@ class TestOrchestratorConcurrency:
         """5 个并发流水线任务 → 全部完成"""
         import tempfile
 
-        from pipeline_core import PipelineOrchestrator
-        from pipeline_core.base_agent import AgentMeta, BaseAgent
-        from pipeline_core.pipeline import TaskStatus
-        from pipeline_core.scheduler import ExecutionPlan
+        from loom_core import PipelineOrchestrator
+        from loom_core.base_agent import AgentMeta, BaseAgent
+        from loom_core.pipeline import TaskStatus
+        from loom_core.scheduler import ExecutionPlan
 
         bus = MessageBus(enable_persistence=False)
         orch = PipelineOrchestrator(
@@ -234,7 +234,7 @@ class TestOrchestratorConcurrency:
         orch.registry.register(fast.meta, fast)
         bus.subscribe("fast.input", lambda m: fast.handle(m))
 
-        from pipeline_core.scheduler import AgentConfig, ExecutionNode
+        from loom_core.scheduler import AgentConfig, ExecutionNode
 
         acfg = AgentConfig(
             name="fast", config={}, circuit_breaker={},
@@ -285,7 +285,7 @@ class TestSQLiteConcurrency:
 
     def test_sqlite_multithread_writes(self):
         """10 线程并发写入，验证无死锁、记录数正确"""
-        from pipeline_core.message_bus_v3 import PersistentStore
+        from loom_core.message_bus_v3 import PersistentStore
 
         store = PersistentStore(db_path="tests/.test_store.db")
 

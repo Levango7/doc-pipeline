@@ -6,8 +6,8 @@ PAUSED/DONE 等其他状态不动。
 """
 import threading
 
-from pipeline_core.pipeline import PipelineOrchestrator, PipelineTask, TaskStatus
-from pipeline_core.task_queue import TaskQueue
+from loom_core.pipeline import PipelineOrchestrator, PipelineTask, TaskStatus
+from loom_core.task_queue import TaskQueue
 
 
 def _make_orch(tmp_path) -> PipelineOrchestrator:

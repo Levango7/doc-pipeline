@@ -21,11 +21,11 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from pipeline_core.artifacts import ENGINE_OWNED_KEYS, merge_artifact
-from pipeline_core.dag_executor import DAGExecutor
-from pipeline_core.pipeline import PipelineTask, TaskNode
-from pipeline_core.registry import AgentMeta
-from pipeline_core.scheduler import (
+from loom_core.artifacts import ENGINE_OWNED_KEYS, merge_artifact
+from loom_core.dag_executor import DAGExecutor
+from loom_core.pipeline import PipelineTask, TaskNode
+from loom_core.registry import AgentMeta
+from loom_core.scheduler import (
     DEFAULT_FOREACH_MAX_ITEMS,
     AgentConfig,
     ExecutionNode,
@@ -126,7 +126,7 @@ class TestParseTimeContract:
 
         这条断言是防回退的：将来谁把调用点删掉、助手又变成死代码，这里先红。
         """
-        src = (PROJECT / "pipeline_core" / "scheduler.py").read_text(encoding="utf-8")
+        src = (PROJECT / "loom_core" / "scheduler.py").read_text(encoding="utf-8")
         tree = ast.parse(src)
         called = [n for n in ast.walk(tree)
                   if isinstance(n, ast.Call) and
@@ -484,7 +484,7 @@ class TestTransformConsumesTheEngineTriple:
                               message_bus=MagicMock(), registry=MagicMock())
 
     def _msg(self, payload):
-        from pipeline_core.base_agent import Message
+        from loom_core.base_agent import Message
         return Message(topic="transform.input", payload=payload, from_agent="test")
 
     def test_item_index_count_render_in_a_real_template(self):
@@ -545,7 +545,7 @@ class TestApiDigestEndToEnd:
             ensure_ascii=False).encode("utf-8")
 
     def _orch_and_plan(self, tmp_path, out_file):
-        from pipeline_core import PipelineOrchestrator
+        from loom_core import PipelineOrchestrator
 
         orch = PipelineOrchestrator(agents_dir=str(PROJECT / "agents"),
                                     checkpoint_dir=str(tmp_path / "ck"))

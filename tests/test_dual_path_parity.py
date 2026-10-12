@@ -16,8 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_core import PipelineOrchestrator  # noqa: E402
-from pipeline_core.scheduler import Scheduler  # noqa: E402
+from loom_core import PipelineOrchestrator  # noqa: E402
+from loom_core.scheduler import Scheduler  # noqa: E402
 
 HERE = Path(__file__).parent
 PROJECT = HERE.parent
