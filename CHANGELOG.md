@@ -35,6 +35,13 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+## [3.11.0] - 2026-10-12
+
+命名收官版：import 根包 `pipeline_core` → `loom_core`、领域包 `docpipeline` → `loom_doc`，
+插件 entry_points group 迁 `loom.agents` / `loom.packs`——spec §7.1 命名系统全量落地。
+旧名全部保留为兼容 shim（meta-path 别名、identity 保真、MAOP 零改动），属向后兼容变更；
+随包附 v3.10.0 发布门禁修复（verify_dist 嵌套包路径判定）。
+
 ### Changed（2026-10-12·续40，命名收官·第二段：import 根包 pipeline_core → loom_core）
 
 - **`pipeline_core` → `loom_core`**（spec §7.1 命名系统最后一行落地）：git mv
