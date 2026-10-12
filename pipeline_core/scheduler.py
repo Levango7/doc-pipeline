@@ -836,7 +836,7 @@ class Scheduler:
     # ── Lockfile ─────────────────────
 
     @staticmethod
-    def _node_config_hash(cfg: "AgentConfig") -> str:
+    def _node_config_hash(cfg: AgentConfig) -> str:
         """节点配置指纹（generate 与 verify 共用同一实现，防两处算漂）。
 
         审批闸门没有 agent config，其声明（message）并入指纹——审批契约改了
