@@ -77,6 +77,29 @@ def _as_foreach(value: object, who: str = "") -> dict | None:
     return {"over": over.strip(), "max_items": max_items}
 
 
+def _as_approval(value: object, who: str = "") -> dict | None:
+    """规范化/校验人工审批闸门声明：`true`（裸闸门）或 `{message: "..."}`。
+
+    解析期就把形状钉死：审批是"人读的契约"，message 类型漂移（写了个 dict）
+    会让审批人读不到该读的东西；非法形状留到运行期等于闸门形同虚设。
+    """
+    label = f"[{who}] " if who else ""
+    if value is None:
+        return None
+    if value is True:
+        return {"message": ""}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"{label}approval 必须是 true 或映射 {{message: \"...\"}}，实际: {value!r}")
+    unknown = set(value) - {"message"}
+    if unknown:
+        raise ValueError(f"{label}approval 含未知键 {sorted(unknown)}（只认 message）")
+    message = value.get("message", "")
+    if not isinstance(message, str):
+        raise ValueError(f"{label}approval.message 必须是字符串，实际: {message!r}")
+    return {"message": message.strip()}
+
+
 @dataclass
 class AgentConfig:
     """Agent 配置"""
@@ -101,6 +124,10 @@ class AgentConfig:
     inputs: dict = field(default_factory=dict)
     #: 逐项展开（`{over, max_items}`，见 `_as_foreach`）。None = 不展开，行为不变。
     foreach: dict | None = None
+    #: 人工审批闸门（`true` 或 `{message: ...}`，见 `_as_approval`）。非空时本节点
+    #: 不是 Agent：执行器推进到它所在的层级前把任务置为 PAUSED（复用暂停边界
+    #: 等待与 checkpoint），`POST /tasks/<id>/approve|reject` 放行或驳回。
+    approval: dict | None = None
 
     def __post_init__(self):
         if self.pool_size < 1:
@@ -132,6 +159,8 @@ class ExecutionNode:
     when: dict | None = None
     #: 逐项展开规格（从 AgentConfig.foreach 复制，同 `when` 的理由）
     foreach: dict | None = None
+    #: 人工审批闸门（从 AgentConfig.approval 复制，同 `when` 的理由）
+    approval: dict | None = None
     #: 本节点可见的子流水线参数：自己的默认值 + 调用方实参中它 `when` 确实会读的那些
     inputs: dict = field(default_factory=dict)
 
@@ -392,6 +421,7 @@ class Scheduler:
                 call=str(merged.get("call", "") or "").strip(),
                 inputs=_as_inputs(merged.get("inputs"), str(merged.get("name", "unknown"))),
                 foreach=_as_foreach(merged.get("foreach"), str(merged.get("name", "unknown"))),
+                approval=_as_approval(merged.get("approval"), str(merged.get("name", "unknown"))),
             )
             # 条件写法非法要在解析期炸掉：放到运行时才发现，节点会被静默跳过，
             # 流水线照样 done —— 那正是本项目一路在关的静默绿。
@@ -400,6 +430,15 @@ class Scheduler:
                     validate_condition(cfg.when)
                 except ConditionError as e:
                     raise ValueError(f"[{cfg.name}] when 条件非法: {e}") from e
+            if cfg.approval is not None:
+                # 审批闸门不是 Agent：无执行体、无逐项展开对象；config 也无处可投
+                # （没有 handle() 会读它）。配了就是幻觉，解析期拒。
+                blocked = [k for k in ("config", "call", "foreach", "pool_size", "rate_limit")
+                           if merged.get(k)]
+                if blocked:
+                    raise ValueError(
+                        f"[{cfg.name}] 是审批闸门（approval），不接受 {blocked}；"
+                        f"闸门只认 name / approval / dependencies / when / timeout")
             if cfg.call:
                 # 子流水线节点只负责"引谁"，配置属于子流水线自己。
                 # 允许 config/when 会让父子两处各有一份真相，展开后行为难以推断。
@@ -497,6 +536,7 @@ class Scheduler:
                         initial_delay=cfg.retry.get("initial_delay", 1.0),
                         when=cfg.when,
                         foreach=cfg.foreach,
+                        approval=cfg.approval,
                         # call 节点的 inputs 是"这次调用传给子流程的实参"，属于它自己；
                         # 普通节点的 inputs 是自己的默认值，被内联时由调用方覆盖。
                         inputs=(cfg.inputs if cfg.call else {**cfg.inputs, **scoped}),
@@ -606,6 +646,8 @@ class Scheduler:
                     timeout=n.timeout, max_retries=n.max_retries,
                     backoff=n.backoff, initial_delay=n.initial_delay,
                     when=n.when,
+                    # 审批闸门随内联一起带过去（改名只改身份，不改语义）
+                    approval=n.approval,
                     # 实参在 _build_plan(caller_inputs=...) 里就已经落到本层的普通
                     # 节点上了（节点默认值被调用方覆盖）。这里再并一次会把外层的键
                     # 灌进内层作用域——内层没声明的参数不该凭空出现。
@@ -794,6 +836,18 @@ class Scheduler:
     # ── Lockfile ─────────────────────
 
     @staticmethod
+    def _node_config_hash(cfg: "AgentConfig") -> str:
+        """节点配置指纹（generate 与 verify 共用同一实现，防两处算漂）。
+
+        审批闸门没有 agent config，其声明（message）并入指纹——审批契约改了
+        （换了给人读的那句话），锁应当漂移，逼一次显式 `loom lock`。
+        """
+        payload: dict = dict(cfg.config)
+        if cfg.approval is not None:
+            payload["__approval__"] = cfg.approval
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:12]
+
+    @staticmethod
     def _topology_hash(plan: ExecutionPlan) -> str:
         """拓扑指纹（W4）：锁定连线条目（node→dep 有序集合），防改 YAML 连线绕过校验
 
@@ -849,9 +903,7 @@ class Scheduler:
         for level in plan.levels:
             for node in level:
                 cfg = node.agent_config
-                config_hash = hashlib.sha256(
-                    json.dumps(cfg.config, sort_keys=True).encode()
-                ).hexdigest()[:12]
+                config_hash = self._node_config_hash(cfg)
                 lock["agents"][node.agent_name] = {  # type: ignore[index]
                     "version": cfg.version,
                     "dependencies": cfg.dependencies,
@@ -901,9 +953,7 @@ class Scheduler:
                     continue
                 if locked.get("version") != node.agent_config.version:
                     issues.append(f"[{aname}] 版本不匹配: lock={locked.get('version')}, yaml={node.agent_config.version}")
-                current_hash = hashlib.sha256(
-                    json.dumps(node.agent_config.config, sort_keys=True).encode()
-                ).hexdigest()[:12]
+                current_hash = self._node_config_hash(node.agent_config)
                 if locked.get("config_hash") != current_hash:
                     issues.append(
                         f"[{aname}] 配置漂移: config_hash 不匹配 "

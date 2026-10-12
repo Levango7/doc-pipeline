@@ -925,6 +925,30 @@ class DAGExecutor:
         step_result.result = {"status": "skipped", "reason": reason}
         self._record_step_result(task, plan, node, step_result)
 
+    def settle_approval_node(self, task, node, dag_node, plan, note: str = "") -> None:
+        """审批闸门放行：把闸门节点标记为 success 并留痕（决策进节点结果）。
+
+        闸门不是 Agent——它的"执行结果"就是那次人工决定：`status=approved`
+        连同可选的 note 一起写进 dag_node.result，下游能按
+        `upstream.<gate>.status == "approved"` 读到这次决策。
+        """
+        from .pipeline import StepResult
+
+        dag_node.result = {
+            "status": "approved",
+            "approval": dict(node.approval or {}),
+            "note": note,
+        }
+        dag_node.status = "success"
+        dag_node.skip_reason = ""
+        dag_node.error = ""
+        dag_node.finished_at = time.time()
+        self._log("info", f"审批闸门 {node.agent_name} 已放行", task_id=task.id)
+        step_result = StepResult(step_name=node.agent_name, agent_name=node.agent_name,
+                                 status="success", started_at=time.time())
+        step_result.result = dict(dag_node.result)
+        self._record_step_result(task, plan, node, step_result)
+
     def _reuse_completed_node(self, task, node, dag_node, plan) -> bool:
         """断点续传：已完成且结果非空的节点直接复用结果注入下游，不提交 bus.request"""
         if dag_node.status != "success" or not dag_node.result:

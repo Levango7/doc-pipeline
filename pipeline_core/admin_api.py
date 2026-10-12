@@ -642,6 +642,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                 elif self.path.endswith("/resume"):
                     self._handle_resume_task(task_id)
                     return
+                elif self.path.endswith("/approve"):
+                    self._handle_approve_task(task_id, body)
+                    return
+                elif self.path.endswith("/reject"):
+                    self._handle_reject_task(task_id, body)
+                    return
             elif self.path == "/api/versions/rollback":
                 try:
                     payload = json.loads(body.decode("utf-8")) if body else {}
@@ -996,6 +1002,54 @@ class AdminHandler(BaseHTTPRequestHandler):
             return self._json({"error": "task not found"}, 404)
         ok = self.orch.resume(task_id)
         self._json({"resumed": ok, "task_id": task_id})
+
+    def _handle_approve_task(self, task_id: str, body: bytes = b""):
+        """审批放行（POST /tasks/<id>/approve）：body 可选 {"note": "..."}。
+
+        只受理"审批等待中"的任务：不在等待中的批准会被 orch.approve 拒绝（409），
+        审计里不出现无中生有的决策。
+        """
+        if not self.orch:
+            return self._json({"error": "orchestrator not set"}, 500)
+        if self.orch.get_task(task_id) is None:
+            return self._json({"error": "task not found"}, 404)
+        try:
+            payload = json.loads(body.decode("utf-8")) if body else {}
+        except (ValueError, UnicodeDecodeError):
+            return self._json({"error": "请求体不是合法 JSON"}, 400)
+        note = str(payload.get("note", "") or "") if isinstance(payload, dict) else ""
+        ok, err = self.orch.approve(task_id, note=note, by=self._approval_actor())
+        if not ok:
+            return self._json({"error": err, "task_id": task_id}, 409)
+        self._json({"approved": True, "task_id": task_id, "note": note})
+
+    def _handle_reject_task(self, task_id: str, body: bytes = b""):
+        """审批驳回（POST /tasks/<id>/reject）：body 可选 {"reason": "..."}。
+
+        驳回=终止（spec §9 决策 C：最小闭环不做分支）；原因进任务 error 与审计。
+        """
+        if not self.orch:
+            return self._json({"error": "orchestrator not set"}, 500)
+        if self.orch.get_task(task_id) is None:
+            return self._json({"error": "task not found"}, 404)
+        try:
+            payload = json.loads(body.decode("utf-8")) if body else {}
+        except (ValueError, UnicodeDecodeError):
+            return self._json({"error": "请求体不是合法 JSON"}, 400)
+        reason = str(payload.get("reason", "") or "") if isinstance(payload, dict) else ""
+        ok, err = self.orch.reject(task_id, reason=reason, by=self._approval_actor())
+        if not ok:
+            return self._json({"error": err, "task_id": task_id}, 409)
+        self._json({"rejected": True, "task_id": task_id, "reason": reason})
+
+    def _approval_actor(self) -> str:
+        """审批人标识（最小闭环：客户端地址 + 凭证指纹——真名实姓等 P1 身份系统）。"""
+        client = getattr(self, "client_address", None)
+        host = client[0] if client else "?"
+        try:
+            return f"{host}|{self._key_identity()}"
+        except Exception:
+            return host
 
     def _handle_list_agents(self):
         if not self.orch:
