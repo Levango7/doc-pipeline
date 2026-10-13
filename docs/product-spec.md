@@ -118,7 +118,7 @@
 | # | 屏 | 主区内容 | 与现状 |
 |---|---|---|---|
 | S1 | 工作流目录 | YAML 列表、**lock 状态徽标**（漂移=红）、拓扑层数、来源（内置/pack/插件） | 新建 |
-| S2 | 运行详情 | **DAG 有向图**：节点四态 success/skipped/failed/retried；`when` 跳过画虚线分支；内联节点显示别名（如 `checker__quality_tail`）；检查点续跑标记；每节点耗时/重试次数 | 新建 —— **最关键一屏**，运行时卖点全靠它可见 |
+| S2 | 运行详情 | **DAG 有向图**：节点四态 success/skipped/failed/retried；`when` 跳过画虚线分支；内联节点显示别名（如 `checker__quality_tail`）；检查点续跑标记；每节点耗时/重试次数 | **已交付（2026-10-13，续46：决策"先 C 后 B"的 C）**——DAG 分层图 + 四态 + when 虚线 + 重试标 + 耗时/尝试 + 审批操作条（放行/驳回 + 决策流水）。**仍缺**：内联节点别名展示（`checker__quality_tail` 形态）、检查点续跑标记（S3 检查器的前置） |
 | S3 | 节点检查器 | artifact 结构预览、幂等键、熔断/限流态、质量门明细 | 新建（**依赖 FP-1 修好**，否则此处显示的是假分） |
 | S4 | 插件与 Agent | entry_points 来源分组、`PRODUCES`/`CONFIG_SCHEMA` 声明、沙箱判定、健康态 | 半复用 agents 面板 |
 | S5 | 触发与集成 | HTTP / MCP / webhook / 定时 / 队列 的接入配置与调试 | 新建 |

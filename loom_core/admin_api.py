@@ -961,7 +961,56 @@ class AdminHandler(BaseHTTPRequestHandler):
             "created_at": getattr(task, "created_at", None),
             "finished_at": getattr(task, "finished_at", None),
             "error": getattr(task, "error", None),
+            # S2 运行详情屏（spec §4.2）：逐节点视图一次拿全，前端不再逐个猜。
+            # 来源：TaskNode 运行态（status/skip_reason/attempts）+ execution_order
+            # 拓扑层级 + dependencies 连边。任务没有 DAG 信息（legacy 路径）时
+            # 给空结构而不是省略键——前端分支只写一次。
+            "dag": self._task_dag_view(task),
+            # 审批闸门（approval 节点）：等待中的闸门与决策流水。P1-C 之后
+            # "人审"在控制台上有了落点，这里把它和 DAG 一起交给 S2 渲染。
+            "awaiting_approval": getattr(task, "awaiting_approval", None),
+            "approvals": list(getattr(task, "approvals", None) or []),
         })
+
+    @staticmethod
+    def _task_dag_view(task) -> dict:
+        """任务的 DAG 视图（spec §4.2 S2）：节点四态 + 层级 + 连边。
+
+        四态 = success / skipped / failed / retried（retried 由 attempts>1 与
+        最终 success 合成——engine 不另存"重试态"这个字段）。skipped 分两种：
+        skip_reason="condition"（作者声明的 `when` 分支，下游不受影响，画虚线）
+        与空串（依赖失败被级联跳过）。
+        """
+        dag_nodes: dict = getattr(task, "dag_nodes", None) or {}
+        layers: list = [list(layer) for layer in (getattr(task, "execution_order", None) or [])]
+        steps_by_node: dict[str, list] = {}
+        for step in (getattr(task, "steps", None) or []):
+            steps_by_node.setdefault(getattr(step, "agent_name", ""), []).append(step)
+
+        # steps 里的 agent_name 与 dag_nodes 的 name 不一定同名（池化/别名），
+        # 逐个 name 匹配后再回退 agent_name，避免节点状态全部落到 pending。
+        nodes = []
+        for name, node in dag_nodes.items():
+            steps = steps_by_node.get(name) or steps_by_node.get(getattr(node, "agent_name", ""), [])
+            attempts = int(getattr(node, "attempts", 0) or 0) or len(steps)
+            status = str(getattr(node, "status", "pending") or "pending")
+            started = float(getattr(node, "started_at", 0) or 0)
+            finished = float(getattr(node, "finished_at", 0) or 0)
+            nodes.append({
+                "name": name,
+                "agent": getattr(node, "agent_name", name),
+                "status": status,
+                # retried 是派生态：真跑过且最终成功，但不止一次尝试
+                "retried": attempts > 1 and status == "success",
+                "attempts": attempts,
+                "duration_ms": round((finished - started) * 1000, 1) if finished > started else None,
+                "skip_reason": str(getattr(node, "skip_reason", "") or ""),
+                "error": str(getattr(node, "error", "") or ""),
+                "dependencies": list(getattr(node, "dependencies", None) or []),
+            })
+        if not layers:
+            layers = [[n["name"]] for n in nodes]
+        return {"nodes": nodes, "layers": layers}
 
     def _attach_stream_callback(self, task_id: str):
         """为 API 提交的任务挂接流式回调（供 GET /stream?task_id= 订阅实时进度）"""
