@@ -35,6 +35,22 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Changed（2026-10-12·续43，P1-B：状态后端可换——TaskQueue 接 SQLite/Postgres 双后端）
+
+- **`loom_core/db_backend.py` 新模块**：方言差只收敛在**两处翻译**——占位符
+  `?`→`%s`（psycopg）、`INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`+`REAL`→
+  `DOUBLE PRECISION`；业务侧（TaskQueue）SQL 字符串零分支。优先级：
+  显式 DSN > `LOOM_DATABASE_URL`（旧名回退）> SQLite 默认路径。
+- **并发契约同义**：`rowcount` 归属 / 幂等 insert / lease 回收在两个后端上
+  语义一致；WAL 忙等仍是 SQLite 特供，PG 靠 MVCC，不抄 pragma。
+- **真 PG 判据 `tests/test_state_backend.py` 18 条**：DSN 单元、SQLite pool
+  语义（thread-local 自愈/跨线程 close 安全）、**spec 验收原文两实例共享一库**——
+  两进程领取互斥不重不漏 + 两个真 TaskWorker 进程共享 PG 把 test_pipeline 跑完。
+  CI test matrix 挂 postgres:16-alpine service + `LOOM_TEST_PG_URL`；
+  本地跳过条件：未设 DSN 或未装 psycopg。
+- **诚实边界**：只换**队列**；消息总线持久层 / cost / quality feedback 仍是
+  SQLite（下一批）。`pip install nexusloom[postgres]` 才装 psycopg。
+
 ### Changed（2026-10-12·续42，P1-A：token 身份与多租户作用域隔离）
 
 - **`tokens.yaml` 多凭证 → Principal**（新模块 `loom_core/tokens.py`）：密钥只经

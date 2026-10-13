@@ -23,6 +23,7 @@ dependencies = [
 async = ["aiohttp>=3.8.0"]
 search = ["duckduckgo-search>=4.0.0"]
 benchmark = ["numpy>=1.24.0"]
+postgres = ["psycopg[binary]>=3.1.0"]  # 状态后端可换（spec §5.4）：TaskQueue 指向 PG DSN 时装
 # 能力包：装了才有，没装则对应节点如实回报跳过原因（不是静默降级）。
 # 此前这些依赖只出现在 requirements.txt/Dockerfile 里，`pyproject.toml` 完全没有，
 # 于是 `pip install .` 与 `pip install -r requirements.txt` 会装出能力不同的两份东西。

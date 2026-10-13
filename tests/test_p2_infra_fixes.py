@@ -147,11 +147,12 @@ class TestTaskQueueCloseAll:
             t.join(timeout=10)
             assert not errors
 
-            registered = sum(1 for ref in list(q._conn_refs) if ref() is not None)
-            assert registered >= 2  # 主线程 + 工作线程各一条
-
+            # 契约本身而不是引用计数：close_all 只允许关闭当前线程的连接，
+            # 绝不跨线程 close（2026-08 CI 实证：跨线程关连接 C 层竞争会
+            # SIGSEGV）。工作线程的连接由该线程自身结束时释放——弱引用何时
+            # 失效带 GC 时序，不作断言；可断言的是行为：主线程与新线程在
+            # close_all 之后都能自愈（见下）。
             q.close_all()
-            assert all(ref() is None for ref in q._conn_refs)
 
             # close_all 后再操作自愈：主线程与新线程均可继续使用
             assert q.submit("after", "p", "a.md") is True

@@ -17,30 +17,21 @@
 """
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import sqlite3
 import threading
 import time
-import weakref
 from pathlib import Path
 
 from artesian.fast_json import dumps as _fast_dumps
 from artesian.fast_json import loads as _fast_loads
 
-from . import state_paths
-from .sqlite_util import add_column_if_missing, enable_wal
+from .db_backend import resolve_backend
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DB = os.path.join(Path(__file__).parent.parent.absolute(), "bus_data", "tasks.db")
-
-
-class _TrackableConnection(sqlite3.Connection):
-    """支持弱引用的连接（sqlite3.Connection 原生不可弱引用，经 factory 子类补槽）"""
-
-    __slots__ = ("__weakref__",)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -82,41 +73,18 @@ class TaskQueue:
     """SQLite 持久化任务队列（线程安全，WAL 模式）"""
 
     def __init__(self, db_path: str = ""):
-        db_path = db_path or state_paths.store_path("tasks.db")
-        self._db_path = db_path
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        # 后端工厂：db_path 为空读 LOOM_DATABASE_URL（旧名回退），仍空落
+        # SQLite 默认路径——SQLite 场景行为零变化（WAL/忙等重试由
+        # db_backend.SqlitePool 负责）。
+        self._backend = resolve_backend(db_path, "tasks.db")
         self._lock = threading.Lock()
-        # 修复 P0：原 _get_conn 每次调用都新建 SQLite 连接且永不关闭，
-        # 导致 fd 泄漏（每次 submit/acquire/complete 都泄漏一个 fd）。
-        # 改用 threading.local 缓存 per-thread 连接，复用同一 fd。
-        self._local = threading.local()
-        # 修复 P2：thread-local 连接随线程死亡靠 GC 回收，close() 只能关当前线程。
-        # 创建连接时登记弱引用，close_all() 遍历关闭全部已登记连接。
-        self._conn_refs: set = set()
+        # thread-local 连接缓存 / 弱引用登记 / 自愈逻辑全部在 pool（P1-B 抽象），
+        # 业务侧只拿 pool.conn()。
         self._init_db()
 
-    def _get_conn(self) -> sqlite3.Connection:
-        """获取当前线程缓存的 SQLite 连接（复用，避免 fd 泄漏）。
-
-        连接被 close()/close_all() 关闭后，下次调用自动重建（自愈）。
-        """
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            try:
-                conn.execute("SELECT 1")
-            except sqlite3.Error:
-                conn = None
-        if conn is None:
-            conn = sqlite3.connect(self._db_path, timeout=5, check_same_thread=False,
-                                   factory=_TrackableConnection)
-            # WAL 切换自带忙等重试：多 worker 同时首建同一库时，SQLite 切
-            # journal mode 不走 busy handler，直接抛 "database is locked"
-            # （2026-10-09 探针复现，见 sqlite_util 模块头）。
-            enable_wal(conn)
-            conn.execute("PRAGMA busy_timeout=3000")
-            self._local.conn = conn
-            self._conn_refs.add(weakref.ref(conn))
-        return conn
+    def _get_conn(self):
+        """获取当前线程缓存的连接（复用；失效自愈）。方言翻译在包装层。"""
+        return self._backend.conn()
 
     def _init_db(self):
         with self._get_conn() as conn:
@@ -139,9 +107,11 @@ class TaskQueue:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_created ON task_queue(created_at)")
             # 幂等加列：并发首建时 check-then-act 会撞 "duplicate column name"，
             # 目标状态已达成，不算故障（同 sqlite_util.add_column_if_missing）。
-            add_column_if_missing(conn, "task_queue", "owner_pid", "INTEGER DEFAULT 0")
+            self._backend.add_column_if_missing(
+                conn, "task_queue", "owner_pid", "INTEGER DEFAULT 0")
             # token 身份（spec §5.4）：任务归属的 Principal.id（""=无身份世界）
-            add_column_if_missing(conn, "task_queue", "principal", "TEXT DEFAULT ''")
+            self._backend.add_column_if_missing(
+                conn, "task_queue", "principal", "TEXT DEFAULT ''")
 
     def submit(self, task_id: str, pipeline_name: str, input_file: str,
                config: dict = None, principal: str = "") -> bool:
@@ -159,7 +129,7 @@ class TaskQueue:
                 # 但连接复用（threading.local 缓存）后 total_changes 累积历史变更，
                 # 导致幂等重复 submit 仍返回 True。
                 # 改用 cursor.rowcount：仅反映本次 INSERT 的行数（0=被 IGNORE，1=成功插入）。
-                return cursor.rowcount > 0
+                return bool(cursor.rowcount > 0)
             except sqlite3.IntegrityError:
                 return False
 
@@ -269,7 +239,7 @@ class TaskQueue:
                 "WHERE task_id = ? AND status = ?",
                 (status, _fast_dumps(result or {}), error, time.time(), task_id, row[0]),
             )
-            return cursor.rowcount > 0
+            return bool(cursor.rowcount > 0)
 
     def recover(self, stale_seconds: float | None = None) -> list[dict]:
         """重启恢复：把 running 状态的任务改回 pending。
@@ -392,11 +362,7 @@ class TaskQueue:
 
     def close(self):
         """显式关闭当前线程缓存的连接（修复 P0：原为空实现，连接永不关闭）。"""
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            with contextlib.suppress(Exception):
-                conn.close()
-            self._local.conn = None
+        self._backend.close()
 
     def close_all(self):
         """使本实例登记的全部 thread-local 连接失效（长驻进程/测试关停用）。
@@ -407,14 +373,4 @@ class TaskQueue:
         拥有线程下次 _get_conn() 探测失效自动重建（自愈）。失效连接由 GC
         在其线程结束后回收。
         """
-        refs = list(self._conn_refs)
-        self._conn_refs.clear()
-        for ref in refs:
-            conn = ref()
-            if conn is None:
-                continue
-            with contextlib.suppress(Exception):
-                # 仅关闭属于当前线程的连接；其余线程的连接只从登记表移除
-                if conn is getattr(self._local, "conn", None):
-                    conn.close()
-        self._local.conn = None
+        self._backend.close_all()

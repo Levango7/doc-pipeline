@@ -726,12 +726,20 @@ curl -X POST http://127.0.0.1:8910/api/webhooks/ci-deploy \
 
 ### 多机 worker（共享一份任务队列）
 
-`--worker` 可以起多份、跑在多台机器上——前提是 `LOOM_STATE_DIR` 指向**同一份
-持久卷**（`tasks.db` 是 SQLite WAL，跨机共享需要是真共享文件系统，不是本地盘各自一份）。
+`--worker` 可以起多份、跑在多台机器上。
+
+**状态后端可换**（2026-10-12，spec §5.4 P1-B）：`LOOM_DATABASE_URL`
+指向 Postgres 时队列走 PG（`pip install nexusloom[postgres]`），多机无需共享
+文件系统、由数据库提供并发事务；不设则维持 SQLite WAL——`LOOM_STATE_DIR`
+指向**同一份持久卷**（跨机共享需要是真共享文件系统，不是本地盘各自一份）。
 
 ```bash
-# 机器 A / 机器 B / 机器 C 各起一个（同一份 state 目录）
+# SQLite（默认）：同一份 state 目录
 LOOM_STATE_DIR=/mnt/shared/dp-state python run.py --worker --worker-id=node-a
+
+# Postgres：一台库，多机直连（无共享盘要求）
+LOOM_DATABASE_URL=postgresql://user:pass@db.host:5432/loom \
+  python run.py --worker --worker-id=node-a
 ```
 
 并发契约由 SQL 守卫保证，不靠时钟与运气：
@@ -877,7 +885,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2708 个测试本机全绿**（`2708 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
+**2726 个测试本机全绿**（`2726 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；

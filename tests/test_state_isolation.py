@@ -55,7 +55,9 @@ def test_stores_honor_env_without_explicit_path(module_name, cls_name, db,
     monkeypatch.setenv(state_paths.STATE_DIR_ENV, str(tmp_path / "state"))
     cls = getattr(importlib.import_module(module_name), cls_name)
     obj = cls()
-    path = getattr(obj, "db_path", None) or obj._db_path
+    pool = getattr(obj, "_backend", None)
+    path = (getattr(obj, "db_path", None) or (pool and pool._db_path)
+            or obj._db_path)
     assert str(tmp_path / "state" / db) == str(path), (
         f"{cls_name} 没有按环境变量解析默认路径，实际 {path}")
     closer = getattr(obj, "close", None) or getattr(obj, "close_all", None)
