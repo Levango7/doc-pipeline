@@ -572,7 +572,8 @@ python run.py input.md -c config.production.json -o output/doc.md
 | `/api/agents/` | GET | Agent 详情（含 stats/meta/熔断器状态） |
 | **配置与成本** | | |
 | `/api/config` | GET | 运行时配置快照 |
-| `/api/config/reload` | POST | 配置热更新（通知所有 Agent on_config_update） |
+| `/api/config` | POST | 运行时配置变更（同时写覆写文件，其他进程随之生效） |
+| `/api/config/reload` | POST | 配置热更新（通知所有 Agent + 广播 revision） |
 | `/api/cost` | GET | LLM 成本统计（按供应商/Agent/时间维度） |
 | `/api/cost/budget` | POST | 设置预算上限（超限自动熔断） |
 | **质量与日志** | | |
@@ -885,7 +886,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2726 个测试本机全绿**（`2726 passed, 2 skipped, 6 deselected`，2026-10-12 本机全量实测；
+**2752 个测试本机全绿**（`2752 passed, 2 skipped, 6 deselected`，2026-10-13 本机全量实测（含真 PG）；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -927,6 +928,10 @@ checkpoint save/load 同源 3 条）；
 entry_points group 双读）；
 命名收官·第二段净加 2 条判据（loom_core shim：MAOP 探径契约 + identity/version/枚举同一）；
 P1-A token 身份批净加 28 条判据（真 HTTP 双 token 互不可见 + 六类越权 404 + 鉴权矩阵 + owner 透传链 + 成本作用域）；
+P1-B 状态后端批净加 18 条判据（DSN 解析 / 方言翻译 / SQLite pool 语义 / **spec 验收原文两实例共享一库**：两进程领取互斥 + 两个真 TaskWorker 共享 PG 跑完流水线）；
+P1-C 配置热更新批净加 26 条判据（覆写文件契约 / 跨实例构造见值与 poll 感知 / env 不敌覆写 /
+损坏保留旧配置 / 写盘失败不静默 / **真跨进程两进程共享状态目录** / Admin API 与 worker 消费端接线 /
+orchestrator 通知循环真遍历）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有

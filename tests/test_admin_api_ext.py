@@ -571,10 +571,13 @@ class TestConfigHandlers:
 
     def test_config_set_success(self, handler):
         handler.orch.config.get.return_value = "old"
+        handler.orch.config.set_persisted = MagicMock(return_value=None)
         handler._handle_config_set(b'{"key": "llm.model", "value": "m2"}')
-        handler.orch.config.set.assert_called_once_with("llm.model", "m2")
+        # 跨进程生效（续44/P1-C）：set → set_persisted（内存 + 覆写文件）
+        handler.orch.config.set_persisted.assert_called_once_with("llm.model", "m2")
         data = handler._json.call_args[0][0]
         assert data["applied"] is True and data["old_value"] == "old"
+        assert data["propagated"] is True
 
     def test_config_set_bad_json(self, handler):
         handler._handle_config_set(b"{bad")
@@ -585,12 +588,16 @@ class TestConfigHandlers:
         assert handler._json.call_args[0][1] == 400
 
     def test_config_reload_notifies_agents(self, handler):
-        instance = MagicMock()
-        handler.orch.registry.list.return_value = [{"name": "writer"}]
-        handler.orch.registry.get_instance.return_value = instance
+        handler.orch.notify_config_update = MagicMock(return_value=1)
+        handler.orch.config.publish_reload = MagicMock(return_value=None)
         handler._handle_config_reload()
-        instance.on_config_update.assert_called_once()
+        # 遍历注册表通知 Agent 的逻辑在 orchestrator.notify_config_update（续44 抽出），
+        # 这里只钉住 handler 的委托关系与广播
+        handler.orch.notify_config_update.assert_called_once_with(["*"])
+        handler.orch.config.publish_reload.assert_called_once()
         data = handler._json.call_args[0][0]
+        assert data["reloaded"] is True and data["agents_notified"] == 1
+        assert data["propagated"] is True
         assert data["reloaded"] is True and data["agents_notified"] == 1
 
     def test_config_reload_error(self, handler):

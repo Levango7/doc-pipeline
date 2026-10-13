@@ -162,17 +162,17 @@ class TestAdminHandlers:
 
     def test_config_reload_success(self, handler):
         handler.orch.config.reload = MagicMock()
-        agent_info = {"name": "researcher"}
-        handler.orch.registry.list.return_value = [agent_info]
-        mock_agent = MagicMock()
-        mock_agent.on_config_update = MagicMock()
-        handler.orch.registry.get_instance.return_value = mock_agent
+        handler.orch.config.publish_reload = MagicMock(return_value=None)
+        handler.orch.notify_config_update = MagicMock(return_value=1)
         handler._handle_config_reload()
         handler.orch.config.reload.assert_called_once()
-        mock_agent.on_config_update.assert_called_once()
+        # 通知循环住在 orchestrator.notify_config_update；handler 只负责委托
+        handler.orch.notify_config_update.assert_called_once_with(["*"])
+        handler.orch.config.publish_reload.assert_called_once()
         result = handler._json.call_args[0][0]
         assert result["reloaded"] is True
         assert result["agents_notified"] == 1
+        assert result["propagated"] is True
 
     # ── GET /api/alerts 告警查询 ──
 

@@ -96,6 +96,8 @@
 
 **验收判据**：两实例共享一库并发跑不串台（当前租约按本机 PID 判活，跨机必重复执行或搁死〔静态〕）；每 token 只能看到自己的任务与成本；`/api/config` 热更新不再只对本进程生效。
 
+**进度（2026-10-13）**：三项验收判据**全部闭合**——①两实例共享一库〔P1-B，PR #41〕；②token 隔离任务与成本〔P1-A，PR #40〕；③配置热更新跨进程〔P1-C，续44：覆写文件 + revision 轮询〕。形态四项中 **token 身份 / 状态后端 / 配置热更新已交付**；剩下**常驻服务并发模型**（决策 A：保留 stdlib 但 HTTP/1.1 + 有界线程池 + 读超时，消灭 spec 点名的两个缺陷，2026-10-13 用户拍板）与 **§4 六屏控制台**（决策：先 C 后 B——先交付 S2 运行详情 DAG 屏 + 审批操作接入，以真实使用反馈定技术栈，再上框架补齐其余五屏）。
+
 ### P2 · 生态原型
 
 **形态**：插件目录 + 版本兼容矩阵 + `pack new` 模板仓。
@@ -165,6 +167,7 @@
 |---|---|---|---|
 | 身份与租户 | **已达标（2026-10-12，P1-A）**：`tokens.yaml` 多凭证 → Principal（密钥只经 env/hash 注入；admin 位与普通租户可分）；`ADMIN_API_KEY` 兼容为 admin（旧部署零改动）；启用身份后回环同样要求凭证；任务与成本按 Principal 隔离，越权与不存在同形（404，不泄露存在性）；触发类提交记 `trigger:/webhook:/mcp` 归属；缺密钥条目不可用且启动告警。判据 `tests/test_identity_tokens.py` 28 条（含真 HTTP 双 token 互不可见 + 六类越权操作） | token → 任务/成本/产物三类数据的作用域隔离 | **两个 token 互不可见对方任务（真 HTTP 断言，非 mock）〔2026-10-12 达标〕** |
 | 状态后端 | 队列后端可换（2026-10-12，P1-B）：`LOOM_DATABASE_URL` 指向 Postgres 时 `TaskQueue` 走 PG（psycopg，`nexusloom[postgres]` extra；不设 = SQLite WAL 默认不变）；并发契约由 SQL 层保证（rowcount 归属 / ON CONFLICT 幂等 / lease 回收跨后端同义）。**仍单机**：消息总线持久层、cost/quality feedback、pub/sub 进程内回调 | 后端抽象（SQLite / Postgres），队列与总线可换 | **两实例共享一库并发跑通（P1 判据）〔2026-10-12 达成：真 PG 上两进程领取互斥 + 两个真 TaskWorker 共享一库跑完 test_pipeline〕**；总线可换是下一批 |
+| 配置热更新 | **已达标（2026-10-13，P1-C）**：运行时变更写覆写文件 `<状态目录>/config_overrides.json`（revision 单调递增 + 点号平铺键 + 原子写），级联位置在环境变量之后；新进程构造即读、常驻进程 `poll_overlay()` 轮询即热加载；`POST /api/config` 与 `/reload` 均带传播结果（失败=仅本进程生效，响应如实带 `propagation_error`，不静默）；worker 循环与 Admin API 请求入口均接线。判据 `tests/test_config_overlay.py` 23 条（含真跨进程两进程共享状态目录） | 配置变更对所有相关进程生效 | **`/api/config` 热更新不再只对本进程生效〔2026-10-13 达标：真子进程轮询到父进程写入；P1 §3 三条验收判据至此全部闭合〕** |
 | 成本归因 | 定价表 + 按供应商/Agent 维度已有 | 增加按 **pack / token** 归因 | `GET /api/cost` 能按 pack 出账 |
 | 审计 | **入站调用与配置变更均已留痕**（2026-10-08：webhook 全部调用成败落 JSONL；`/api/config` 每次变更落 `audit/config.jsonl`——key/新旧值/客户端/凭证指纹，敏感值只记脱敏形状，`GET /api/config/audit` 可查回） | 入站调用与配置变更留痕 | 每次 `/api/config` 变更有审计记录（`tests/test_config_audit.py` 九条钉住，含脱敏与写盘失败不静默） |
 
