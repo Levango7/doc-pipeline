@@ -15,7 +15,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -26,10 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from loom_core.db_backend import (  # noqa: E402
     SqlitePool,
+    _translate,
     is_postgres_dsn,
     resolve_backend,
     translate,
-    _translate,
 )
 from loom_core.task_queue import TaskQueue  # noqa: E402
 
@@ -239,8 +238,8 @@ class TestPostgresTaskQueue:
 
         # 真小子进程：各自领到底，领到的 id 写文件
         worker_src = (
-            "import json, sys; "
-            "sys.path.insert(0, %r); "
+            f"import json, sys; "
+            f"sys.path.insert(0, {str(PROJECT)!r}); "
             "from loom_core.task_queue import TaskQueue; "
             "q = TaskQueue(sys.argv[1]); out = [];\n"
             "while True:\n"
@@ -248,7 +247,7 @@ class TestPostgresTaskQueue:
             "    if it is None: break\n"
             "    out.append(it['task_id'])\n"
             "open(sys.argv[3], 'w').write(json.dumps(out))"
-        ) % str(PROJECT)
+        )
         a_file = tmp_path / "a.json"
         b_file = tmp_path / "b.json"
         procs = [
@@ -278,14 +277,14 @@ class TestPostgresTaskQueue:
             q.submit(f"{p}-{i}", "test_pipeline", str(PROJECT / "test_input.md"))
 
         worker_src = (
-            "import json, os, sys; "
-            "sys.path.insert(0, %r); "
-            "os.environ['LOOM_STATE_DIR'] = sys.argv[4]; "
+            f"import json, os, sys; "
+            f"sys.path.insert(0, {str(PROJECT)!r}); "
+            f"os.environ['LOOM_STATE_DIR'] = sys.argv[4]; "
             "from loom_core.task_queue import TaskQueue; "
             "from loom_core.worker import TaskWorker; "
-            "w = TaskWorker(worker_id=sys.argv[1], "
-            "  agents_dir=os.path.join(%r, 'agents'), "
-            "  pipeline_dir=os.path.join(%r, 'pipelines'), "
+            f"w = TaskWorker(worker_id=sys.argv[1], "
+            f"  agents_dir=os.path.join({str(PROJECT)!r}, 'agents'), "
+            f"  pipeline_dir=os.path.join({str(PROJECT)!r}, 'pipelines'), "
             "  queue=TaskQueue(sys.argv[2])); "
             "claimed = []\n"
             "for _ in range(240):\n"          # 一条 run_once = 一整条流水线（秒级）；上限只做保险
@@ -294,7 +293,7 @@ class TestPostgresTaskQueue:
             "    claimed.append(it['task_id'])\n"
             "w.shutdown(); "
             "open(sys.argv[3], 'w').write(json.dumps(claimed))"
-        ) % (str(PROJECT), str(PROJECT), str(PROJECT))
+        )
 
         outputs = []
         procs = [
@@ -309,7 +308,7 @@ class TestPostgresTaskQueue:
         for f in sorted(tmp_path.glob("w*.json")):
             outputs.extend(json.loads(f.read_text(encoding="utf-8")))
         assert sorted(outputs) == sorted(f"{p}-{i}" for i in range(3)), (
-            "两实例共享 PG：领取集合必须不重不漏（got %s）" % (outputs,))
+            f"两实例共享 PG：领取集合必须不重不漏（got {outputs}）")
         for i in range(3):
             row = q.get(f"{p}-{i}")
             assert row["status"] == "done", (
