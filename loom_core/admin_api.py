@@ -48,6 +48,7 @@ import re
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -240,14 +241,116 @@ def stream_metrics_snapshot() -> dict:
     return _STREAM_METRICS_HUB.snapshot()
 
 
-class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
-    """多线程 HTTP 服务器 — 替代单线程 HTTPServer，避免慢请求阻塞所有连接"""
+
+DEFAULT_MAX_CONCURRENCY = 32
+DEFAULT_SOCKET_TIMEOUT = 30.0
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+class BoundedThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """线程-per-连接 + **有界并发**（spec §3 P1 点名要替换的旧形态的替代品）。
+
+    旧形态两个缺陷：① stdlib `HTTPServer` 默认 HTTP/1.0——无 keep-alive，
+    dashboard 每 5 秒轮询就是每 5 秒新建 TCP + 新线程；② `ThreadingMixIn`
+    线程-per-连接且**无上限**——每个提交一个数分钟 LLM 流水线的请求占一条线程，
+    慢客户端/半开连接可以无限占线程直到进程崩。
+
+    做法（2026-10-13 决策 A：保留 stdlib，消灭两个缺陷，不引入外部框架）：
+    - 请求处理提交给**有界线程池**（`max_workers`，池满即 503 + Retry-After，
+      不排队不炸线程数）；
+    - HTTP/1.1 keep-alive 在 `AdminHandler.protocol_version` 上开（配套：
+      所有响应带 `Content-Length`、SSE 用完即 `close_connection`）；
+    - 读/写 socket 超时在 `AdminHandler.timeout` 上设（半开连接不再永久占线程）。
+    """
+
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 128
+
+    def __init__(self, *args, max_workers: int = DEFAULT_MAX_CONCURRENCY, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_workers = max(1, int(max_workers))
+        self._pool = ThreadPoolExecutor(max_workers=self.max_workers,
+                                        thread_name_prefix="admin-api")
+        self._inflight = 0
+        self._inflight_lock = threading.Lock()
+
+    # ── 有界派发 ──────────────────────────────────────
+
+    def process_request(self, request, client_address):
+        """accept 线程只做派发：池满直接 503，否则提交池里执行。"""
+        with self._inflight_lock:
+            saturated = self._inflight >= self.max_workers
+            if not saturated:
+                self._inflight += 1
+        if saturated:
+            self._reject_saturated(request)
+            return
+        try:
+            self._pool.submit(self._process_pooled, request, client_address)
+        except RuntimeError:  # 池已关闭（stop 之后迟到的连接）
+            with self._inflight_lock:
+                self._inflight -= 1
+            self._reject_saturated(request)
+
+    def _process_pooled(self, request, client_address):
+        try:
+            self.process_request_thread(request, client_address)
+        finally:
+            with self._inflight_lock:
+                self._inflight -= 1
+
+    def _reject_saturated(self, request):
+        """池满：回 503 就关（不读请求体——帮攻击者读体没有意义）。"""
+        body = b'{"error": "server busy"}'
+        with contextlib.suppress(OSError):
+            request.sendall(
+                b"HTTP/1.1 503 Service Unavailable\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                b"Retry-After: 1\r\n"
+                b"Connection: close\r\n\r\n" + body)
+        self.shutdown_request(request)
+
+    def server_close(self):
+        super().server_close()
+        self._pool.shutdown(wait=False)
+
+    @property
+    def inflight(self) -> int:
+        with self._inflight_lock:
+            return self._inflight
+
+
+#: 旧名保留（内部/外部可能 import）：线程-per-连接的语义由有界版接管
+ThreadingHTTPServer = BoundedThreadingHTTPServer
 
 
 class AdminHandler(BaseHTTPRequestHandler):
     """REST API 请求处理"""
+
+    #: HTTP/1.1 keep-alive（2026-10-13 P1 决策 A）。前提：**每个响应都必须带
+    #: Content-Length**——否则客户端永远等不到响应体结束。三处写响应的地方
+    #: （_json/_text/_prometheus）+ do_OPTIONS 的 403 分支都已补齐；SSE 是长
+    #: 响应流，用完显式 `close_connection = True`，不参与复用。
+    protocol_version = "HTTP/1.1"
+    #: socket 读/写超时沿用基类 StreamRequestHandler.timeout 属性（秒）：
+    #: 半开连接不再永久占着一条（有界）线程。None = 不限；
+    #: 由 AdminAPI.start 从 LOOM_ADMIN_SOCKET_TIMEOUT 注入（此处不重新声明，
+    #: 否则 mypy 判"与基类属性冲突"）。
 
     orch: Any = None  # 由 AdminAPI 注入
     dashboard_dir: str | None = None  # 静态文件目录
@@ -308,24 +411,30 @@ class AdminHandler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Origin")
 
     def _json(self, data: dict, status: int = 200):
+        body = _fast_dumps(data, default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self._apply_cors_headers()
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(_fast_dumps(data, default=str).encode())
+        self.wfile.write(body)
 
     def _prometheus(self, text: str):
+        body = text.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; version=0.0.4")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(text.encode())
+        self.wfile.write(body)
 
     def _text(self, text: str, status: int = 200):
+        body = text.encode()
         self.send_response(status)
         self.send_header("Content-Type", "text/plain")
         self._apply_cors_headers()
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(text.encode())
+        self.wfile.write(body)
 
     def _serve_static(self, path: str) -> bool:
         """尝试从 dashboard_dir 提供静态文件"""
@@ -764,6 +873,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         if origin and not allowed:
             self.send_response(403)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b'{"error": "origin not allowed"}')))
             self.end_headers()
             self.wfile.write(b'{"error": "origin not allowed"}')
             return
@@ -1703,6 +1813,9 @@ class AdminHandler(BaseHTTPRequestHandler):
         指标: GET /stream/metrics 获取流式指标快照。
         返回: text/event-stream 格式，每个事件含 id/type/data/section/total 字段。
         """
+        # HTTP/1.1 keep-alive 下，流式响应不能参与连接复用（没有 Content-Length
+        # 可依）；推完显式关闭连接，客户端重连即新连接。
+        self.close_connection = True
         from urllib.parse import parse_qs, urlparse
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
@@ -1836,6 +1949,9 @@ class AdminAPI:
         self.webhooks_path = webhooks_path
         self._server: HTTPServer | None = None
         self._thread: threading.Thread | None = None
+        #: 由 start() 从 env 解析并回写（便于测试/运维读回实际值）
+        self.max_concurrency: int = DEFAULT_MAX_CONCURRENCY
+        self.socket_timeout: float = DEFAULT_SOCKET_TIMEOUT
 
     def start(self, orch) -> bool:
         """在后台线程启动 API 服务器"""
@@ -1889,13 +2005,24 @@ class AdminAPI:
                     "[AdminAPI] 未配置 ADMIN_API_KEY：本机信任模式（仅回环访问免鉴权），"
                     "受保护端点对远程来源返回 401。"
                 )
-            self._server = ThreadingHTTPServer((self.host, self.port), AdminHandler)
+            # 并发模型（2026-10-13 P1 决策 A）：HTTP/1.1 keep-alive + 有界线程池
+            # + socket 超时。spec §3 P1 原文点名要替换的"stdlib HTTP/1.0 +
+            # 线程-per-连接、无并发上限"到此事实性关闭；env 可调，默认值见常量。
+            self.max_concurrency = _int_env("LOOM_ADMIN_MAX_CONCURRENCY",
+                                            DEFAULT_MAX_CONCURRENCY)
+            self.socket_timeout = _float_env("LOOM_ADMIN_SOCKET_TIMEOUT",
+                                             DEFAULT_SOCKET_TIMEOUT)
+            AdminHandler.timeout = self.socket_timeout
+            self._server = BoundedThreadingHTTPServer(
+                (self.host, self.port), AdminHandler, max_workers=self.max_concurrency)
             self._thread = threading.Thread(
                 target=self._server.serve_forever, daemon=True,
                 name="admin-api",
             )
             self._thread.start()
-            _logger.info(f"[AdminAPI] 启动 http://{self.host}:{self.port}")
+            _logger.info(f"[AdminAPI] 启动 http://{self.host}:{self.port}"
+                         f"（HTTP/1.1 keep-alive，并发上限 {self.max_concurrency}，"
+                         f"socket 超时 {self.socket_timeout:g}s）")
             return True
         except Exception as e:
             _logger.error(f"[AdminAPI] 启动失败: {e}")
@@ -1904,7 +2031,7 @@ class AdminAPI:
     def stop(self):
         if self._server:
             self._server.shutdown()
-            self._server.server_close()
+            self._server.server_close()  # 含 ThreadPoolExecutor.shutdown
             if self._thread:
                 self._thread.join(timeout=2)
             self._server = None

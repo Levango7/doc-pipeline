@@ -559,6 +559,15 @@ python run.py input.md -c config.production.json -o output/doc.md
 
 启动：`python run.py <input> --admin` （默认 `http://127.0.0.1:8910`）
 
+**并发模型（2026-10-13，spec §3 P1 决策 A）**：HTTP/1.1 keep-alive + **有界线程池**
++ socket 读/写超时。取代旧的 stdlib HTTP/1.0「线程-per-连接、无上限」形态：
+dashboard 轮询不再每 5 秒新建 TCP+线程；慢请求/慢客户端/半开连接不会无限占线程。
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `LOOM_ADMIN_MAX_CONCURRENCY` | 32 | 并发处理上限；池满即 `503` + `Retry-After: 1`（不排队、不无限起线程） |
+| `LOOM_ADMIN_SOCKET_TIMEOUT` | 30 | socket 读/写超时（秒）；半开连接与空闲 keep-alive 连接超时后由服务端关闭并收回工位 |
+
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | **任务管理** | | |
@@ -886,7 +895,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2752 个测试本机全绿**（`2752 passed, 2 skipped, 6 deselected`，2026-10-13 本机全量实测（含真 PG）；
+**2766 个测试本机全绿**（`2766 passed, 2 skipped, 6 deselected`，2026-10-13 本机全量实测（含真 PG）；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
@@ -932,6 +941,9 @@ P1-B 状态后端批净加 18 条判据（DSN 解析 / 方言翻译 / SQLite poo
 P1-C 配置热更新批净加 26 条判据（覆写文件契约 / 跨实例构造见值与 poll 感知 / env 不敌覆写 /
 损坏保留旧配置 / 写盘失败不静默 / **真跨进程两进程共享状态目录** / Admin API 与 worker 消费端接线 /
 orchestrator 通知循环真遍历）；
+P1-D 并发模型批净加 14 条判据（同连接两请求 keep-alive / 五处响应路径 Content-Length /
+池满 503+Retry-After 与 200 数等于池大小 / 工位借还与空闲回收两条真时序 /
+半开连接被服务端关闭 / SSE 入口不复用连接）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有
