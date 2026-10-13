@@ -797,3 +797,66 @@ body {
 
 /* 满宽卡片里 DAG 不限宽会右侧大片空白——按阅读宽度收一下 */
 #run-body .dag-flow { max-width: 820px; }
+
+/* ============================================================
+   S3 节点检查器（spec §4.2）——右侧抽屉 + artifact 预览 + 断点角标
+   ============================================================ */
+.run-detail-body { display: flex; gap: 12px; align-items: flex-start; }
+#run-body { flex: 1 1 auto; min-width: 0; }
+
+.node-inspector {
+  flex: 0 0 340px; max-width: 340px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-accent); padding: 10px 12px;
+  max-height: 70vh; overflow-y: auto;
+}
+.node-inspector[hidden] { display: none !important; }
+.insp-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.insp-header h3 { font-size: 0.9rem; color: var(--text-primary); word-break: break-all; }
+.insp-block { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
+.insp-block:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+.insp-block h4 { font-size: 0.72rem; color: var(--text-muted); font-weight: 600; margin-bottom: 6px; letter-spacing: 0.04em; }
+.insp-row { display: flex; gap: 8px; justify-content: space-between; font-size: 0.76rem; padding: 2px 0; }
+.insp-label { color: var(--text-muted); flex: 0 0 auto; }
+.insp-value { color: var(--text-primary); text-align: right; word-break: break-all; }
+.insp-ok { color: var(--status-ok); }
+.insp-warn { color: var(--status-warn); }
+.insp-muted { color: var(--text-muted); }
+.insp-empty { font-size: 0.74rem; color: var(--text-muted); padding: 4px 0; }
+.insp-note { font-size: 0.7rem; color: var(--text-muted); margin-top: 4px; }
+.insp-error, .insp-issue {
+  font-size: 0.74rem; color: var(--status-error); font-family: var(--font-mono);
+  word-break: break-all; padding: 2px 0;
+}
+.insp-issues { margin-top: 4px; }
+.insp-key {
+  display: block; font-family: var(--font-mono); font-size: 0.72rem;
+  color: var(--status-info); background: rgba(0,0,0,0.25);
+  padding: 4px 6px; border-radius: 4px; word-break: break-all; margin-bottom: 4px;
+}
+.insp-artifact { display: flex; flex-direction: column; gap: 3px; }
+.insp-art-row {
+  display: grid; grid-template-columns: minmax(60px, 1fr) 52px minmax(80px, 1.4fr);
+  gap: 6px; font-size: 0.72rem; align-items: baseline;
+}
+.insp-art-key { color: var(--text-primary); font-family: var(--font-mono); word-break: break-all; }
+.insp-art-type { color: var(--status-info); font-size: 0.66rem; }
+.insp-art-val { color: var(--text-muted); word-break: break-all; }
+
+/* 节点可点 + 重试旗 + 断点角标 */
+.dag-node-clickable { cursor: pointer; }
+.dag-node-clickable:hover { border-color: var(--highlight); }
+.dag-retried-flag {
+  margin-left: auto; font-size: 0.62rem; padding: 0 5px;
+  border-radius: 4px; background: var(--tint-warn); color: var(--status-warn);
+}
+.dag-checkpoint-badge {
+  align-self: flex-start; font-size: 0.7rem; padding: 2px 8px; margin-bottom: 4px;
+  border-radius: 4px; background: var(--tint-info); color: var(--status-info);
+}
+.dag-checkpoint-resumed { background: var(--tint-warn); color: var(--status-warn); }
+
+@media (max-width: 900px) {
+  .run-detail-body { flex-direction: column; }
+  .node-inspector { flex: 1 1 auto; max-width: none; }
+}

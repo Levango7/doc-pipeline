@@ -673,6 +673,10 @@ class AdminHandler(BaseHTTPRequestHandler):
                 task_id = self.path.split("/tasks/")[1].split("/")[0]
                 if not _validate_task_id(task_id):
                     return self._json({"error": "invalid task id"}, 400)
+                # S3 节点检查器：/tasks/<id>/nodes/<name>（静态段优先于动作段匹配）
+                if "/nodes/" in self.path:
+                    node_name = self.path.split("/nodes/", 1)[1].split("?", 1)[0]
+                    return self._handle_node_inspector(task_id, node_name)
                 if self.path.endswith("/cancel"):
                     self._handle_cancel_task(task_id)
                 elif self.path.endswith("/rerun"):
@@ -972,9 +976,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "approvals": list(getattr(task, "approvals", None) or []),
         })
 
-    @staticmethod
-    def _task_dag_view(task) -> dict:
-        """任务的 DAG 视图（spec §4.2 S2）：节点四态 + 层级 + 连边。
+    def _task_dag_view(self, task) -> dict:
+        """任务的 DAG 视图（spec §4.2 S2）：节点四态 + 层级 + 连边 + 断点标记。
 
         四态 = success / skipped / failed / retried（retried 由 attempts>1 与
         最终 success 合成——engine 不另存"重试态"这个字段）。skipped 分两种：
@@ -1010,7 +1013,180 @@ class AdminHandler(BaseHTTPRequestHandler):
             })
         if not layers:
             layers = [[n["name"]] for n in nodes]
-        return {"nodes": nodes, "layers": layers}
+        # 断点续跑标记（S2 表里原缺的一项）：每节点标一个"已落断点"圆点，
+        # 任务级再给 resumed/exists——同一份 _task_checkpoint_view 出数，
+        # S3 检查器与 S2 绘图共用，不会两处漂移。
+        checkpoint = self._task_checkpoint_view(task)
+        return {"nodes": nodes, "layers": layers, "checkpoint": checkpoint}
+
+    # ── S3 节点检查器（spec §4.2） ─────────────────────
+
+    def _handle_node_inspector(self, task_id: str, node_name: str):
+        """节点检查器：S2 DAG 里点一个节点 → 它的四类明细一次拿全。
+
+        spec §4.2 S3 主区内容：**artifact 结构预览 / 幂等键 / 熔断限流态 /
+        质量门明细**。约定：
+        - 越权与不存在同形（404）——复用 `_scoped_task`，不泄露存在性；
+        - 各类明细**取不到就不编**：熔断器没建过、限流器没建过、质量门不是
+          本节点的产物，对应字段给 None 而不是空对象或猜的值（防"显示假分"）；
+        - artifact 预览是**形状 + 截断**，不是全量回传（节点结果可能很大）。
+        """
+        if not self.orch:
+            return self._json({"error": "orchestrator not set"}, 500)
+        if not node_name:
+            return self._json({"error": "missing node name"}, 400)
+        task = self._scoped_task(task_id)
+        if not task:
+            return self._json({"error": "task not found"}, 404)
+        node = (getattr(task, "dag_nodes", None) or {}).get(node_name)
+        if node is None:
+            return self._json({"error": "node not found"}, 404)
+
+        agent_name = getattr(node, "agent_name", node_name) or node_name
+        self._json({
+            "task_id": task.id,
+            "task_status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "node": {
+                "name": node_name,
+                "agent": agent_name,
+                "status": str(getattr(node, "status", "pending") or "pending"),
+                "attempts": int(getattr(node, "attempts", 0) or 0),
+                "skip_reason": str(getattr(node, "skip_reason", "") or ""),
+                "error": str(getattr(node, "error", "") or ""),
+                "dependencies": list(getattr(node, "dependencies", None) or []),
+                "max_retries": int(getattr(node, "max_retries", 0) or 0),
+            },
+            "artifact": self._node_artifact_preview(node),
+            "idempotency": self._node_idempotency(task, node_name, node),
+            "circuit_breaker": self._agent_circuit_breaker(agent_name),
+            "rate_limit": self._agent_rate_limit(agent_name),
+            "quality": self._node_quality_detail(node),
+            "checkpoint": self._task_checkpoint_view(task),
+        })
+
+    @staticmethod
+    def _node_artifact_preview(node) -> dict:
+        """artifact 结构预览：键 + 类型 + 标量值，长值截断（不整包回传）。"""
+        result = getattr(node, "result", None)
+        if not isinstance(result, dict) or not result:
+            return {"keys": [], "size": 0, "preview": {}, "truncated": False}
+        preview: dict = {}
+        truncated = False
+        for key, value in result.items():
+            kind = type(value).__name__
+            if isinstance(value, str):
+                preview[key] = {"type": "str", "length": len(value),
+                                "value": value[:200] + ("…" if len(value) > 200 else "")}
+                truncated = truncated or len(value) > 200
+            elif isinstance(value, (int, float, bool)) or value is None:
+                preview[key] = {"type": kind, "value": value}
+            elif isinstance(value, list):
+                preview[key] = {"type": "list", "length": len(value)}
+            elif isinstance(value, dict):
+                preview[key] = {"type": "dict", "keys": sorted(value.keys())[:20]}
+            else:
+                preview[key] = {"type": kind}
+        return {"keys": sorted(result.keys()), "size": len(result),
+                "preview": preview, "truncated": truncated}
+
+    def _node_idempotency(self, task, node_name: str, node) -> dict:
+        """幂等键 `{task_id}:{node}:{attempts}` 与它是否已落 processed_keys。
+
+        取的是 orchestrator 身上那条持久化总线内部的 PersistentStore
+        （`orch.bus._store`）——processed_keys 表就在那里，另开一条连接会
+        读到另一份库。取不到给 None（不猜"未处理"）。
+        """
+        attempts = int(getattr(node, "attempts", 0) or 0)
+        key = f"{task.id}:{node_name}:{attempts}"
+        seen = None
+        try:
+            store = getattr(getattr(self.orch, "bus", None), "_store", None)
+            if store is not None and hasattr(store, "is_idempotent"):
+                seen = bool(store.is_idempotent(key))
+        except Exception as e:  # noqa: BLE001  取不到就如实说取不到
+            _logger.debug("[AdminAPI] 幂等键查询失败（%s 节点）: %s", node_name, e)
+            seen = None
+        return {"key": key, "attempts": attempts, "recorded": seen}
+
+    def _agent_circuit_breaker(self, agent_name: str):
+        """该 Agent 的熔断器态；从未建过 = None（不是"closed"）。"""
+        registry = getattr(self.orch, "_cb_registry", None)
+        if registry is None:
+            return None
+        try:
+            cb = registry.get(agent_name) if hasattr(registry, "get") else None
+        except Exception:  # noqa: BLE001
+            return None
+        if not cb:
+            return None
+        return {
+            "state": cb.state.name if hasattr(cb.state, "name") else str(cb.state),
+            "failure_count": int(getattr(cb, "failure_count", 0) or 0),
+        }
+
+    def _agent_rate_limit(self, agent_name: str):
+        """该 Agent 的限流态（令牌桶余量 / 累计放行与阻塞）；未建过 = None。"""
+        registry = getattr(self.orch, "_rate_limiters", None)
+        if registry is None or not hasattr(registry, "get"):
+            return None
+        try:
+            limiter = registry.get(agent_name)
+        except Exception:  # noqa: BLE001
+            return None
+        if not limiter:
+            return None
+        try:
+            stats = limiter.stats()
+        except Exception:  # noqa: BLE001
+            return None
+        return {"rate": stats.get("rate"), "burst": stats.get("burst"),
+                "available_tokens": stats.get("available_tokens"),
+                "total_acquired": stats.get("total_acquired"),
+                "total_blocked": stats.get("total_blocked")}
+
+    @staticmethod
+    def _node_quality_detail(node) -> dict | None:
+        """质量门明细：只认质量门形状的产物（overall_score + scores 维度分）。
+
+        非质量门节点的 result 长得不像就给 None——**不把普通节点结果当成
+        质量分展示**（FP-1"显示假分"同类错误）。
+        """
+        result = getattr(node, "result", None)
+        if not isinstance(result, dict):
+            return None
+        scores = result.get("scores")
+        if not isinstance(scores, dict) or "overall_score" not in result:
+            return None
+        return {
+            "overall_score": result.get("overall_score"),
+            "scores": {k: v for k, v in scores.items()
+                       if isinstance(v, (int, float))},
+            "profile": result.get("profile"),
+            "status": result.get("status"),
+            "threshold": result.get("threshold"),
+            "style_issues": result.get("style_issues") if isinstance(
+                result.get("style_issues"), list) else None,
+            "needs_regenerate": result.get("needs_regenerate"),
+        }
+
+    @staticmethod
+    def _task_checkpoint_view(task) -> dict:
+        """断点视图：落点、是否已落盘、续跑标记（S2 缺的那一项）。
+
+        `resumed` = 该任务是从断点恢复而来的（状态自 PAUSED 读回，且
+        节点已完成数 > 0）；`exists` = 断点文件此刻真的在磁盘上。
+        """
+        path = str(getattr(task, "checkpoint_file", "") or "")
+        status = task.status.value if hasattr(task.status, "value") else str(task.status)
+        done_nodes = sum(
+            1 for n in (getattr(task, "dag_nodes", None) or {}).values()
+            if str(getattr(n, "status", "")) == "success")
+        return {
+            "path": path,
+            "exists": bool(path) and Path(path).exists(),
+            "resumed": status == "paused" and done_nodes > 0,
+            "completed_nodes": done_nodes,
+        }
 
     def _attach_stream_callback(self, task_id: str):
         """为 API 提交的任务挂接流式回调（供 GET /stream?task_id= 订阅实时进度）"""

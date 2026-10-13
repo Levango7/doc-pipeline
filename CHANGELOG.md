@@ -35,6 +35,35 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Added（2026-10-14·续47，§4.2 S3 节点检查器 + S2 断点续跑标记——控制台第二屏）
+
+- **`GET /tasks/<id>/nodes/<name>` 节点检查器载荷**：一次给出 spec §4.2 S3 的四类
+  明细——**artifact 结构预览**（键 + 类型 + 标量值，长文本截断，不整包回传）、
+  **幂等键**（`{task_id}:{node}:{attempts}` + 是否已落 `processed_keys`；取的是
+  `orch.bus._store`，另开连接会读到另一份库）、**熔断/限流态**（`orch._cb_registry`
+  / `orch._rate_limiters`，从未建过 = None）、**质量门明细**（只认质量门形状的产物：
+  `overall_score` + 维度 `scores` + 阈值 + 风格问题），外加**断点视图**（落点/是否
+  落盘/是否续跑）。
+- **"取不到就不编"**：熔断器没建过、限流器没配、质量门不是本节点产物 → 字段给
+  None，抽屉如实显示"未建立"，而不是 `closed`/空对象/把普通结果当质量分
+  （FP-1"显示假分"同类错误）。
+- **越权与不存在同形（404）**：复用 `_scoped_task`，跨租户点他人节点与节点不存在
+  不可区分。
+- **S2 补齐断点续跑标记**（spec §4.2 S2 表原缺项）：dag 视图多带 `checkpoint`，
+  DAG 层流顶部出角标（`断点已落盘（N 节点完成）` / 续跑时高亮）。断点视图由
+  `_task_checkpoint_view` 单源产出，S2 绘图与 S3 检查器共用，不会两处漂移。
+- **前端**：DAG 节点可点 → 右侧检查器抽屉（spec §4.2 统一骨架的"右侧检查器"），
+  五区块 + 重试旗标；运行中任务每 3 秒跟随刷新；关闭按钮/返回列表都会停表。
+- **判据**：`tests/test_node_inspector.py` 11 条真 HTTP（全字段形状含 artifact 截断 /
+  幂等键格式与真 PersistentStore 的 True·False·None 三态 / 熔断限流的 None 与在场两态 /
+  质量门只认质量形状 / 404 三型 / 断点三种态）+ `tests/test_dashboard_s2.py` 增补 4 条
+  结构护栏；无头 Chrome 真机走查（点 writer 出五区块、点 quality_gate 出质量门明细、
+  断点角标、关闭恢复）留证。
+- **踩坑两条**：①`PersistentStore` 线程本地连接在 Windows 上不关会锁住临时目录
+  → 判据用 pytest `tmp_path` + `close_all()`，不用 `TemporaryDirectory`；
+  ②`MagicMock` 会自动造属性——不显式把 `bus._store=/_cb_registry.get=/
+  `_rate_limiters.get=` 置空，"取不到就 None"的分支根本测不到。
+
 ### Changed（2026-10-13·续45，P1-D：常驻服务并发模型——stdlib HTTP/1.0 + 无线程上限，两个缺陷一起关闭）
 
 - **HTTP/1.1 keep-alive**（`AdminHandler.protocol_version`）：旧形态是 HTTP/1.0，
