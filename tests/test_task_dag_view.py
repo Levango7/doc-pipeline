@@ -159,7 +159,10 @@ class TestDagView:
         port, api = _start(orch_mock)
         try:
             _, data = _get(port, "/tasks/t1")
-            assert data["dag"] == {"nodes": [], "layers": []}
+            assert data["dag"]["nodes"] == [] and data["dag"]["layers"] == []
+            # 断点标记与节点/层级同级给出（S3 同源），不因无 DAG 而省略键
+            assert data["dag"]["checkpoint"]["path"] == ""
+            assert data["dag"]["checkpoint"]["exists"] is False
         finally:
             api.stop()
 

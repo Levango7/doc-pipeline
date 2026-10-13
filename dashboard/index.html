@@ -94,11 +94,21 @@
       <span id="run-meta" class="badge">--</span>
       <button id="run-back" class="run-back" type="button">返回列表</button>
     </div>
-    <div class="card-body" id="run-body">
-      <div class="empty-state">
-        <div class="icon"><svg class="ico ico-lg" aria-hidden="true"><use href="#i-inbox"/></svg></div>
-        <div>选择一条任务查看运行详情</div>
+    <div class="card-body run-detail-body">
+      <div id="run-body">
+        <div class="empty-state">
+          <div class="icon"><svg class="ico ico-lg" aria-hidden="true"><use href="#i-inbox"/></svg></div>
+          <div>选择一条任务查看运行详情</div>
+        </div>
       </div>
+      <!-- S3 节点检查器抽屉（spec §4.2 统一骨架的"右侧检查器"） -->
+      <aside id="node-inspector" class="node-inspector" hidden>
+        <div class="insp-header">
+          <h3 id="inspector-title">节点</h3>
+          <button id="inspector-close" class="run-back" type="button">关闭</button>
+        </div>
+        <div id="inspector-body"></div>
+      </aside>
     </div>
   </div>
 

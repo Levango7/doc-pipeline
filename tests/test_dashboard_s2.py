@@ -75,6 +75,24 @@ class TestAppWiring:
         assert "dag-skip-condition" in self.js
         assert "skip_reason === 'condition'" in self.js
 
+    def test_node_opens_inspector(self):
+        """S3：点 DAG 节点 → 右侧检查器抽屉（spec §4.2 统一骨架）。"""
+        assert "openInspector(taskId, n.name)" in self.js
+        assert "/nodes/" in self.js
+        assert "node-inspector" in self.js
+
+    def test_inspector_renders_detail_kinds(self):
+        for token in ("artifact", "idempotency", "circuit_breaker", "rate_limit", "quality"):
+            assert token in self.js, f"检查器缺 {token} 区块"
+        # “取不到就不编”：null 时如实显示未建立，而不是假读数
+        assert "未建立" in self.js
+
+    def test_checkpoint_marker_on_dag(self):
+        """S2 缺的检查点续跑标记：dag.checkpoint 驱动角标。"""
+        assert "renderCheckpointMarkers" in self.js
+        assert "dag-checkpoint-resumed" in self.js
+        assert "断点续跑" in self.js
+
     def test_no_emoji_in_new_markup(self):
         """用户审美铁律：功能位置不用 emoji 指示符。"""
         for ch in ("✅", "❌", "⚠️", "🚀"):
@@ -95,3 +113,8 @@ class TestStyleContract:
 
     def test_condition_skip_is_dashed(self):
         assert ".dag-skip-condition" in self.css and "dashed" in self.css
+
+    def test_inspector_drawer_styles(self):
+        for token in (".node-inspector", ".insp-art-row", ".dag-checkpoint-badge",
+                      ".dag-checkpoint-resumed", ".dag-node-clickable"):
+            assert token in self.css, f"缺少 {token} 样式"

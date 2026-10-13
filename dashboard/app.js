@@ -387,8 +387,10 @@
 
   function closeRun () {
     if (runTimer) { clearInterval(runTimer); runTimer = null; }
+    if (inspectorTimer) { clearInterval(inspectorTimer); inspectorTimer = null; }
     currentRunId = null;
     runPanel.hidden = true;
+    if (inspector) inspector.hidden = true;
     document.querySelectorAll('.card').forEach(c => {
       if (c.id !== 'panel-run') c.hidden = false;
     });
@@ -427,12 +429,13 @@
       const layers = (dag.layers && dag.layers.length) ? dag.layers
         : dag.nodes.map(n => [n.name]);
       const flow = elt('div', 'dag-flow');
+      renderCheckpointMarkers(dag, flow);
       layers.forEach((layer, li) => {
         if (li > 0) flow.appendChild(elt('div', 'dag-arrow', '▼'));
         const col = elt('div', 'dag-layer');
         layer.forEach(name => {
           const node = byName[name];
-          if (node) col.appendChild(renderNode(node));
+          if (node) col.appendChild(renderNode(node, d.id));
         });
         flow.appendChild(col);
       });
@@ -461,21 +464,30 @@
     runBody.replaceChildren(frag);
   }
 
-  function renderNode (n) {
+  function renderNode (n, taskId) {
     const state = nodeVisualState(n);
     const box = elt('div', 'dag-node dag-' + state);
+    // S3：节点可点 → 打开右侧检查器抽屉（spec §4.2 统一骨架）
+    box.classList.add('dag-node-clickable');
+    box.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openInspector(taskId, n.name);
+    });
     // when 不成立 = 作者声明的可选分支 → 虚线边框（spec §4.2 S2）
     if (state === 'skipped' && n.skip_reason === 'condition') {
       box.classList.add('dag-skip-condition');
-      box.title = 'when 条件不成立——作者声明的可选分支（下游不受影响）';
+      box.title = 'when 条件不成立——作者声明的可选分支（下游不受影响）· 点击查看节点明细';
     } else if (state === 'skipped') {
-      box.title = '依赖失败被级联跳过';
+      box.title = '依赖失败被级联跳过 · 点击查看节点明细';
     } else if (n.error) {
-      box.title = n.error;
+      box.title = n.error + ' · 点击查看节点明细';
+    } else {
+      box.title = '点击查看节点明细';
     }
     const head = elt('div', 'dag-node-head');
     head.appendChild(statusDot(state));
     head.appendChild(elt('span', 'dag-node-name', n.name || '—'));
+    if (n.retried) head.appendChild(elt('span', 'dag-retried-flag', '重试'));
     box.appendChild(head);
     const meta = elt('div', 'dag-node-meta');
     meta.textContent = NODE_STATE_LABEL[state] || state;
@@ -488,6 +500,185 @@
       box.appendChild(err);
     }
     return box;
+  }
+
+  /* ==========================================================
+     S3 节点检查器（spec §4.2）——右侧抽屉：artifact 结构预览 /
+     幂等键 / 熔断限流态 / 质量门明细 / 断点视图。
+     数据契约：GET /tasks/<id>/nodes/<name>（tests/test_node_inspector.py）。
+     "取不到就不编"：熔断/限流/质量门为 null 时抽屉如实显示"未建立"，
+     不像旧监控台那样给一个看起来有值的假读数。
+     ========================================================== */
+  const inspector = $('#node-inspector');
+  const inspectorBody = $('#inspector-body');
+  const inspectorTitle = $('#inspector-title');
+  let inspectorTimer = null;
+
+  function openInspector (taskId, nodeName) {
+    if (!taskId || !nodeName) return;
+    if (inspectorTimer) { clearInterval(inspectorTimer); inspectorTimer = null; }
+    if (inspector) inspector.hidden = false;
+    if (inspectorTitle) inspectorTitle.textContent = nodeName;
+    if (inspectorBody) inspectorBody.replaceChildren(elt('div', 'run-loading', '加载节点明细…'));
+    const tick = async () => {
+      try {
+        const d = await fetchJson(API_BASE + '/tasks/' + encodeURIComponent(taskId)
+          + '/nodes/' + encodeURIComponent(nodeName));
+        renderInspector(d);
+      } catch (e) {
+        if (inspectorBody) {
+          inspectorBody.replaceChildren(emptyState('i-warn', '读取节点明细失败：' + e.message));
+        }
+      }
+    };
+    tick();
+    // 运行中的任务：跟着刷新，让重试计数/熔断态实时可见
+    inspectorTimer = setInterval(tick, 3000);
+  }
+
+  function closeInspector () {
+    if (inspectorTimer) { clearInterval(inspectorTimer); inspectorTimer = null; }
+    if (inspector) inspector.hidden = true;
+    if (inspectorBody) inspectorBody.replaceChildren();
+  }
+
+  function inspectorRow (label, value, cls) {
+    const row = elt('div', 'insp-row');
+    row.appendChild(elt('span', 'insp-label', label));
+    const v = elt('span', 'insp-value' + (cls ? ' ' + cls : ''), value == null ? '—' : value);
+    row.appendChild(v);
+    return row;
+  }
+
+  function renderInspector (d) {
+    const frag = document.createDocumentFragment();
+    const node = d.node || {};
+
+    // ── 状态与执行 ──
+    const st = elt('div', 'insp-block');
+    st.appendChild(elt('h4', null, '执行'));
+    st.appendChild(inspectorRow('Agent', node.agent));
+    st.appendChild(inspectorRow('状态', (NODE_STATE_LABEL[node.status] || node.status)));
+    st.appendChild(inspectorRow('尝试次数', node.attempts + ' / ' + (node.max_retries != null ? node.max_retries : '?')));
+    st.appendChild(inspectorRow('依赖', (node.dependencies || []).join(', ') || '无'));
+    if (node.skip_reason) {
+      st.appendChild(inspectorRow('跳过原因',
+        node.skip_reason === 'condition' ? 'when 条件不成立（作者声明的可选分支）' : '依赖失败级联跳过'));
+    }
+    if (node.error) {
+      const err = elt('div', 'insp-error');
+      err.textContent = node.error;
+      st.appendChild(err);
+    }
+    frag.appendChild(st);
+
+    // ── artifact 结构预览 ──
+    const art = d.artifact || {};
+    const ab = elt('div', 'insp-block');
+    ab.appendChild(elt('h4', null, '产物（artifact）'));
+    if (!art.keys || !art.keys.length) {
+      ab.appendChild(elt('div', 'insp-empty', '该节点没有产出'));
+    } else {
+      const table = elt('div', 'insp-artifact');
+      for (const k of art.keys) {
+        const p = (art.preview || {})[k] || {};
+        const row = elt('div', 'insp-art-row');
+        row.appendChild(elt('span', 'insp-art-key', k));
+        row.appendChild(elt('span', 'insp-art-type', p.type || '—'));
+        const val = p.type === 'str'
+          ? (p.value || '') + (p.length > 200 ? '（共 ' + p.length + ' 字符，已截断）' : '')
+          : (p.type === 'list' ? p.length + ' 项'
+            : p.type === 'dict' ? (p.keys || []).join(', ')
+            : JSON.stringify(p.value));
+        row.appendChild(elt('span', 'insp-art-val', val));
+        table.appendChild(row);
+      }
+      ab.appendChild(table);
+      if (art.truncated) {
+        ab.appendChild(elt('div', 'insp-note', '长文本已截断显示'));
+      }
+    }
+    frag.appendChild(ab);
+
+    // ── 幂等键 ──
+    const idem = d.idempotency || {};
+    const ib = elt('div', 'insp-block');
+    ib.appendChild(elt('h4', null, '幂等键'));
+    const key = elt('code', 'insp-key', idem.key || '—');
+    ib.appendChild(key);
+    ib.appendChild(inspectorRow('已记录',
+      idem.recorded == null ? '查不到（store 未就绪）' : (idem.recorded ? '是——重复执行会被跳过' : '否——首次执行'),
+      idem.recorded ? 'insp-ok' : 'insp-muted'));
+    frag.appendChild(ib);
+
+    // ── 熔断 / 限流 ──
+    const cbv = d.circuit_breaker, rlv = d.rate_limit;
+    const rb = elt('div', 'insp-block');
+    rb.appendChild(elt('h4', null, '熔断与限流'));
+    if (cbv) {
+      rb.appendChild(inspectorRow('熔断器', cbv.state + '（连续失败 ' + (cbv.failure_count || 0) + ' 次）',
+        cbv.state === 'CLOSED' ? 'insp-ok' : 'insp-warn'));
+    } else {
+      rb.appendChild(elt('div', 'insp-empty', '熔断器未建立（该 Agent 尚未被熔断逻辑接管）'));
+    }
+    if (rlv) {
+      rb.appendChild(inspectorRow('限流', 'rate ' + rlv.rate + ' / burst ' + rlv.burst
+        + ' / 余量 ' + rlv.available_tokens));
+      rb.appendChild(inspectorRow('累计', '放行 ' + rlv.total_acquired + ' / 阻塞 ' + rlv.total_blocked));
+    } else {
+      rb.appendChild(elt('div', 'insp-empty', '限流器未建立（该 Agent 未配 rate_limit）'));
+    }
+    frag.appendChild(rb);
+
+    // ── 质量门明细 ──
+    if (d.quality) {
+      const q = d.quality;
+      const qb = elt('div', 'insp-block');
+      qb.appendChild(elt('h4', null, '质量门明细'));
+      qb.appendChild(inspectorRow('总分', q.overall_score + (q.threshold != null ? ' / 阈值 ' + q.threshold : ''),
+        (q.threshold != null && q.overall_score < q.threshold) ? 'insp-warn' : 'insp-ok'));
+      if (q.scores) {
+        for (const [dim, sc] of Object.entries(q.scores)) {
+          qb.appendChild(inspectorRow(dim, sc));
+        }
+      }
+      if (q.profile) qb.appendChild(inspectorRow('画像', q.profile));
+      if (q.needs_regenerate) qb.appendChild(inspectorRow('需重生成', '是'));
+      if (q.style_issues && q.style_issues.length) {
+        const issues = elt('div', 'insp-issues');
+        q.style_issues.forEach(s => issues.appendChild(elt('div', 'insp-issue', s)));
+        qb.appendChild(issues);
+      }
+      frag.appendChild(qb);
+    }
+
+    // ── 断点视图 ──
+    const cp = d.checkpoint;
+    if (cp) {
+      const cpb = elt('div', 'insp-block');
+      cpb.appendChild(elt('h4', null, '断点续跑'));
+      cpb.appendChild(inspectorRow('断点文件', cp.exists ? '已落盘' : '未落盘',
+        cp.exists ? 'insp-ok' : 'insp-muted'));
+      cpb.appendChild(inspectorRow('本次为续跑', cp.resumed ? '是' : '否', cp.resumed ? 'insp-warn' : 'insp-muted'));
+      cpb.appendChild(inspectorRow('已完成节点', cp.completed_nodes));
+      frag.appendChild(cpb);
+    }
+
+    if (inspectorBody) inspectorBody.replaceChildren(frag);
+  }
+
+  // S2 DAG 上的断点续跑标记：有断点且是续跑时在层流顶部打一个角标
+  function renderCheckpointMarkers (dag, flowEl) {
+    const cp = dag && dag.checkpoint;
+    if (!cp || !flowEl) return;
+    if (cp.exists) {
+      const badge = elt('div', 'dag-checkpoint-badge'
+        + (cp.resumed ? ' dag-checkpoint-resumed' : ''));
+      badge.textContent = cp.resumed
+        ? '断点续跑（已完成 ' + cp.completed_nodes + ' 节点）'
+        : '断点已落盘（' + cp.completed_nodes + ' 节点完成）';
+      flowEl.insertBefore(badge, flowEl.firstChild);
+    }
   }
 
   function renderApprovalBar (taskId, gate) {
@@ -1041,6 +1232,8 @@
     if (els.retryBtn) els.retryBtn.addEventListener('click', handleRetry);
     if (els.newTaskForm) els.newTaskForm.addEventListener('submit', submitTask);
     if (runBack) runBack.addEventListener('click', closeRun);
+    const inspClose = document.querySelector('#inspector-close');
+    if (inspClose) inspClose.addEventListener('click', closeInspector);
     loadPipelines();
     if (els.tokenSave) {
       const saveToken = () => {
