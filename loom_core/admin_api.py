@@ -523,6 +523,20 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return "sha256:" + hashlib.sha256(tok.encode()).hexdigest()[:12]
         return "trust" if not self.api_key else "anonymous"
 
+    def _sync_shared_config(self) -> None:
+        """别的进程（worker / CLI / 另一个 Admin API）改过的运行时配置，本进程跟着生效。
+
+        每个请求入口鉴权后调一次（覆写文件一次 stat，无变更即返回）。失败只记
+        日志保留旧配置——配置同步失败不该把请求打成 500。
+        """
+        orch = self.orch
+        if not orch or not hasattr(orch, "refresh_config_if_changed"):
+            return
+        try:
+            orch.refresh_config_if_changed()
+        except Exception as e:  # noqa: BLE001 —— 同步失败不该炸请求
+            _logger.warning("[AdminAPI] 共享配置同步失败，保留旧配置: %s", e)
+
     def do_GET(self):
         try:
             # 静态资源免鉴权
@@ -537,6 +551,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             if not self._check_auth():
                 self._json({"error": "unauthorized"}, 401)
                 return
+            self._sync_shared_config()
             if self.path.startswith("/stream"):
                 self._handle_stream()
                 return
@@ -649,6 +664,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             if not self._check_auth():
                 self._json({"error": "unauthorized"}, 401)
                 return
+            self._sync_shared_config()
 
             # 读取请求体（已通过鉴权）；超限直接 413，不读入内存（S4 内存 DoS 防护）
             try:
@@ -764,6 +780,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             if not self._check_auth():
                 self._json({"error": "unauthorized"}, 401)
                 return
+            self._sync_shared_config()
             if self.path.startswith("/api/events/hooks/"):
                 hook_id = self.path.split("/api/events/hooks/")[1]
                 self._handle_unregister_hook(hook_id)
@@ -1238,6 +1255,10 @@ class AdminHandler(BaseHTTPRequestHandler):
         `<状态目录>/audit/config.jsonl`（与入站 webhook 同一份实现），
         记录 key / 旧值 / 新值 / 客户端 / 凭证指纹；敏感键名的值只记脱敏形状。
         写盘失败不静默——响应里带 `audit_error`。
+
+        跨进程（P1 验收第三条）：值同时写进覆写文件并递增 revision，
+        worker / 其他 Admin API 进程轮询到后同样生效。覆写写盘失败时
+        仅本进程内存生效——响应带 `propagation_error`，不静默。
         """
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
@@ -1250,8 +1271,9 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not key:
             return self._json({"error": "missing 'key' field"}, 400)
         old_value = self.orch.config.get(key)
-        self.orch.config.set(key, value)
-        _logger.info(f"[AdminAPI] 配置更新: {key} = {value!r} (旧值: {old_value!r})")
+        propagation_error = self.orch.config.set_persisted(key, value)
+        _logger.info(f"[AdminAPI] 配置更新: {key} = {value!r} (旧值: {old_value!r})"
+                     f"{' [仅本进程]' if propagation_error else ''}")
 
         from . import audit as _audit
 
@@ -1266,12 +1288,18 @@ class AdminHandler(BaseHTTPRequestHandler):
             "client": client[0] if client else "?",
         })
         payload: dict = {"key": key, "old_value": old_value,
-                         "new_value": value, "applied": True}
+                         "new_value": value, "applied": True,
+                         "revision": self.orch.config.revision}
         if audit_error:
             payload["audit_error"] = audit_error
             _logger.error(f"[AdminAPI] 配置变更审计写盘失败: {audit_error}")
         else:
             payload["audit"] = "ok"
+        if propagation_error:
+            payload["propagation_error"] = propagation_error
+            _logger.error(f"[AdminAPI] 配置覆写写盘失败（仅本进程生效）: {propagation_error}")
+        else:
+            payload["propagated"] = True
         self._json(payload)
 
     def _handle_config_audit(self):
@@ -1402,20 +1430,21 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 400)
 
     def _handle_config_reload(self):
-        """热重载配置并通知所有 Agent"""
+        """热重载配置并通知所有 Agent；同时递增 revision 让其他进程也重读"""
         if not self.orch:
             return self._json({"error": "orchestrator not set"}, 500)
         try:
             self.orch.config.reload()
-            notified = 0
-            for agent_info in self.orch.registry.list():
-                name = agent_info.get("name", "")
-                instance = self.orch.registry.get_instance(name)
-                if instance and hasattr(instance, "on_config_update"):
-                    with contextlib.suppress(Exception):
-                        instance.on_config_update(changed_keys=["*"])
-                        notified += 1
-            self._json({"reloaded": True, "agents_notified": notified})
+            notified = self.orch.notify_config_update(["*"])
+            propagation_error = self.orch.config.publish_reload()
+            payload: dict = {"reloaded": True, "agents_notified": notified,
+                             "revision": self.orch.config.revision}
+            if propagation_error:
+                payload["propagation_error"] = propagation_error
+                _logger.error(f"[AdminAPI] reload 广播失败（其他进程不会重读）: {propagation_error}")
+            else:
+                payload["propagated"] = True
+            self._json(payload)
         except Exception as e:
             self._json({"error": str(e)}, 500)
 

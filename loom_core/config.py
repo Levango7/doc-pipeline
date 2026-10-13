@@ -1,13 +1,67 @@
 """
 统一配置中心 —— 级联配置：默认值 → 配置文件 → 环境变量 → 代码覆盖
+
+跨进程热更新（P1 验收第三条）：运行时 `set` 的键值可写入**覆写文件**
+`<状态目录>/config_overrides.json`（revision + 平铺点号键），其他进程
+（worker / 第二个 Admin API）轮询 revision 即可拿到同一份运行时配置。
+覆写层位于环境变量**之后**——与既往"运行时 set 胜过一切"的内存语义一致。
 """
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import threading
+from datetime import datetime
 from pathlib import Path
+
+from .state_paths import state_root
+
+logger = logging.getLogger(__name__)
+
+
+def overlay_path() -> Path:
+    """运行时配置覆写文件（跨进程共享，见模块 docstring）。"""
+    return state_root() / "config_overrides.json"
+
+
+def _read_overlay(path: Path) -> tuple[dict, int, str]:
+    """读覆写文件 → (平铺键值, revision, 错误串)。文件不存在 = 空覆写，不是错误。"""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}, 0, ""
+    except Exception as e:  # noqa: BLE001 —— 损坏文件必须如实报错，调用方决定是否保留旧配置
+        return {}, 0, f"{type(e).__name__}: {e}"
+    if not isinstance(raw, dict):
+        return {}, 0, "overlay 顶层不是对象"
+    values = raw.get("values") or {}
+    if not isinstance(values, dict):
+        return {}, 0, "overlay values 不是对象"
+    try:
+        revision = int(raw.get("revision") or 0)
+    except (TypeError, ValueError):
+        return {}, 0, "overlay revision 不是整数"
+    return values, revision, ""
+
+
+def _write_overlay(path: Path, revision: int, values: dict) -> str | None:
+    """原子写覆写文件（临时文件 + os.replace）。失败返回错误串，不静默。
+
+    临时名带 PID：两个进程（两个 Admin 实例）同时写不会抢同一个 .tmp。
+    """
+    payload = {"revision": revision,
+               "updated": datetime.now().isoformat(timespec="seconds"),
+               "values": values}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        return None
+    except Exception as e:  # noqa: BLE001 —— 调用方要把失败回报给请求方
+        return str(e)
 
 
 class ConfigCenter:
@@ -25,6 +79,10 @@ class ConfigCenter:
         self._lock = threading.RLock()
         self._overrides: dict = {}
         self.last_reload_error: str = ""
+        self.last_overlay_error: str = ""
+        self._overlay_path = overlay_path()
+        self._overlay_revision: int = -1
+        self._overlay_mtime: float = 0.0
         self._load()
 
     def _load(self):
@@ -57,6 +115,39 @@ class ConfigCenter:
         # 3. 环境变量覆盖（以 DOCPIPE_ 开头的环境变量）
         # 例如 DOCPIPE_LLM__API_KEY=xxx → data["llm"]["api_key"] = "xxx"
         self._merge_env()
+
+        # 4. 运行时覆写层（跨进程共享；位于 env 之后=运行时 set 仍胜出）
+        self._merge_overlay(previous)
+
+    def _merge_overlay(self, previous: dict) -> None:
+        """合并覆写文件的键值。文件不存在 = 空覆写；解析失败 = 整体保留旧配置。"""
+        values, revision, error = _read_overlay(self._overlay_path)
+        try:
+            self._overlay_mtime = self._overlay_path.stat().st_mtime
+        except OSError:
+            self._overlay_mtime = 0.0
+        if error:
+            self._data = previous or self._data
+            self.last_overlay_error = error
+            self._overlay_revision = revision
+            logger.warning("配置覆写文件解析失败，保留旧配置: %s", error)
+            return
+        self.last_overlay_error = ""
+        self._overlay_revision = revision
+        for key, value in values.items():
+            self._set_dotted(key, value)
+
+    def _set_dotted(self, key: str, value) -> None:
+        """按点分隔键写入（如 'llm.model' → data['llm']['model']）。"""
+        parts = key.split(".")
+        target = self._data
+        for part in parts[:-1]:
+            nxt = target.get(part)
+            if not isinstance(nxt, dict):
+                nxt = {}
+                target[part] = nxt
+            target = nxt
+        target[parts[-1]] = value
 
     def _merge_file(self, path: Path):
         """合并 YAML/JSON 配置文件"""
@@ -138,13 +229,83 @@ class ConfigCenter:
             return target if target is not None else default
 
     def set(self, key: str, value):
-        """运行时覆盖配置"""
+        """运行时覆盖配置（仅本进程内存；跨进程用 set_persisted）"""
         with self._lock:
-            parts = key.split(".")
-            target = self._data
-            for part in parts[:-1]:
-                target = target.setdefault(part, {})
-            target[parts[-1]] = value
+            self._set_dotted(key, value)
+
+    def set_persisted(self, key: str, value) -> str | None:
+        """运行时覆盖配置并**写入覆写文件**——其他进程轮询 revision 后同样生效。
+
+        返回 None = 已持久化；返回错误串 = 仅本进程内存生效，跨进程不会拿到
+        （调用方必须把失败如实回报给请求方，不静默）。
+        """
+        with self._lock:
+            self._set_dotted(key, value)
+            return self._write_overlay_with(key, value)
+
+    def _write_overlay_with(self, key: str, value) -> str | None:
+        """读现覆写 → 改一个键 → 原子写回（revision +1）。持锁调用。"""
+        values, revision, error = _read_overlay(self._overlay_path)
+        if error:
+            return f"{error}（拒绝在损坏的覆写文件上增量写）"
+        values = dict(values)
+        values[key] = value
+        err = _write_overlay(self._overlay_path, revision + 1, values)
+        if err:
+            return err
+        self._overlay_revision = revision + 1
+        with contextlib.suppress(OSError):
+            self._overlay_mtime = self._overlay_path.stat().st_mtime
+        return None
+
+    def publish_reload(self) -> str | None:
+        """递增 revision（值不变）——让其他进程重新读取全部配置层。
+
+        用于配置文件被外部改动后的人工 reload：本进程 reload() 之外，也要
+        把"重新读一次"这件事广播给其他进程。返回 None = 已广播。
+        """
+        with self._lock:
+            values, revision, error = _read_overlay(self._overlay_path)
+            if error:
+                return error
+            err = _write_overlay(self._overlay_path, revision + 1, values)
+            if err:
+                return err
+            self._overlay_revision = revision + 1
+            return None
+
+    @property
+    def revision(self) -> int:
+        """当前已知的覆写 revision（进程启动/上次轮询读到的值）。"""
+        return max(self._overlay_revision, 0)
+
+    def poll_overlay(self) -> bool:
+        """检查覆写文件是否被别的进程改过；改过则热加载并返回 True。
+
+        每个轮询周期调一次即可（worker 循环/请求入口）。解析失败按既有
+        "保留旧配置 + 不反复重解析"语义处理：记住坏 mtime，返回 False。
+        """
+        if not self._auto_reload:
+            return False
+        try:
+            mtime = self._overlay_path.stat().st_mtime
+        except OSError:
+            return False
+        if mtime <= self._overlay_mtime:
+            return False
+        with self._lock:
+            values, revision, error = _read_overlay(self._overlay_path)
+            if error:
+                self._overlay_mtime = mtime  # 记住坏版本，不反复重解析
+                self.last_overlay_error = error
+                logger.warning("配置覆写文件解析失败，保留旧配置: %s", error)
+                return False
+            if revision == self._overlay_revision:
+                self._overlay_mtime = mtime
+                return False  # 内容没变（例如 publish_reload 之外的同内容重写）
+            self._load()
+            self.last_overlay_error = ""
+            return True
 
     def to_dict(self) -> dict:
         """导出全部配置"""

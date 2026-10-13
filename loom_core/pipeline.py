@@ -1551,6 +1551,35 @@ class PipelineOrchestrator:
     def get_execution_stats(self) -> list[dict]:
         return self._execution_stats
 
+    def refresh_config_if_changed(self) -> bool:
+        """别的进程改过运行时配置（覆写文件 revision 变）就热加载并通知 Agent。
+
+        P1 验收第三条「/api/config 热更新不再只对本进程生效」的消费端：
+        worker 循环与 Admin API 各请求入口都调它。返回 True = 确实发生了热加载。
+        """
+        if not getattr(self, "config", None):
+            return False
+        if not self.config.poll_overlay():
+            return False
+        self._log("info", "运行时配置已被其他进程修改，本进程热加载",
+                  revision=self.config.revision)
+        self.notify_config_update(["*"])
+        return True
+
+    def notify_config_update(self, changed_keys: list[str] | None = None) -> int:
+        """把配置变更通知给已注册且实现 on_config_update 的 Agent。返回通知数。"""
+        notified = 0
+        for agent_info in self.registry.list():
+            name = agent_info.get("name", "")
+            instance = self.registry.get_instance(name)
+            if instance and hasattr(instance, "on_config_update"):
+                try:
+                    instance.on_config_update(changed_keys=changed_keys or ["*"])
+                    notified += 1
+                except Exception as e:  # noqa: BLE001  单个 Agent 的通知失败不该中断其余
+                    self._log("warning", f"agent {name} on_config_update 失败", error=str(e))
+        return notified
+
     def rerun(self, pipeline_name: str = "", input_file: str = "",
               task_id: str | None = None) -> PipelineTask:
         """用上一次执行的 plan + 输入重新跑一遍"""

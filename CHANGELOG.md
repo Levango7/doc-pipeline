@@ -35,6 +35,28 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Changed（2026-10-13·续44，P1-C：配置热更新跨进程生效——P1 三条验收判据全部闭合）
+
+- **覆写文件 `<状态目录>/config_overrides.json`**（`LOOM_STATE_DIR` 同源；revision 单调
+  递增 + 点号平铺键，原子写=临时文件 + `os.replace`，无残留 .tmp）。级联位置在
+  环境变量**之后**——与既往"运行时 `set` 胜过一切"的内存语义一致；reload 不再丢
+  运行时配置（覆写层随每次 `_load` 重新生效）。
+- **两个生效路径**：新进程**构造时**直接读到；常驻进程**轮询时**——
+  `poll_overlay()` 检出 mtime/revision 变化即热加载返回 True。覆写文件损坏 =
+  保留旧配置 + `last_overlay_error` + 记住坏 mtime 不反复重解析（与主配置文件
+  既有"损坏不重解析"语义对齐）。
+- **接线**：`POST /api/config` 改走 `set_persisted`（响应带 `revision`/`propagated`，
+  写盘失败带 `propagation_error` 且**仅本进程生效如实上报，不静默**）；
+  `POST /api/config/reload` 通知 Agent 后 `publish_reload()` 广播 revision；
+  worker `run_forever` 每轮 `refresh_config()`（orchestrator 未构建时不提前拉
+  Agent）；Admin API 三个请求入口鉴权后 `_sync_shared_config()`。
+  `PipelineOrchestrator.notify_config_update()` 从 admin_api 抽出，两条路径共用。
+- **判据** `tests/test_config_overlay.py` 23 条：覆写文件契约（平铺键/原子写/增量
+  更新）、跨实例（构造见值/poll 感知/env 不敌覆写/reload 保留/publish 广播/
+  内存 set 不传播）、损坏语义、写盘失败不静默（覆写路径被占成目录即报错）、
+  **真跨进程**（父子两进程共享状态目录，子进程轮询到父进程写入，同目录铁证）、
+  Admin API / worker 消费端接线。
+
 ### Changed（2026-10-12·续43，P1-B：状态后端可换——TaskQueue 接 SQLite/Postgres 双后端）
 
 - **`loom_core/db_backend.py` 新模块**：方言差只收敛在**两处翻译**——占位符

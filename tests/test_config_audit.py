@@ -69,7 +69,7 @@ class TestConfigSetAudited:
         assert "sk-super-secret-value" not in dumped, "密钥明文进了审计文件"
         assert rec["new_value"]["redacted"] is True
         assert rec["new_value"]["length"] == len("sk-super-secret-value")
-        handler.orch.config.set.assert_called_once_with(
+        handler.orch.config.set_persisted.assert_called_once_with(
             "llm.api_key", "sk-super-secret-value")
 
     def test_non_sensitive_key_keeps_value(self, state_dir, handler):

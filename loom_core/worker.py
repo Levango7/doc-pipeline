@@ -87,6 +87,7 @@ class TaskWorker:
         stop_event = stop_event or threading.Event()
         idle_started: float | None = None
         while not stop_event.is_set():
+            self.refresh_config()
             item = self.run_once()
             if item is None:
                 if idle_timeout is not None:
@@ -98,6 +99,24 @@ class TaskWorker:
             else:
                 idle_started = None
         return self.processed
+
+    # ── 跨进程配置同步 ─────────────────────────────
+
+    def refresh_config(self) -> bool:
+        """P1 验收第三条：别的进程改过运行时配置（覆写文件 revision 变）就热加载。
+
+        orchestrator 尚未构建时直接返回 False——首个任务构建 orchestrator 的
+        那一刻会读到最新配置，无需也不该为一个空转 worker 提前加载全部 Agent。
+        同步失败只告警不退出：拿不到新配置也不该让 worker 死。
+        """
+        orch = self._orch
+        if orch is None:
+            return False
+        try:
+            return bool(orch.refresh_config_if_changed())
+        except Exception as e:  # noqa: BLE001  见 docstring：同步失败不该让 worker 退出
+            self.log.warning(f"配置热加载失败，保留旧配置: {e}")
+            return False
 
     # ── 单轮 ─────────────────────────────────────────
 
