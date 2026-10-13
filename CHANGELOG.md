@@ -35,6 +35,31 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Changed（2026-10-13·续45，P1-D：常驻服务并发模型——stdlib HTTP/1.0 + 无线程上限，两个缺陷一起关闭）
+
+- **HTTP/1.1 keep-alive**（`AdminHandler.protocol_version`）：旧形态是 HTTP/1.0，
+  无连接复用——dashboard 5 秒轮询 5 个端点 = 每 5 秒新建 5 条 TCP + 5 条线程。
+  切换的**硬前提**是每个响应都带 `Content-Length`（旧形态靠"连接关闭"界定响应体，
+  漏一处客户端就永久挂起）：`_json` / `_text` / `_prometheus` / `do_OPTIONS` 403
+  分支 / 静态文件五处全部补齐；**SSE 是长响应流，没有 Content-Length 可依**
+  ——`_handle_stream` 入口显式 `close_connection = True`，不参与连接复用。
+- **有界线程池**（新 `BoundedThreadingHTTPServer`）：accept 线程只做派发，处理
+  提交给 `ThreadPoolExecutor`；**池满即 503 + `Retry-After: 1`**——不排队、不
+  无限起线程。旧 `ThreadingHTTPServer` 名保留为别名（线程-per-连接的语义由有界
+  版接管），`inflight` 属性可观测在途工位数。
+- **socket 读/写超时**：复用基类 `StreamRequestHandler.timeout`
+  （`LOOM_ADMIN_SOCKET_TIMEOUT`，默认 30s）——半开连接与空闲 keep-alive 连接
+  超时后由服务端关闭并收回工位，不再永久占着一条（有界）线程。
+- **两个可调旋钮**：`LOOM_ADMIN_MAX_CONCURRENCY`（默认 32）、
+  `LOOM_ADMIN_SOCKET_TIMEOUT`（默认 30）；非法值回退默认不炸启动。
+- **判据** `tests/test_admin_concurrency.py` 14 条（全部真 HTTP、随机端口真
+  server）：同连接两请求连续成功 + `will_close` 为假 / 五处响应路径
+  Content-Length 逐一体操 / 池满 503+Retry-After 且 200 数正好等于池大小 /
+  503 响应体形状 / keep-alive 下"连接开着工位占着、关连接后归还"与"空闲连接
+  被超时回收"两条真时序 / 半开连接被服务端关闭 / SSE 入口置位 close_connection。
+- spec §3 P1 形态第一项（常驻服务）到此关闭；**保留 stdlib 不引框架**是刻意的
+  （决策 A）：pip 包不背三个重依赖，LLM 请求以 IO 等待为主，线程池已足够。
+
 ### Changed（2026-10-13·续44，P1-C：配置热更新跨进程生效——P1 三条验收判据全部闭合）
 
 - **覆写文件 `<状态目录>/config_overrides.json`**（`LOOM_STATE_DIR` 同源；revision 单调
