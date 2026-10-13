@@ -22,6 +22,24 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
 
+    # 真 Postgres service（P1-B：状态后端可换的验收判据跑真 PG）。
+    # 未装 psycopg 或 DSN 为空时 PG 判据 skip——SQLite 仍是默认路径。
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: loom
+          POSTGRES_DB: loom_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      LOOM_TEST_PG_URL: postgresql://postgres:loom@127.0.0.1:5432/loom_test
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,7 +59,9 @@ jobs:
           # 版本组合 = 本地全量验证过的组合（1423 passed / win + ubuntu）。
           # pymupdf：渲染层测试用它校验 pdf 文本层（中文保留率/代码缩进），
           # 只在测试期需要，不是运行时依赖。
-          pip install "pytest==8.3.4" "pytest-cov==7.1.0" "coverage==7.15.2" "pytest-asyncio==0.25.2" "ruff==0.16.4" "mypy==1.20.2" "types-PyYAML" "bandit>=1.7.0" "pip-audit>=2.7.0" "pymupdf>=1.24.0"
+          # psycopg：P1-B 真 PG 判据（state backend 可换）需要；
+          # 运行时经 `nexusloom[postgres]` 可选装（见 pyproject extras）。
+          pip install "pytest==8.3.4" "pytest-cov==7.1.0" "coverage==7.15.2" "pytest-asyncio==0.25.2" "ruff==0.16.4" "mypy==1.20.2" "types-PyYAML" "bandit>=1.7.0" "pip-audit>=2.7.0" "pymupdf>=1.24.0" "psycopg[binary]>=3.1.0"
 
       - name: Lint (ruff)
         run: |
