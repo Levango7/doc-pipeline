@@ -306,6 +306,11 @@
 
       const tr = elt('tr');
       tr.dataset.taskId = t.id == null ? '' : String(t.id);
+      // S2 入口：任务 ID 可点 → 打开运行详情（DAG + 审批操作）
+      if (tdId) {
+        tdId.classList.add('task-id-link');
+        tdId.title = '查看运行详情';
+      }
       tr.appendChild(tdId);
       tr.appendChild(elt('td', 'task-pipeline', t.pipeline || '—'));
       tr.appendChild(tdStatus);
@@ -314,6 +319,10 @@
         tr.classList.add('expandable');
         tr.title = '点击展开实时进度';
         tr.addEventListener('click', () => toggleLiveStream(String(t.id)));
+      } else {
+        tr.classList.add('row-clickable');
+        tr.title = '查看运行详情';
+        tr.addEventListener('click', () => openRun(String(t.id)));
       }
       tbody.appendChild(tr);
       if (liveStreams.has(String(t.id))) {
@@ -324,6 +333,224 @@
     table.appendChild(thead);
     table.appendChild(tbody);
     els.tasksPanel.replaceChildren(table);
+  }
+
+  /* ==========================================================
+     S2 运行详情（spec §4.2「最关键一屏，运行时卖点全靠它可见」）
+     —— DAG 有向图：节点四态 + when 跳过虚线分支 + 检查点续跑标 +
+        每节点耗时/重试次数；等待中的审批闸门带放行/驳回操作。
+     数据契约：GET /tasks/<id> 的 dag{nodes[],layers[]} 与
+     awaiting_approval / approvals（tests/test_task_dag_view.py 钉住）。
+     ========================================================== */
+  const runPanel = $('#panel-run');
+  const runBody = $('#run-body');
+  const runMeta = $('#run-meta');
+  const runBack = $('#run-back');
+  let runTimer = null;
+  let currentRunId = null;
+
+  const NODE_STATE_LABEL = {
+    success: '成功', skipped: '跳过', failed: '失败', retried: '重试后成功',
+    running: '运行中', pending: '等待',
+  };
+
+  function nodeVisualState (n) {
+    // retried 是派生态（attempts>1 且最终成功）——引擎不另存"重试态"字段
+    if (n.retried) return 'retried';
+    const s = (n.status || 'pending').toLowerCase();
+    if (s === 'success' || s === 'done') return 'success';
+    if (s === 'failed' || s === 'error') return 'failed';
+    if (s === 'skipped') return 'skipped';
+    if (s === 'running') return 'running';
+    return 'pending';
+  }
+
+  function fmtDuration (ms) {
+    if (ms == null) return '—';
+    if (ms < 1000) return Math.round(ms) + 'ms';
+    return (ms / 1000).toFixed(1) + 's';
+  }
+
+  async function openRun (taskId) {
+    if (!taskId) return;
+    currentRunId = taskId;
+    document.querySelectorAll('.card').forEach(c => {
+      if (c.id !== 'panel-run') c.hidden = true;
+    });
+    $('#error-overlay').style.display = 'none';
+    runPanel.hidden = false;
+    runBody.replaceChildren(elt('div', 'run-loading', '加载运行详情…'));
+    await refreshRun();
+    if (runTimer) clearInterval(runTimer);
+    runTimer = setInterval(refreshRun, 3000);
+  }
+
+  function closeRun () {
+    if (runTimer) { clearInterval(runTimer); runTimer = null; }
+    currentRunId = null;
+    runPanel.hidden = true;
+    document.querySelectorAll('.card').forEach(c => {
+      if (c.id !== 'panel-run') c.hidden = false;
+    });
+    runBody.replaceChildren(emptyState('i-inbox', '选择一条任务查看运行详情'));
+    runMeta.textContent = '--';
+  }
+
+  async function refreshRun () {
+    if (!currentRunId) return;
+    try {
+      const d = await fetchJson(API_BASE + '/tasks/' + encodeURIComponent(currentRunId));
+      renderRun(d);
+    } catch (e) {
+      runBody.replaceChildren(emptyState('i-warn', '读取运行详情失败：' + e.message));
+    }
+  }
+
+  function renderRun (d) {
+    const dag = d.dag || { nodes: [], layers: [] };
+    runMeta.textContent = (d.pipeline || '—') + ' · ' + (d.status || '—');
+
+    const frag = document.createDocumentFragment();
+
+    // ── 审批闸门操作条（等待中的 approval 节点） ──
+    const gate = d.awaiting_approval;
+    if (gate && Array.isArray(gate.nodes) && gate.nodes.length) {
+      frag.appendChild(renderApprovalBar(d.id, gate));
+    }
+
+    // ── DAG 分层图 ──
+    if (!dag.nodes.length) {
+      frag.appendChild(emptyState('i-inbox', '该任务没有 DAG 节点信息'));
+    } else {
+      const byName = {};
+      dag.nodes.forEach(n => { byName[n.name] = n; });
+      const layers = (dag.layers && dag.layers.length) ? dag.layers
+        : dag.nodes.map(n => [n.name]);
+      const flow = elt('div', 'dag-flow');
+      layers.forEach((layer, li) => {
+        if (li > 0) flow.appendChild(elt('div', 'dag-arrow', '▼'));
+        const col = elt('div', 'dag-layer');
+        layer.forEach(name => {
+          const node = byName[name];
+          if (node) col.appendChild(renderNode(node));
+        });
+        flow.appendChild(col);
+      });
+      frag.appendChild(flow);
+    }
+
+    // ── 决策流水 ──
+    if (Array.isArray(d.approvals) && d.approvals.length) {
+      frag.appendChild(renderApprovalHistory(d.approvals));
+    }
+
+    // ── 错误与产物 ──
+    if (d.error) {
+      const box = elt('div', 'run-error');
+      box.appendChild(iconEl('i-warn'));
+      box.appendChild(document.createTextNode(d.error));
+      frag.appendChild(box);
+    }
+    if (d.output_path) {
+      const p = elt('div', 'run-output');
+      p.appendChild(iconEl('i-download'));
+      p.appendChild(document.createTextNode('产物：' + d.output_path));
+      frag.appendChild(p);
+    }
+
+    runBody.replaceChildren(frag);
+  }
+
+  function renderNode (n) {
+    const state = nodeVisualState(n);
+    const box = elt('div', 'dag-node dag-' + state);
+    // when 不成立 = 作者声明的可选分支 → 虚线边框（spec §4.2 S2）
+    if (state === 'skipped' && n.skip_reason === 'condition') {
+      box.classList.add('dag-skip-condition');
+      box.title = 'when 条件不成立——作者声明的可选分支（下游不受影响）';
+    } else if (state === 'skipped') {
+      box.title = '依赖失败被级联跳过';
+    } else if (n.error) {
+      box.title = n.error;
+    }
+    const head = elt('div', 'dag-node-head');
+    head.appendChild(statusDot(state));
+    head.appendChild(elt('span', 'dag-node-name', n.name || '—'));
+    box.appendChild(head);
+    const meta = elt('div', 'dag-node-meta');
+    meta.textContent = NODE_STATE_LABEL[state] || state;
+    if (n.attempts > 1) meta.textContent += ' · ' + n.attempts + ' 次尝试';
+    if (n.duration_ms != null) meta.textContent += ' · ' + fmtDuration(n.duration_ms);
+    box.appendChild(meta);
+    if (n.error) {
+      const err = elt('div', 'dag-node-err');
+      err.textContent = n.error;
+      box.appendChild(err);
+    }
+    return box;
+  }
+
+  function renderApprovalBar (taskId, gate) {
+    const bar = elt('div', 'approval-bar');
+    const left = elt('div', 'approval-msg');
+    left.appendChild(iconEl('i-key'));
+    const msgs = gate.messages || {};
+    const first = gate.nodes.map(n => msgs[n]).find(Boolean);
+    left.appendChild(document.createTextNode('等待审批：' + (first || gate.nodes.join(', '))));
+    bar.appendChild(left);
+    const right = elt('div', 'approval-actions');
+    right.appendChild(approvalButton(taskId, 'approve', '放行', 'btn-approve'));
+    right.appendChild(approvalButton(taskId, 'reject', '驳回', 'btn-reject'));
+    bar.appendChild(right);
+    return bar;
+  }
+
+  function approvalButton (taskId, action, label, cls) {
+    const b = elt('button', cls, label);
+    b.type = 'button';
+    b.disabled = true; // 有副作用：先要二次确认，避免手滑
+    b.title = action === 'reject' ? '终止任务（可填原因）' : '继续执行后续节点';
+    b.addEventListener('click', async () => {
+      let note = '';
+      if (action === 'reject') {
+        note = window.prompt('驳回原因（可留空）：') || '';
+        if (note === null) return;
+      }
+      if (!window.confirm(action === 'approve' ? '确认放行该审批？' : '确认驳回并终止该任务？')) return;
+      b.disabled = true;
+      b.textContent = '提交中…';
+      try {
+        await postJson(API_BASE + '/tasks/' + encodeURIComponent(taskId) + '/' + action,
+                      action === 'reject' ? { reason: note } : {});
+        await refreshRun();
+      } catch (e) {
+        b.textContent = label;
+        b.disabled = false;
+        window.alert('审批失败：' + e.message);
+      }
+    });
+    // 守卫：1.5 秒后才能点（防误触）；仍保留 confirm 二次确认
+    setTimeout(() => { b.disabled = false; }, 1500);
+    return b;
+  }
+
+  function renderApprovalHistory (approvals) {
+    const wrap = elt('div', 'approval-history');
+    wrap.appendChild(elt('h3', null, '审批决策流水'));
+    const ul = elt('ul');
+    approvals.forEach(a => {
+      const li = elt('li');
+      const tag = elt('span', 'decision decision-' + (a.decision || 'pending'),
+                      a.decision || 'pending');
+      li.appendChild(tag);
+      let text = (a.nodes || []).join(', ');
+      if (a.note) text += ' —— ' + a.note;
+      if (a.reason) text += ' —— ' + a.reason;
+      li.appendChild(document.createTextNode(text));
+      ul.appendChild(li);
+    });
+    wrap.appendChild(ul);
+    return wrap;
   }
 
   /* ---- Agents (bottom-left) ---- */
@@ -813,6 +1040,7 @@
     cacheDom();
     if (els.retryBtn) els.retryBtn.addEventListener('click', handleRetry);
     if (els.newTaskForm) els.newTaskForm.addEventListener('submit', submitTask);
+    if (runBack) runBack.addEventListener('click', closeRun);
     loadPipelines();
     if (els.tokenSave) {
       const saveToken = () => {

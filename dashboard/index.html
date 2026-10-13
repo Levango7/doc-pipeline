@@ -30,6 +30,8 @@
     <symbol id="i-quality" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="7"/><path d="M8.21 13.89 7 23l5-3 5 3-1.21-9.12"/></symbol>
     <symbol id="i-cost" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></symbol>
     <symbol id="i-logs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/></symbol>
+    <symbol id="i-run" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 4 20 12 6 20 6 4"/><line x1="2" y1="4" x2="4" y2="4"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="2" y1="20" x2="4" y2="20"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></symbol>
   </defs>
 </svg>
 
@@ -81,6 +83,21 @@
       <div class="empty-state">
         <div class="icon"><svg class="ico ico-lg" aria-hidden="true"><use href="#i-inbox"/></svg></div>
         <div>暂无任务</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FULL-WIDTH: Run Detail（S2 运行详情——spec §4.2，默认隐藏，点任务 ID 打开） -->
+  <div class="card wide" id="panel-run" hidden>
+    <div class="card-header">
+      <h2><svg class="ico" aria-hidden="true"><use href="#i-run"/></svg> 运行详情</h2>
+      <span id="run-meta" class="badge">--</span>
+      <button id="run-back" class="run-back" type="button">返回列表</button>
+    </div>
+    <div class="card-body" id="run-body">
+      <div class="empty-state">
+        <div class="icon"><svg class="ico ico-lg" aria-hidden="true"><use href="#i-inbox"/></svg></div>
+        <div>选择一条任务查看运行详情</div>
       </div>
     </div>
   </div>

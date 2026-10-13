@@ -60,6 +60,31 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 - spec §3 P1 形态第一项（常驻服务）到此关闭；**保留 stdlib 不引框架**是刻意的
   （决策 A）：pip 包不背三个重依赖，LLM 请求以 IO 等待为主，线程池已足够。
 
+### Added（2026-10-13·续46，§4.2 S2 运行详情屏——控制台第一屏，决策"先 C 后 B"的 C 落地）
+
+- **后端透出 DAG 视图**：`GET /tasks/<id>` 新增 `dag{nodes[],layers[]}`——
+  逐节点 `status` / `attempts` / `duration_ms` / `skip_reason` / `error` /
+  `dependencies`，加 `execution_order` 拓扑层级。**retried 是派生态**
+  （`attempts>1` 且最终 success，引擎不另存"重试态"字段）；`attempts` 缺失时用
+  `task.steps` 条数兜底（池化/别名节点按 name 匹配后再回退 agent_name，避免
+  节点状态全落 pending）。`skipped` 两种语义可区分：`skip_reason="condition"`
+  （`when` 不成立，下游不受影响）vs 空串（依赖失败级联跳过）。
+  没有 DAG 信息的任务给**空结构而不是省略键**（legacy 路径不炸前端分支）。
+- **审批闸门随详情一起出**：`awaiting_approval` + `approvals` 决策流水——
+  P1-C 之后"人审"在控制台有落点（此前只有 API，没有界面）。
+- **前端 S2 屏**（Vanilla JS，零构建链，沿用既有 card 骨架）：任务行点击 →
+  详情态（其他卡隐藏）；DAG 分层渲染（层间 ▼、并行节点同行）；四态配色 +
+  `when` 跳过**虚线边框** + 重试标 + 耗时/尝试次数 + 失败原因 inline；
+  审批操作条（放行/驳回，reject 可填原因，按钮 1.5s 守卫 + confirm 二次确认）；
+  决策流水列表。返回列表恢复原状。
+- **判据**：`tests/test_task_dag_view.py` 7 条（真 HTTP：全字段形状 / 两种跳过
+  可区分 / 无 DAG 给空结构 / 层级兜底 / steps 兜底 attempts / 审批两字段），
+  `tests/test_dashboard_s2.py` 13 条结构护栏（CI 无浏览器，真机渲染由无头
+  Chrome 走查留证）。
+- **踩坑入档**：`.card{display:flex}` 是作者样式，**压过 UA 的
+  `[hidden]{display:none}`**——不写 `.card[hidden]{display:none!important}`，
+  "详情态隐藏其他卡片"只是设置了属性、画面毫无变化（无头 Chrome 实测）。
+
 ### Changed（2026-10-13·续44，P1-C：配置热更新跨进程生效——P1 三条验收判据全部闭合）
 
 - **覆写文件 `<状态目录>/config_overrides.json`**（`LOOM_STATE_DIR` 同源；revision 单调
