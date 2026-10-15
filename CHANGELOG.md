@@ -50,14 +50,31 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
   `task_id/status/result/error` 仍在，实测 `RunHandle.to_dict()` 覆盖）。
 - **`PAUSED` 算 `wait()` 的终态**：停在审批闸门前等人决定的任务不是"还在跑"，
   否则 `wait()` 会替一个人类闸门挂到超时。
-- **判据**：`tests/test_run_handle.py` 16 条——真跑离线流水线（transform→safe_writer，
+- **判据**：`tests/test_run_handle.py` 20 条——真跑离线流水线（transform→safe_writer，
   无网络无 LLM，落盘与备份都在 tmp 目录）测 status/产物/字节真值；真 HTTP 测 admin
   接线；真 `MCPServer._handle_request` 测 MCP 接线；`wait()` 的超时预算与不挂死用
-  计时断言。四组变异对照全被抓住：`artifacts()` 恒空（4 条红）、去掉持久队列回落、
+  计时断言。六组变异对照全被抓住：`artifacts()` 恒空（4 条红）、去掉持久队列回落、
   PAUSED 移出终态集（该条实测耗时 31s 才红，正是"没被卡住就会挂死"的形状）、
-  句柄缓存工作对象。
+  句柄缓存工作对象、句柄缓存状态字符串、MCP 载荷改回下标访问。
+  `loom_core/run_handle.py` 覆盖 **82/82 = 100%**（`--cov=loom_core.run_handle`）。
 - **一处判据自纠**：MCP 同源断言最初写成 `payload["artifacts"] == handle.artifacts()`，
   变异后**两边同时为空、断言恒真** ⇒ 先加"确实有东西"再比同源，才抓得住。
+- **review 自查（同一轮，四个提交）**，抓到六条：
+  ① `status()` 一行里读两遍 `task.status`（先 `hasattr` 再取值），并行腿随时推进它 ⇒ 改读一次；
+  ② 我的 freshness 用例是**侥幸变绿**的——替身用 pop-based property，恰好依赖那两遍读，
+  把实现改成"缓存状态字符串"照样绿 ⇒ 替身换成可写字段并补一条专门卡它的用例；
+  ③ `wait()` 默认 poll 0.05，而任务不在内存时每轮是一次 SQLite 取行 ⇒ 默认 0.2 并写明代价；
+  ④ 新字段 `artifacts` 进了 HTTP 响应却没进 OpenAPI 的 `TaskInfo` ⇒ 补 schema
+  （顺带记录：`dag`/`awaiting_approval`/`approvals` 同样缺，属既有漂移，本轮未扩范围）；
+  ⑤ **真缺陷**：`_trim_task_history` 只留最近 100 个任务（`pipeline.py:1621`），MCP 先判存在
+  再 `to_dict()` 二次读，中间被淘汰会抛 KeyError 把整条 JSON-RPC 帧打飞 ⇒ 改 `.get()` 降级，
+  判据双向验过（`.get` 版 20 passed；改回下标该条红 `KeyError: 'result'`）；
+  ⑥ 三条写了没测的承诺（`task_id` 属性零使用、跳过/非 dict 节点会不会混进清单、
+  交付物文件读不到时条目消失）各补一条判据。
+- **本机一轮的两条红与它们的性质**：README 计数护栏红是我加了 4 条用例后忘了同步数字
+  （护栏正常工作，改数即绿）；`test_executor_factory::test_parallel_speedup` 红是
+  **CPU 饥饿型假红**——那一轮我并发跑了变异批次/覆盖率探针/全量（1137s vs 平时 735s），
+  单独复跑 `tests/test_executor_factory.py` **33 passed / 10.9s**。没有改那条判据也没有跳过它。
 
 
 ### Added（2026-10-14·续47，§4.2 S3 节点检查器 + S2 断点续跑标记——控制台第二屏）
