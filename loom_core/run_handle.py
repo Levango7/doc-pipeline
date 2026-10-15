@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import nullcontext
 from typing import Any
 
 from .pipeline import TaskStatus
@@ -48,10 +49,15 @@ class RunHandle:
     # ─── status ────────────────────────────────────────
 
     def status(self) -> str:
-        """状态字符串；内存缺失时读持久队列，两边都没有则 "unknown"。"""
+        """状态字符串；内存缺失时读持久队列，两边都没有则 "unknown"。
+
+        `task.status` 只读一次：并行腿随时可能推进它，读两遍就可能拿 A 的 `.value`
+        判空、拿 B 的值返回。
+        """
         task = self.task
         if task is not None:
-            return task.status.value if hasattr(task.status, "value") else str(task.status)
+            state = task.status
+            return state.value if hasattr(state, "value") else str(state)
         queue = getattr(self._orch, "task_queue", None)
         row = queue.get(self._task_id) if queue is not None else None
         if isinstance(row, dict):
@@ -61,11 +67,14 @@ class RunHandle:
     def is_terminal(self) -> bool:
         return self.status() in TERMINAL_STATUSES
 
-    def wait(self, timeout: float | None = None, poll: float = 0.05) -> str:
+    def wait(self, timeout: float | None = None, poll: float = 0.2) -> str:
         """阻塞到终态或超时，返回最后一次读到的状态。
 
         超时**不抛**：调用方要能区分"跑完了"与"我等多了"，所以判据是返回值 +
         `is_terminal()`，而不是异常。`timeout=None` 表示不设限。
+
+        任务在内存里时 `poll` 只是字典读；不在内存时每轮是一次 SQLite 取行，
+        默认 0.2s 就是把这条路径的开销钉住（多机 worker 下状态仍能从队列读到）。
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
@@ -123,8 +132,8 @@ class RunHandle:
         """接口层共享的状态载荷（字段名沿用各接口已有键，只增不改）。"""
         task = self.task
         out: dict[str, Any] = {
-            "task_id": self._task_id,
-            "id": self._task_id,
+            "task_id": self.task_id,
+            "id": self.task_id,
             "status": self.status(),
             "terminal": self.is_terminal(),
         }
@@ -145,10 +154,8 @@ class RunHandle:
         # 必须持 result_lock：并行腿在 as_completed 里逐节点写 task.result，
         # 无锁拷贝会撞上 dict 并发变更（RuntimeError: dictionary changed size）
         lock = getattr(task, "result_lock", None)
-        if lock is not None:
-            with lock:
-                return dict(getattr(task, "result", {}) or {})
-        return dict(getattr(task, "result", {}) or {})
+        with (lock if lock is not None else nullcontext()):
+            return dict(getattr(task, "result", {}) or {})
 
 
 def _size_of(path: str) -> int:

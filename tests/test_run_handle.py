@@ -63,11 +63,15 @@ def _offline_yaml(out: Path, backup: Path) -> str:
     return _OFFLINE_YAML.format(out=out.as_posix(), backup=backup.as_posix())
 
 
-class _SeqStatus:
-    """让 status() 每次读到一个新值的最小任务替身。"""
+class _StubTask:
+    """状态可写的最小任务替身。
 
-    def __init__(self, values):
-        self._values = list(values)
+    刻意不用"读一次 pop 一个值"的 property：那种写法会让用例通过与否取决于
+    `status()` 内部读了几遍属性（review 时发现原写法正是这样侥幸变绿的）。
+    """
+
+    def __init__(self, status="running"):
+        self.status = SimpleNamespace(value=status)
         self.pipeline_name = "probe"
         self.progress = 0
         self.result = {}
@@ -76,11 +80,6 @@ class _SeqStatus:
         self.dag_nodes = {}
         self.awaiting_approval = None
         self.approvals = []
-
-    @property
-    def status(self):
-        return SimpleNamespace(value=self._values.pop(0) if len(self._values) > 1
-                               else self._values[0])
 
 
 @pytest.fixture(scope="module")
@@ -126,13 +125,13 @@ class TestStatus:
         assert handle.is_terminal() is True
 
     def test_handle_reads_latest_not_a_snapshot(self):
-        """句柄按 task_id 现取现拼：任务状态变了，status() 必须跟着变。"""
-        task = _SeqStatus(["running"])
+        """同一个工作对象的状态推进了，`status()` 必须跟着变（句柄不缓存载荷）。"""
+        task = _StubTask("running")
         orch = MagicMock()
         orch.get_task.return_value = task
         handle = RunHandle(orch, "t1")
         assert handle.status() == "running"
-        task._values.append("done")
+        task.status = SimpleNamespace(value="done")
         assert handle.status() == "done"
 
     def test_handle_reads_through_to_the_orchestrator(self):
@@ -141,12 +140,12 @@ class TestStatus:
         与上一条分开测：上一条只覆盖"同一对象的状态变了"，把句柄改成"构造时缓存
         task 对象"照样能过；这一条才卡住对象级缓存。
         """
-        holder = {"task": _SeqStatus(["running"])}
+        holder = {"task": _StubTask("running")}
         orch = MagicMock()
         orch.get_task.side_effect = lambda tid: holder["task"]
         handle = RunHandle(orch, "t1")
         assert handle.status() == "running"
-        holder["task"] = _SeqStatus(["done"])
+        holder["task"] = _StubTask("done")
         assert handle.status() == "done", "句柄缓存了旧的工作对象"
 
     def test_status_falls_back_to_persisted_queue(self):
@@ -156,6 +155,15 @@ class TestStatus:
 
     def test_unknown_when_neither_memory_nor_queue_has_it(self):
         assert RunHandle(_StubOrch(), "nope").status() == "unknown"
+
+    def test_to_dict_on_unknown_task_stays_minimal(self):
+        """查无此运行时载荷只有身份与状态，不编 result / 产物 / 流水线名。"""
+        payload = RunHandle(_StubOrch(), "nope").to_dict()
+        assert payload["status"] == "unknown"
+        assert payload["task_id"] == payload["id"] == "nope"
+        assert payload["terminal"] is False
+        for invented in ("result", "artifacts", "pipeline"):
+            assert invented not in payload, f"查无此任务却给出了 {invented} 字段"
 
 
 # ─── 2. wait ───────────────────────────────────────────
@@ -167,7 +175,7 @@ class TestWait:
 
     def test_wait_honours_timeout_instead_of_hanging(self):
         """超时不抛异常，返回最后一次读到的非终态——调用方靠 is_terminal() 分辨。"""
-        task = _SeqStatus(["running"])
+        task = _StubTask("running")
         orch = MagicMock()
         orch.get_task.return_value = task
         started = time.monotonic()
@@ -176,14 +184,13 @@ class TestWait:
         assert got == "running"
         assert 0.15 <= elapsed < 2.0, f"wait() 没按预算收手（{elapsed:.3f}s）"
 
-    @pytest.mark.parametrize("paused", ["paused"])
-    def test_paused_counts_terminal(self, paused):
+    def test_paused_counts_terminal(self):
         """停在审批闸门（PAUSED）不能算"还在跑"，否则 wait() 会替一个等人决定的任务挂死。"""
-        task = _SeqStatus([paused])
+        task = _StubTask("paused")
         orch = MagicMock()
         orch.get_task.return_value = task
         started = time.monotonic()
-        assert RunHandle(orch, "t1").wait(timeout=30) == paused
+        assert RunHandle(orch, "t1").wait(timeout=30) == "paused"
         assert time.monotonic() - started < 1.0
 
 
@@ -236,6 +243,36 @@ class TestArtifacts:
         items = RunHandle(orch, "t1").artifacts()
         assert items == [{"kind": "artifact", "node": "transform",
                           "keys": ["content"], "status": "success"}]
+
+    def test_skipped_and_failed_nodes_are_not_listed_as_artifacts(self):
+        """没产出就不算产物：被跳过的节点（result 为空）与非 dict 结果都不能进清单。
+
+        这一条盯的是"产物清单虚增"——把 `when` 跳过的节点也列出来，读的人会以为
+        它交付过东西（与 FP-1"有字的垃圾算通过"是同一类假结论）。
+        """
+        nodes = {
+            "ok": SimpleNamespace(result={"content": "x"}, status="success"),
+            "skipped": SimpleNamespace(result={}, status="skipped"),
+            "weird": SimpleNamespace(result="不是 dict", status="success"),
+            "none": SimpleNamespace(result=None, status="failed"),
+        }
+        task = SimpleNamespace(dag_nodes=nodes, output_path="",
+                               status=SimpleNamespace(value="done"))
+        orch = MagicMock()
+        orch.get_task.return_value = task
+        items = RunHandle(orch, "t1").artifacts()
+        assert [i["node"] for i in items] == ["ok"], items
+
+    def test_deliverable_with_missing_file_reports_minus_one(self):
+        """交付物登记了但磁盘读不到（已删/无权限）：字节数给 -1，条目不许消失。"""
+        task = SimpleNamespace(dag_nodes={}, output_path=str(Path("nope") / "gone.md"),
+                               status=SimpleNamespace(value="done"))
+        orch = MagicMock()
+        orch.get_task.return_value = task
+        items = RunHandle(orch, "t1").artifacts()
+        assert len(items) == 1, f"文件没了就不报交付物＝清单虚减：{items}"
+        assert items[0]["kind"] == "deliverable"
+        assert items[0]["bytes"] == -1, items[0]
 
 
 # ─── 5. 接线：两个接口层都由这个原语产出产物字段 ───────

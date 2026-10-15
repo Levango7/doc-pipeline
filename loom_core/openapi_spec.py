@@ -43,6 +43,9 @@ def _schemas() -> dict:
                 "result": {"type": "object"},
                 "output_content": {"type": "string", "nullable": True},
                 "error": {"type": "string"},
+                # 由 RunHandle.artifacts() 单源产出：kind=artifact 带 node+keys，
+                # kind=deliverable 带 path+bytes（读不到磁盘时 bytes=-1，不省略这条）
+                "artifacts": {"type": "array", "items": {"type": "object"}},
             },
         },
         "CostSummary": {
