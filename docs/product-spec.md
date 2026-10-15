@@ -186,7 +186,7 @@
 | FP-2 CI 三处静默判绿 | **已关闭并经真实 CI 确认** | `9ecfc12`；CI run 37504991608 在 `690c6d7` 上 5 条 required + perf 全绿，日志实证 `结果: 26 OK / 2 WARN / 0 ERROR` 与 `VULNS: []`（即 rc 被采信且没有误红） |
 | FP-3 MCP stdout 污染 | **已关闭** | `10cc2e7` |
 | FP-3b `--json-output` 的 stdout 混入过程输出 | **已关闭**：`--json-output` 时过程输出整体改接 stderr，JSON 是唯一一行 stdout（`tests/test_cli_output_channels.py`） | 本轮提交 |
-| FP-4 `foreach` 未接线 / 无时间触发 / 无人审 | `foreach` **已接线并出厂**（2026-10-07·续4：`tests/test_foreach.py` 46 条 + `pipelines/api-digest.yaml`，六处变异对照全被抓住）；**时间触发、人审节点仍为 0**（本轮实测：产品内 grep cron/APScheduler 与 approval/manual_review 均 0 命中） | §5.1 |
+| FP-4 `foreach` 未接线 / 无时间触发 / 无人审 | **三项全部落地**（2026-10-15 复测）：`foreach` 接线并出厂（续4，`tests/test_foreach.py` 46 条 + `pipelines/api-digest.yaml`，六处变异对照全被抓住）；时间触发 = `loom_core/triggers.py`（`triggers.yaml` → 到点提交成一次普通 run，`--triggers` / `--triggers-dry-run`，判据 `tests/test_triggers.py`）；人审 = `scheduler._as_approval` 声明 + `dag_executor` 闸门 + `POST /tasks/<id>/approve\|reject`，判据 `tests/test_approval_gate.py`。本行原写"仍为 0"是 2026-10-07 那一轮的实测，**已被后续两轮实现覆盖**——现测命令：`grep -rn "_as_approval" loom_core/scheduler.py`、`ls loom_core/triggers.py tests/test_triggers.py` | §5.1 |
 
 **FP-1b 的来源（重要，因为它说明"修好一个假阳性"会暴露下一个）**：真实 CI 在 keyless 条件下产出了一份
 **21,926 字节**文档并被本步骤记为 `OUTPUT FIDELITY OK`；本机同形状产物 28.4 KB、`quality_gate` 95.5 pass。
@@ -239,6 +239,13 @@
 > 六处变异对照全部被抓住。**同一节里剩下的两项仍是零**：全仓无 cron/时间触发，
 > 也仍无 `approval` / 人审节点——本轮不占口径，别把"foreach 已接线"读成"FP-4 已关闭"。
 
+> **进展（2026-10-15，实测）**：上面那句"仍是零"只对 10-07 那一轮成立，之后两项都补上了——
+> 时间触发是 `loom_core/triggers.py`（`triggers.yaml` + `--triggers` / `--triggers-dry-run`，
+> 到点提交成一次普通 run，判据 `tests/test_triggers.py`）；人审是 `scheduler._as_approval`
+> 声明 + `dag_executor` 闸门 + `POST /tasks/<id>/approve|reject`（决策进节点结果、任务台账
+> 与 `approvals.jsonl`，判据 `tests/test_approval_gate.py`，控制台 S2 已有操作落点）。
+> ⇒ **FP-4 三项全部关闭**。复核命令见 §5.1 该行的现测列。
+
 ---
 
 ## 7. 命名与迁移（已确认：原地改名，本地路径迁至 `F:\Nexus\`）
@@ -258,7 +265,7 @@
 | **插件 group（新增）** | 无 | **`loom.agents` / `loom.packs`**〔2026-10-12 已落地；旧名 `doc_pipeline.agents`/`doc_pipeline.packs` 过渡期回退可读（命中记一次迁移提示）〕 | 20x 的开关 |
 | MCP `serverInfo.name` | `doc-pipeline` | `loom` | `mcp_server.py:52` |
 | 观测 namespace | `docpipeline` | `loom` | `observability.py:161` |
-| **API 原语（新增）** | 裸 `task_id` 字符串 | **`RunHandle`**：`status / await / cancel / resume / artifacts` | HTTP `/api/tasks` 与 MCP 返回值都要换成它 |
+| **API 原语（新增）** | 裸 `task_id` 字符串 | **`RunHandle`**：`status / wait / cancel / resume / artifacts`〔2026-10-15 落地：`loom_core/run_handle.py` + `PipelineOrchestrator.run_handle(task_id)`；spec 原写的 `await` 是 Python 关键字，落地名 `wait()`，语义不变〕 | **已接线**：MCP `get_task` 与 Admin `GET /tasks/<id>` 的 `artifacts` 字段由它产出（同源，判据 `tests/test_run_handle.py`）；POST 提交类响应仍以 `task_id` 为凭据——句柄是"读一次运行"的入口，不是收据 |
 
 > **命名已确认（2026-10-07）**：产品名 **Loom**；`handle` 这个词留给 API 原语 `RunHandle`
 > ——运行时交给调用方的本来就是一个句柄，而现在 HTTP/MCP 传的是裸 `task_id` 字符串。

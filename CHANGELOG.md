@@ -35,6 +35,31 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
 
 ## [Unreleased]
 
+### Added（2026-10-15·续48，spec §6 的 API 原语 `RunHandle` 落地）
+
+- **`loom_core/run_handle.py`**：一次运行的句柄，五个原语 `status / wait / cancel /
+  resume / artifacts`（spec 原写 `await`，Python 关键字，落地名 `wait()` 语义不变）。
+  入口是 `PipelineOrchestrator.run_handle(task_id)`；句柄不持有 task 对象，每次读
+  最新态——任务不在内存时 `status()` 回落到持久队列（多机 worker / 重启后仍能问状态），
+  两边都没有才报 `unknown`。
+- **`artifacts()` 只报引擎确实记下的东西**：逐节点结构化产物（`TaskNode.result` 的键）
+  + 声明 `WRITES_OUTPUT` 的节点挂上的交付物（路径 + 磁盘真值字节数）。这替掉的是
+  MAOP 侧按节点名造伪 ID 的写法（`pipeline:<名>:step<n>:<agent>`）。
+- **接线（不是"造了个没人调的类"）**：MCP `get_task` 与 Admin `GET /tasks/<id>` 的
+  `artifacts` 字段都由这个原语产出；两处旧字段一个没动（MAOP 适配器读的
+  `task_id/status/result/error` 仍在，实测 `RunHandle.to_dict()` 覆盖）。
+- **`PAUSED` 算 `wait()` 的终态**：停在审批闸门前等人决定的任务不是"还在跑"，
+  否则 `wait()` 会替一个人类闸门挂到超时。
+- **判据**：`tests/test_run_handle.py` 16 条——真跑离线流水线（transform→safe_writer，
+  无网络无 LLM，落盘与备份都在 tmp 目录）测 status/产物/字节真值；真 HTTP 测 admin
+  接线；真 `MCPServer._handle_request` 测 MCP 接线；`wait()` 的超时预算与不挂死用
+  计时断言。四组变异对照全被抓住：`artifacts()` 恒空（4 条红）、去掉持久队列回落、
+  PAUSED 移出终态集（该条实测耗时 31s 才红，正是"没被卡住就会挂死"的形状）、
+  句柄缓存工作对象。
+- **一处判据自纠**：MCP 同源断言最初写成 `payload["artifacts"] == handle.artifacts()`，
+  变异后**两边同时为空、断言恒真** ⇒ 先加"确实有东西"再比同源，才抓得住。
+
+
 ### Added（2026-10-14·续47，§4.2 S3 节点检查器 + S2 断点续跑标记——控制台第二屏）
 
 - **`GET /tasks/<id>/nodes/<name>` 节点检查器载荷**：一次给出 spec §4.2 S3 的四类
