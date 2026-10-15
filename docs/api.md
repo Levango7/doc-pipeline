@@ -52,7 +52,7 @@ curl -X POST http://127.0.0.1:8910/api/cache/clear \
 |------|------|------|
 | GET | `/tasks` | 任务列表 |
 | POST | `/api/tasks` | 提交新任务（外部调度入口，支持同步/异步） |
-| GET | `/tasks/{task_id}` | 单任务详情（含 result / output_content / output_path） |
+| GET | `/tasks/{task_id}` | 单任务详情（含 result / output_content / output_path / artifacts——产物清单由 `RunHandle` 产出，任务被内存历史淘汰后改从 `deliveries.db` 账本重建） |
 | POST | `/tasks/{task_id}/cancel` | 取消任务 |
 | POST | `/tasks/{task_id}/rerun` | 重跑流水线（复用 last plan） |
 | POST | `/tasks/{task_id}/pause` | 暂停任务（断点保留） |

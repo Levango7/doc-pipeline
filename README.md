@@ -695,6 +695,15 @@ handle.cancel(); handle.resume()      # 引擎拒绝（已完成 / 停在审批�
 `PAUSED`（停在审批闸门前）算 `wait()` 的终态——等的是人，不该把调用方一起挂住。
 产物只报引擎确实记下的东西，不按节点名造伪 ID。判据 `tests/test_run_handle.py`。
 
+任务内存历史只留最近 100 个（`pipeline._trim_task_history`），更早的运行会被淘汰。
+产物清单不跟着丢：每次运行收尾时（`DONE` 与 `FAILED` 都记）逐节点产物键与交付物路径
+一并写进交付账本 `deliveries.db`，句柄在内存里没有这一运行时**按同一形状**从账本重建，
+MCP `get_task` 与 `GET /tasks/<id>` 因此拿到同一份清单。三条边界：
+①本改动（2026-10-15）之前落账的运行没有 `artifact_keys` 这批字段，其 `artifacts` 是空表——
+**不回填、不猜**；②读路径只读，账本文件不存在就返回空，绝不因为"查一下"而创建数据库；
+③被淘汰运行的 `to_dict()` 给出 `pipeline` / `error` / `artifacts`，但不给 `result`
+（账本存的是产物键与路径，不是整份结构化结果）。
+
 ### 定时触发（Cron）
 
 按 `triggers.yaml` 的 cron 常驻调度（本地时间；**错过不补跑**，跳过窗口会打印出来）：
@@ -912,7 +921,7 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2814 个测试本机全绿**（`2814 passed, 7 skipped, 6 deselected`，2026-10-15 本机全量实测；
+**2822 个测试本机全绿**（`2822 passed, 7 skipped, 6 deselected`，2026-10-15 本机全量实测；
 本轮 `LOOM_TEST_PG_URL` 未设置 ⇒ 5 条真 Postgres 判据按 `requires_pg` 跳过；
 设了该变量的口径应比本行数多出那 5 条执行（2026-10-14 那次 2801 passed / 2 skipped 含真 PG）；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
@@ -968,6 +977,10 @@ S2 运行详情批净加 20 条判据（DAG 视图全字段真 HTTP：四态/两
 S3 节点检查器批净加 15 条判据（节点检查器载荷真 HTTP：artifact 截断预览 / 幂等键三态
 （真库 True·False·store 未就绪 None）/ 熔断限流 None 与在场两态 / 质量门只认质量形状 /
 404 三型 / 断点三种态 + dashboard 结构护栏增补 4 条；点节点出抽屉由无头 Chrome 走查留证）；
+RunHandle 那批加了 20 条判据（status 新鲜度/读穿/队列回落/未知态/to_dict 6 / wait 终态·超时·审批闸门 3 /
+cancel·resume 透传引擎布尔 3 / 产物清单形状与不虚增 5 / MCP+Admin 同源与淘汰降级 3）；
+产物持久化那批加了 6 条判据（账本行携带逐节点 artifact_keys / 被淘汰运行从账本重建同一形状 /
+淘汰态 to_dict 补齐 pipeline·error·artifacts / 读路径不建库 / 坏账本降级不抛 / 无产物键节点不编造）；
 现测命令 `python -m pytest tests/ -q`；coverage 门禁 83%，
 本机 2026-10-08 全量实测 87.99%，CI 侧 2026-10-08 实测 87.28%（3.11–3.13，3.14 是 87.25%））。
 CI 的通过数可能与本机略有
