@@ -676,7 +676,24 @@ python run.py --mcp
 
 提供 6 个 tools：`generate_document`、`run_workflow`（通用入口：任意已安装流水线 +
 任意 `inputs`，对象按「## 键」序列化为输入文档、字符串原样写入）、`get_task`、
-`list_tasks`、`list_pipelines`、`get_pipeline_info`。
+`list_tasks`、`list_pipelines`、`get_pipeline_info`。`get_task` 与 `GET /tasks/<id>`
+返回的 `artifacts` 字段来自同一个原语（见下）。
+
+### 编程句柄 `RunHandle`
+
+嵌入式调用方（MAOP 适配器、自研服务）拿的不该是一个裸 `task_id` 加一堆约定：
+
+```python
+handle = orch.run_handle(task_id)     # 任务不在内存时也能问状态（回落持久队列）
+handle.status()                       # "pending" / "running" / "paused" / "done" / …
+handle.wait(timeout=60)               # 阻塞到终态；超时返回最后状态而不是抛异常
+handle.artifacts()                    # [{"kind": "artifact", "node": …, "keys": […]},
+                                      #  {"kind": "deliverable", "path": …, "bytes": …}]
+handle.cancel(); handle.resume()      # 引擎拒绝（已完成 / 停在审批闸门）就返回 False
+```
+
+`PAUSED`（停在审批闸门前）算 `wait()` 的终态——等的是人，不该把调用方一起挂住。
+产物只报引擎确实记下的东西，不按节点名造伪 ID。判据 `tests/test_run_handle.py`。
 
 ### 定时触发（Cron）
 
@@ -895,7 +912,9 @@ HEALTHCHECK 直接探测容器内 `/health`（免鉴权）。
 python -m pytest tests/ -v
 ```
 
-**2801 个测试本机全绿**（`2801 passed, 2 skipped, 6 deselected`，2026-10-14 本机全量实测（含真 PG）；
+**2814 个测试本机全绿**（`2814 passed, 7 skipped, 6 deselected`，2026-10-15 本机全量实测；
+本轮 `LOOM_TEST_PG_URL` 未设置 ⇒ 5 条真 Postgres 判据按 `requires_pg` 跳过；
+设了该变量的口径应比本行数多出那 5 条执行（2026-10-14 那次 2801 passed / 2 skipped 含真 PG）；
 工具层迁出 artesian 后 19 条 fast_json 用例随库走，等价判据在新库加强至 35 条；
 嵌入层与知识库迁出后 74 条用例随库走，等价判据在新库加强至 91 条；
 搜索引擎迁出后 91 条用例随库走，等价判据在新库加强至 92 条，另配 30 条缓存/env 底座判据；
