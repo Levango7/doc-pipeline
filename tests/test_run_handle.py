@@ -229,8 +229,12 @@ class TestArtifacts:
         transform_item = next(i for i in items if i["node"] == "transform")
         assert "content" in transform_item["keys"], transform_item
 
-    def test_empty_when_task_not_in_memory(self):
-        """内存里没有就不报产物——不能拿持久队列里的半成品冒充产物清单。"""
+    def test_empty_when_neither_memory_nor_ledger_has_it(self):
+        """内存与账本都没有这一运行 ⇒ 空表。
+
+        这里空的理由是**账本里没有这一行**，不是"任务不在内存"——后者本来要由账本补上。
+        半成品队列行（只有 status）也不能冒充产物清单。
+        """
         assert RunHandle(_StubOrch(queue_row={"status": "done"}), "t9").artifacts() == []
 
     def test_does_not_invent_pseudo_ids(self):
