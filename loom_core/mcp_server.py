@@ -449,12 +449,16 @@ class MCPServer:
         if not task:
             return self._tool_error(req_id, f"Task not found: {task_id}")
 
+        payload = self.orch.run_handle(task_id).to_dict()
         result = {
-            "id": task.id,
-            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
-            "pipeline": task.pipeline_name,
-            "result": dict(getattr(task, "result", {})),
-            "error": getattr(task, "error", None),
+            "id": payload["id"],
+            "status": payload["status"],
+            "pipeline": payload["pipeline"],
+            "result": payload["result"],
+            "error": payload["error"],
+            # 产物清单来自 RunHandle：接口消费者不必再从 result 的键里猜哪个是产出
+            # （MAOP 侧此前是按节点名造伪 ID，那份猜测就属于这里该收掉的东西）
+            "artifacts": payload["artifacts"],
         }
         return self._tool_result(req_id, result)
 

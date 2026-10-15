@@ -1449,6 +1449,16 @@ class PipelineOrchestrator:
     def get_task(self, task_id: str) -> PipelineTask | None:
         return self._running_tasks.get(task_id)
 
+    def run_handle(self, task_id: str):
+        """取得一次运行的句柄：`status / wait / cancel / resume / artifacts`（spec §6 API 原语）。
+
+        任务不存在时**也返回句柄**——`status()` 给 "unknown"、`artifacts()` 给空表。
+        调用方因此只有一种对象形态要处理，不必"先判存在再分支"；但代价是
+        `exists` 这件事得自己看 `status()`，所以别把句柄当持久收据用。
+        """
+        from .run_handle import RunHandle
+        return RunHandle(self, task_id)
+
     def recover_tasks(self) -> list[dict]:
         """恢复中断的任务：重启时把 running 状态改回 pending。
 

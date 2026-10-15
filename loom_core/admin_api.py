@@ -974,6 +974,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             # "人审"在控制台上有了落点，这里把它和 DAG 一起交给 S2 渲染。
             "awaiting_approval": getattr(task, "awaiting_approval", None),
             "approvals": list(getattr(task, "approvals", None) or []),
+            # 产物清单（RunHandle.artifacts）：作用域已在上一步 _scoped_task 判过 404，
+            # 这里读的是同一个已授权任务对象
+            "artifacts": self.orch.run_handle(task_id).artifacts(),
         })
 
     def _task_dag_view(self, task) -> dict:
