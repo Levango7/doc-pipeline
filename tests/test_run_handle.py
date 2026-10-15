@@ -296,6 +296,36 @@ class TestWiring:
         for key in ("id", "status", "pipeline", "result", "error"):
             assert key in text, f"MCP get_task 丢了旧字段 {key}：{sorted(text)}"
 
+    def test_mcp_get_task_degrades_when_history_trimmed_mid_call(self):
+        """存在性检查过了、to_dict() 之前被 `_trim_task_history` 淘汰：不许抛 KeyError。
+
+        长驻服务只留最近 100 个任务（pipeline.py:1621）。句柄的降级形态是
+        "身份 + 状态 + 空产物"，接口层必须能把它原样发出去，而不是把整条
+        JSON-RPC 帧打飞——那属于"读得越晚越像崩"的假故障。
+        """
+        from loom_core.mcp_server import MCPServer
+
+        task = _StubTask("done")
+        reads = {"n": 0}
+
+        class _Evicting:
+            def get_task(self, tid):
+                reads["n"] += 1
+                return task if reads["n"] == 1 else None
+
+            def run_handle(self, tid):
+                return RunHandle(self, tid)
+
+            task_queue = SimpleNamespace(get=lambda tid: {"status": "done"})
+
+        resp = MCPServer(orch=_Evicting())._handle_request({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "get_task", "arguments": {"task_id": "t1"}},
+        })
+        text = json.loads(resp["result"]["content"][0]["text"])
+        assert text["status"] == "done"
+        assert text["artifacts"] == [] and text["result"] == {} and text["pipeline"] == ""
+
     def test_admin_task_detail_artifacts_come_from_the_handle(self, offline_run):
         """Admin `GET /tasks/<id>` 的 artifacts 字段由原语产出（真 orch + 真 HTTP）。"""
         import urllib.request

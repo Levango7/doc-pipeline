@@ -450,15 +450,18 @@ class MCPServer:
             return self._tool_error(req_id, f"Task not found: {task_id}")
 
         payload = self.orch.run_handle(task_id).to_dict()
+        # 用 .get 而不是下标：_trim_task_history 会淘汰超窗口的已完成任务，
+        # 存在性检查与 to_dict() 之间被清掉时，载荷会退化成"只有身份与状态"，
+        # 那种情况下也不能抛 KeyError 把整条 JSON-RPC 帧打飞。
         result = {
             "id": payload["id"],
             "status": payload["status"],
-            "pipeline": payload["pipeline"],
-            "result": payload["result"],
-            "error": payload["error"],
+            "pipeline": payload.get("pipeline", ""),
+            "result": payload.get("result", {}),
+            "error": payload.get("error"),
             # 产物清单来自 RunHandle：接口消费者不必再从 result 的键里猜哪个是产出
             # （MAOP 侧此前是按节点名造伪 ID，那份猜测就属于这里该收掉的东西）
-            "artifacts": payload["artifacts"],
+            "artifacts": payload.get("artifacts", []),
         }
         return self._tool_result(req_id, result)
 
