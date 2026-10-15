@@ -1297,6 +1297,10 @@ class PipelineOrchestrator:
                     "attempts": dag_node.attempts,
                     "duration_sec": duration,
                     "error": dag_node.error or "",
+                    # 产物键也进账本：内存里的 task 会被 _trim_task_history 淘汰
+                    # （只留最近 100 个），届时 RunHandle.artifacts() 只能从账本重建。
+                    # 没产出的节点给空表——"这一节点跑过但没交付东西"与"不知道"要可区分。
+                    "artifact_keys": sorted(str(k) for k in (dag_node.result or {})),
                 })
         finished = float(task.finished_at or 0.0)
         started = float(task.started_at or 0.0)
