@@ -157,13 +157,13 @@ class TestStatus:
         assert RunHandle(_StubOrch(), "nope").status() == "unknown"
 
     def test_to_dict_on_unknown_task_stays_minimal(self):
-        """查无此运行时载荷只有身份与状态，不编 result / 产物 / 流水线名。"""
+        """查无此运行时只给身份与空结构：`result` 明细绝不编，账本-derived 字段给空值。"""
         payload = RunHandle(_StubOrch(), "nope").to_dict()
         assert payload["status"] == "unknown"
         assert payload["task_id"] == payload["id"] == "nope"
         assert payload["terminal"] is False
-        for invented in ("result", "artifacts", "pipeline"):
-            assert invented not in payload, f"查无此任务却给出了 {invented} 字段"
+        assert "result" not in payload, "查无此任务却给了 result 明细"
+        assert payload["artifacts"] == [] and payload["pipeline"] == ""
 
 
 # ─── 2. wait ───────────────────────────────────────────
@@ -229,8 +229,12 @@ class TestArtifacts:
         transform_item = next(i for i in items if i["node"] == "transform")
         assert "content" in transform_item["keys"], transform_item
 
-    def test_empty_when_task_not_in_memory(self):
-        """内存里没有就不报产物——不能拿持久队列里的半成品冒充产物清单。"""
+    def test_empty_when_neither_memory_nor_ledger_has_it(self):
+        """内存与账本都没有这一运行 ⇒ 空表。
+
+        这里空的理由是**账本里没有这一行**，不是"任务不在内存"——后者本来要由账本补上。
+        半成品队列行（只有 status）也不能冒充产物清单。
+        """
         assert RunHandle(_StubOrch(queue_row={"status": "done"}), "t9").artifacts() == []
 
     def test_does_not_invent_pseudo_ids(self):
@@ -275,8 +279,78 @@ class TestArtifacts:
         assert items[0]["bytes"] == -1, items[0]
 
 
-# ─── 5. 接线：两个接口层都由这个原语产出产物字段 ───────
+# ─── 4b. 账本持久化：被内存窗口淘汰的老运行也查得到产物 ───
 
+def _shape(items: list[dict]) -> list[tuple]:
+    """把清单折成可比较的形状（不比顺序，比内容：kind + 节点 + 产物键）。"""
+    return sorted((i["kind"], i.get("node", ""), tuple(i.get("keys", [])))
+                  for i in items)
+
+
+class TestDurableArtifacts:
+    def test_ledger_row_carries_artifact_keys(self, offline_run):
+        """写路径：运行收尾时账本那一行必须带节点产物键——没有它，回落就是空谈。"""
+        from loom_core.deliveries import DeliveryLedger
+
+        orch, tid, _ = offline_run
+        rec = DeliveryLedger().get(tid)
+        assert rec, "run_plan 收尾必须落一行交付账本"
+        transform = next(n for n in rec["nodes"] if n["node"] == "transform")
+        assert "content" in transform["artifact_keys"], transform
+
+    def test_evicted_task_lists_the_same_artifacts(self, offline_run):
+        """`get_task` 拿不到（= 被 _trim_task_history 淘汰）时，账本重建的形状必须与内存态一致。"""
+        orch, tid, _ = offline_run
+        from_memory = orch.run_handle(tid).artifacts()
+        assert from_memory, "内存态基线自己就是空的 ⇒ 这条判据会恒真"
+        from_ledger = RunHandle(_StubOrch(), tid).artifacts()   # get_task 恒 None
+        assert _shape(from_ledger) == _shape(from_memory), (from_ledger, from_memory)
+        deliverable = next(i for i in from_ledger if i["kind"] == "deliverable")
+        assert deliverable["bytes"] > 0, deliverable
+
+    def test_evicted_task_to_dict_uses_the_ledger(self, offline_run):
+        """降级载荷能给 pipeline / artifacts，但 result 明细仍不给——账本没存那个。"""
+        orch, tid, _ = offline_run
+        live = orch.run_handle(tid).to_dict()
+        payload = RunHandle(_StubOrch(), tid).to_dict()
+        # 与在内存时同值，而不是写死一个流水线名（名字取自文件名还是 _name 由
+        # Scheduler 定，写死就会跟着解析规则漂移）
+        assert payload["pipeline"] == live["pipeline"], (payload, live)
+        assert payload["pipeline"], "账本里既然有 pipeline 字段，降级载荷不该给空"
+        assert payload["artifacts"] == orch.run_handle(tid).artifacts()
+        assert "result" not in payload
+
+    def test_missing_ledger_does_not_get_created_by_a_read(self, tmp_path, monkeypatch):
+        """查一个从没跑过的 id：给空表，且不因为读一次就把 deliveries.db 建出来。"""
+        state = tmp_path / "empty-state"
+        monkeypatch.setenv("LOOM_STATE_DIR", str(state))
+        assert RunHandle(_StubOrch(), "never-ran").artifacts() == []
+        assert not (state / "deliveries.db").exists(), "只读路径不许有建库副作用"
+
+    def test_unreadable_ledger_degrades_instead_of_raising(self, tmp_path, monkeypatch):
+        """账本读不动（文件损坏/被锁）时给空表，不能把整条接口请求打飞。
+
+        这条盯的是降级路径本身：不测它，"读失败返回 None"就只是一句注释。
+        """
+        state = tmp_path / "broken-state"
+        state.mkdir()
+        (state / "deliveries.db").write_bytes(b"not a sqlite database file at all")
+        monkeypatch.setenv("LOOM_STATE_DIR", str(state))
+        assert RunHandle(_StubOrch(), "t1").artifacts() == []
+        assert RunHandle(_StubOrch(), "t1").to_dict()["artifacts"] == []
+
+    def test_nodes_without_artifacts_are_dropped_when_rebuilding(self):
+        """账本重建时，没有产物键的节点不进清单（与内存态同一条规则）。"""
+        rec = {"nodes": [
+            {"node": "writer", "artifact_keys": ["content"], "status": "success"},
+            {"node": "gate", "artifact_keys": [], "status": "skipped"},
+            {"node": "no-key-field", "status": "success"},
+        ], "output_path": ""}
+        items = RunHandle._artifacts_from(rec)
+        assert [i["node"] for i in items] == ["writer"], items
+
+
+# ─── 5. 接线：两个接口层都由这个原语产出产物字段 ───────
 class TestWiring:
     def test_mcp_get_task_artifacts_come_from_the_handle(self, offline_run):
         from loom_core.mcp_server import MCPServer

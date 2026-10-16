@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 from contextlib import nullcontext
 from typing import Any
@@ -105,10 +106,13 @@ class RunHandle:
         只报**引擎确实记下来的东西**：节点成功写回的结构化产物（`TaskNode.result`
         的键），以及声明 `WRITES_OUTPUT` 的节点挂到任务上的交付物路径。
         不猜节点名、不造伪 ID——那正是本原语要替掉的旧做法。
+
+        内存里没有这一运行（被 `_trim_task_history` 淘汰的老任务）时，
+        从交付账本 `deliveries.db` 重建**同一形状**的清单，见 `_ledger_record`。
         """
         task = self.task
         if task is None:
-            return []
+            return self._artifacts_from(self._ledger_record())
         items: list[dict] = []
         for name, node in (getattr(task, "dag_nodes", None) or {}).items():
             result = getattr(node, "result", None)
@@ -126,6 +130,49 @@ class RunHandle:
                           "bytes": _size_of(path)})
         return items
 
+    def _ledger_record(self) -> dict | None:
+        """交付账本里这一 run 的记录；库或行不存在给 None。
+
+        刻意**不**因为读一次就建库：`DeliveryLedger()` 构造时会 mkdir + 建表，
+        那会让"查一个从没跑过的 id"在磁盘上留下副作用。
+        """
+        from pathlib import Path
+
+        from . import state_paths
+        from .deliveries import DeliveryLedger
+
+        db = state_paths.store_path("deliveries.db")
+        if not Path(db).exists():
+            return None
+        try:
+            return DeliveryLedger(db_path=str(db)).get(self._task_id)
+        except (OSError, sqlite3.Error):
+            # 读不动账本 ≠ 没有产物；但也不该把整条接口请求打飞。给 None 让
+            # 调用方退回"只有状态"的降级形态（status() 仍走持久队列）。
+            return None
+
+    @staticmethod
+    def _artifacts_from(rec: dict | None) -> list[dict]:
+        """账本记录 → 与内存态逐字段同形的清单（两边不一致就是两个来源在漂移）。"""
+        if not isinstance(rec, dict):
+            return []
+        items: list[dict] = []
+        for node in rec.get("nodes") or []:
+            keys = node.get("artifact_keys") or []
+            if not keys:
+                continue
+            items.append({
+                "kind": "artifact",
+                "node": str(node.get("node", "")),
+                "keys": sorted(str(k) for k in keys),
+                "status": str(node.get("status", "") or ""),
+            })
+        path = str(rec.get("output_path") or "")
+        if path:
+            items.append({"kind": "deliverable", "node": "", "path": path,
+                          "bytes": _size_of(path)})
+        return items
+
     # ─── 载荷 ──────────────────────────────────────────
 
     def to_dict(self) -> dict:
@@ -138,6 +185,12 @@ class RunHandle:
             "terminal": self.is_terminal(),
         }
         if task is None:
+            # 被 _trim_task_history 淘汰的老运行：账本里有的（pipeline / error /
+            # 产物清单）照原样给，账本没有的（result 明细）不编。
+            rec = self._ledger_record()
+            out["pipeline"] = str((rec or {}).get("pipeline") or "")
+            out["error"] = str((rec or {}).get("error") or "") or None
+            out["artifacts"] = self._artifacts_from(rec)
             return out
         out["pipeline"] = getattr(task, "pipeline_name", "")
         out["progress"] = int(getattr(task, "progress", 0) or 0)

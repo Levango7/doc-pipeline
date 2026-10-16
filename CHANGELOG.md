@@ -76,6 +76,38 @@ Loom 首个 PyPI 发行版（发行名 `nexusloom`；原名 doc-pipeline，2026-
   **CPU 饥饿型假红**——那一轮我并发跑了变异批次/覆盖率探针/全量（1137s vs 平时 735s），
   单独复跑 `tests/test_executor_factory.py` **33 passed / 10.9s**。没有改那条判据也没有跳过它。
 
+### Added（2026-10-15·续49，`RunHandle.artifacts()` 持久化到交付账本）
+
+- **要替掉的行为**：任务内存历史只留最近 100 个（`pipeline._trim_task_history`），
+  被淘汰之后 `orch.get_task(id)` 返回 None，`artifacts()` 于是给出空表——**运行确实交付过东西，
+  查询却说没有**。这是"空结果被读成阴性结论"的形状，不是容量问题。
+- **写入侧**：`_build_delivery_record` 的每个节点多带 `artifact_keys`
+  （`sorted(str(k) for k in dag_node.result or {})`）。没产出的节点给**空表**——
+  "这节点跑过但没交付东西"与"不知道"必须可区分。账本本就 DONE/FAILED 都记，
+  所以失败运行的产物面同样可查。节点明细本就整包序列化进 `payload_json`
+  （`deliveries.py` 的表只有 run_id/pipeline/status/finished_at/duration/output_path/payload），
+  所以这次**不需要列迁移**——老库直接可读，只是老行里没有这个键。
+- **读取侧**：`RunHandle._ledger_record()` + `_artifacts_from(rec)`，任务不在内存时
+  从 `deliveries.db` 按**同一条目形状**重建（`{"kind":"artifact","node","keys","status"}` /
+  `{"kind":"deliverable","node":"","path","bytes"}`）。`to_dict()` 的淘汰分支同时补
+  `pipeline` / `error` / `artifacts`，仍**不给 `result`**（账本存产物键与路径，不存整份结构化结果）。
+  MCP `get_task` 与 Admin `GET /tasks/<id>` 走同一原语，因此自动继承持久性。
+- **三条边界（都不猜、不造）**：① 本改动之前落账的运行没有 `artifact_keys` 列 ⇒
+  它们的 `artifacts` 仍是空表，**不回填历史**；② **读路径不许建库**——先查文件在不在，
+  不在就返回 None，不能因为"有人查一次产物"就凭空生成 `deliveries.db`；
+  ③ 账本打不开/不是 sqlite 文件 ⇒ 捕获 `(OSError, sqlite3.Error)` 降级为空表，
+  不把一条查询升级成 500 或打飞 JSON-RPC 帧。
+- **判据**：`tests/test_run_handle.py` 20 → **26**（新增 `TestDurableArtifacts` 6 条：
+  账本行携带 artifact_keys / 被淘汰运行重建出**同一形状**（按内容比而非顺序）/
+  淘汰态 `to_dict` 走账本 / 读路径不建库 / 坏账本降级不抛 / 无产物键的节点不编造条目）。
+  `loom_core/run_handle.py` 覆盖 **112/112 = 100%**。两条变异对照：**短路账本读取 ⇒ 2 条红**；
+  写入侧丢掉 `artifact_keys` ⇒ **3 条红**（含写入判据本身）。
+- **顺手改掉一条已过期的断言名**：`test_empty_when_task_not_in_memory` 的 docstring 写的是
+  "内存里没有就不报产物"——那正是本改动移除的行为，留着会把旧限制当成契约。改名
+  `test_empty_when_neither_memory_nor_ledger_has_it` 并把"空"的理由改写为"账本里没有这一行"；
+  断言体不变（`_StubOrch` 无账本行，仍空）。测试会话的 `LOOM_STATE_DIR` 由 `conftest.py`
+  按 PID 隔离，所以这条不会碰到真实账本。
+
 
 ### Added（2026-10-14·续47，§4.2 S3 节点检查器 + S2 断点续跑标记——控制台第二屏）
 
